@@ -1,0 +1,242 @@
+package formatter
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"text/tabwriter"
+
+	"gopkg.in/yaml.v3"
+	"confcli/internal/client"
+)
+
+// FormatOutput formats the output based on the specified format
+func FormatOutput(data interface{}, format string) error {
+	switch format {
+	case "json":
+		return formatJSON(data)
+	case "yaml":
+		return formatYAML(data)
+	case "text":
+		fallthrough
+	default:
+		return formatText(data)
+	}
+}
+
+// formatJSON formats the data as JSON
+func formatJSON(data interface{}) error {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(data)
+}
+
+// formatYAML formats the data as YAML
+func formatYAML(data interface{}) error {
+	encoder := yaml.NewEncoder(os.Stdout)
+	encoder.SetIndent(2)
+	defer encoder.Close()
+	return encoder.Encode(data)
+}
+
+// formatText formats the data as human-readable text
+func formatText(data interface{}) error {
+	switch v := data.(type) {
+	case *client.Page:
+		return formatPageText(v)
+	case []client.Page:
+		return formatPagesText(v)
+	case []*client.SearchResult:
+		return formatSearchResultsText(v)
+	case []client.SearchResult:
+		return formatSearchResultsText(v)
+	default:
+		// For unknown types, fall back to JSON
+		return formatJSON(data)
+	}
+}
+
+// FormatOutputToString formats the output to a string based on the specified format
+func FormatOutputToString(data interface{}, format string) (string, error) {
+	switch format {
+	case "json":
+		return formatJSONToString(data)
+	case "yaml":
+		return formatYAMLToString(data)
+	case "text":
+		fallthrough
+	default:
+		return formatTextToString(data)
+	}
+}
+
+// formatJSONToString formats the data as JSON string
+func formatJSONToString(data interface{}) (string, error) {
+	jsonBytes, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(jsonBytes), nil
+}
+
+// formatYAMLToString formats the data as YAML string
+func formatYAMLToString(data interface{}) (string, error) {
+	yamlBytes, err := yaml.Marshal(data)
+	if err != nil {
+		return "", err
+	}
+	return string(yamlBytes), nil
+}
+
+// formatTextToString formats the data as human-readable text string
+func formatTextToString(data interface{}) (string, error) {
+	// For now, we'll just return JSON as a fallback
+	jsonBytes, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(jsonBytes), nil
+}
+
+// formatPageText formats a single page as human-readable text
+func formatPageText(page *client.Page) error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	
+	fmt.Fprintf(w, "ID:\t%d\n", page.ID)
+	fmt.Fprintf(w, "Title:\t%s\n", page.Title)
+	fmt.Fprintf(w, "Space ID:\t%d\n", page.SpaceID)
+	fmt.Fprintf(w, "Status:\t%s\n", page.Status)
+	fmt.Fprintf(w, "Created:\t%s\n", page.CreatedAt.Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(w, "Updated:\t%s\n", page.UpdatedAt.Format("2006-01-02 15:04:05"))
+	fmt.Fprintf(w, "Version:\t%d\n", page.Version.Number)
+	
+	if len(page.Labels) > 0 {
+		labels := make([]string, len(page.Labels))
+		for i, label := range page.Labels {
+			labels[i] = label.Name
+		}
+		fmt.Fprintf(w, "Labels:\t%s\n", fmt.Sprintf("[%s]", joinStrings(labels, ", ")))
+	}
+	
+	if len(page.Ancestors) > 0 {
+		ancestorTitles := make([]string, len(page.Ancestors))
+		for i, ancestor := range page.Ancestors {
+			ancestorTitles[i] = ancestor.Title
+		}
+		fmt.Fprintf(w, "Ancestors:\t%s\n", fmt.Sprintf("[%s]", joinStrings(ancestorTitles, " > ")))
+	}
+	
+	if len(page.Comments) > 0 {
+		fmt.Fprintf(w, "Comments:\t%d\n", len(page.Comments))
+	}
+	
+	if len(page.Attachments) > 0 {
+		fmt.Fprintf(w, "Attachments:\t%d\n", len(page.Attachments))
+	}
+	
+	fmt.Fprintln(w, "\nContent Preview:")
+	content := getPageContentPreview(page)
+	if len(content) > 200 {
+		content = content[:200] + "..."
+	}
+	fmt.Fprintln(w, content)
+	
+	return w.Flush()
+}
+
+// formatPagesText formats a slice of pages as human-readable text
+func formatPagesText(pages []client.Page) error {
+	if len(pages) == 0 {
+		fmt.Println("No pages found.")
+		return nil
+	}
+	
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "ID\tTITLE\tSPACE ID\tVERSION\tUPDATED\n")
+	fmt.Fprintf(w, "--\t-----\t--------\t-------\t-------\n")
+	
+	for _, page := range pages {
+		fmt.Fprintf(w, "%d\t%s\t%d\t%d\t%s\n", 
+			page.ID, 
+			page.Title, 
+			page.SpaceID, 
+			page.Version.Number, 
+			page.UpdatedAt.Format("2006-01-02"))
+	}
+	
+	return w.Flush()
+}
+
+// formatSearchResultsText formats search results as human-readable text
+func formatSearchResultsText(results interface{}) error {
+	var searchResults []client.SearchResult
+	
+	switch v := results.(type) {
+	case []*client.SearchResult:
+		searchResults = make([]client.SearchResult, len(v))
+		for i, r := range v {
+			searchResults[i] = *r
+		}
+	case []client.SearchResult:
+		searchResults = v
+	default:
+		fmt.Println("No search results found.")
+		return nil
+	}
+	
+	if len(searchResults) == 0 {
+		fmt.Println("No search results found.")
+		return nil
+	}
+	
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintf(w, "ID\tTITLE\tTYPE\tSPACE\n")
+	fmt.Fprintf(w, "--\t-----\t----\t-----\n")
+	
+	for _, result := range searchResults {
+		spaceKey := ""
+		if result.Space.Key != "" {
+			spaceKey = result.Space.Key
+		}
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", 
+			result.ID, 
+			result.Title, 
+			result.Type, 
+			spaceKey)
+	}
+	
+	return w.Flush()
+}
+
+// getPageContentPreview extracts a preview of the page content
+func getPageContentPreview(page *client.Page) string {
+	if page.Body == nil {
+		return ""
+	}
+	
+	// Try different content representations in order of preference
+	for _, format := range []string{"storage", "view", "editor", "export_view", "styled_view"} {
+		if content, exists := page.Body[format]; exists {
+			if contentMap, ok := content.(map[string]interface{}); ok {
+				if value, ok := contentMap["value"].(string); ok {
+					return value
+				}
+			}
+		}
+	}
+	
+	return ""
+}
+
+// joinStrings joins a slice of strings with a separator
+func joinStrings(strs []string, sep string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	
+	result := strs[0]
+	for _, s := range strs[1:] {
+		result += sep + s
+	}
+	return result
+}

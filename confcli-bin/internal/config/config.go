@@ -1,0 +1,158 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/spf13/viper"
+)
+
+// Profile represents a configuration profile
+type Profile struct {
+	URL       string `mapstructure:"url"`
+	Token     string `mapstructure:"token"`
+	Username  string `mapstructure:"username"`
+	AuthType  string `mapstructure:"auth_type"`
+	CacheTTL  int    `mapstructure:"cache_ttl"` // in minutes
+	ReadOnly  bool   `mapstructure:"read_only"`
+}
+
+// Config represents the main configuration
+type Config struct {
+	CurrentProfile string              `mapstructure:"current_profile"`
+	Profiles       map[string]*Profile `mapstructure:"profiles"`
+}
+
+// DefaultProfileName is the name of the default profile
+const DefaultProfileName = "default"
+
+// DefaultCacheTTL is the default cache TTL in minutes
+const DefaultCacheTTL = 5
+
+// LoadConfig loads the configuration from the config file
+func LoadConfig() (*Config, error) {
+	// Set defaults
+	viper.SetDefault("current_profile", DefaultProfileName)
+	viper.SetDefault("profiles.default.url", "")
+	viper.SetDefault("profiles.default.token", "")
+	viper.SetDefault("profiles.default.username", "")
+	viper.SetDefault("profiles.default.auth_type", "bearer")
+	viper.SetDefault("profiles.default.cache_ttl", DefaultCacheTTL)
+	viper.SetDefault("profiles.default.read_only", false)
+
+	// Set config file path
+	configDir, err := GetConfigDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config directory: %w", err)
+	}
+
+	viper.AddConfigPath(configDir)
+	viper.SetConfigName("config")
+	viper.SetConfigType("yaml")
+
+	// Read the config file
+	if err := viper.ReadInConfig(); err != nil {
+		// If config file doesn't exist, create a default one
+		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			defaultConfig := &Config{
+				CurrentProfile: DefaultProfileName,
+				Profiles: map[string]*Profile{
+					DefaultProfileName: {
+						URL:      "",
+						Token:    "",
+						Username: "",
+						AuthType: "bearer",
+						CacheTTL: DefaultCacheTTL,
+						ReadOnly: false,
+					},
+				},
+			}
+			
+			if err := SaveConfig(defaultConfig); err != nil {
+				return nil, fmt.Errorf("failed to create default config: %w", err)
+			}
+			
+			// Reload the newly created config
+			if err := viper.ReadInConfig(); err != nil {
+				return nil, fmt.Errorf("failed to read default config: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("failed to read config: %w", err)
+		}
+	}
+
+	// Unmarshal the config
+	var config Config
+	if err := viper.Unmarshal(&config); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+
+	// Ensure current profile exists
+	if config.Profiles[config.CurrentProfile] == nil {
+		// If current profile doesn't exist, fall back to default
+		config.CurrentProfile = DefaultProfileName
+		if config.Profiles[config.CurrentProfile] == nil {
+			// If default doesn't exist either, create it
+			config.Profiles[config.CurrentProfile] = &Profile{
+				URL:      "",
+				Token:    "",
+				Username: "",
+				AuthType: "bearer",
+				CacheTTL: DefaultCacheTTL,
+				ReadOnly: false,
+			}
+		}
+	}
+
+	return &config, nil
+}
+
+// SaveConfig saves the configuration to the config file
+func SaveConfig(config *Config) error {
+	configDir, err := GetConfigDir()
+	if err != nil {
+		return fmt.Errorf("failed to get config directory: %w", err)
+	}
+
+	// Create config directory if it doesn't exist
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory: %w", err)
+	}
+
+	// Set viper values
+	viper.Set("current_profile", config.CurrentProfile)
+	for name, profile := range config.Profiles {
+		viper.Set(fmt.Sprintf("profiles.%s.url", name), profile.URL)
+		viper.Set(fmt.Sprintf("profiles.%s.token", name), profile.Token)
+		viper.Set(fmt.Sprintf("profiles.%s.username", name), profile.Username)
+		viper.Set(fmt.Sprintf("profiles.%s.auth_type", name), profile.AuthType)
+		viper.Set(fmt.Sprintf("profiles.%s.cache_ttl", name), profile.CacheTTL)
+		viper.Set(fmt.Sprintf("profiles.%s.read_only", name), profile.ReadOnly)
+	}
+
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := viper.WriteConfigAs(configPath); err != nil {
+		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	return nil
+}
+
+// GetConfigDir returns the configuration directory path
+func GetConfigDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".confcli"), nil
+}
+
+// GetCacheDir returns the cache directory path
+func GetCacheDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".confcli", "cache"), nil
+}
