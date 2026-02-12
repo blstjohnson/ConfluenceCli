@@ -11,9 +11,11 @@ import (
 	"github.com/spf13/viper"
 	"github.com/xlab/treeprint"
 
-	"confcli/internal/client"
+	"confcli/pkg/api"
+	"confcli/pkg/confluence"
+	"confcli/pkg/models"
 	"confcli/internal/formatter"
-	"confcli/internal/utils"
+	"confcli/pkg/utils"
 )
 
 // NewDescendantsCmd creates the descendants command
@@ -53,14 +55,14 @@ func newDescendantsGetCmd() *cobra.Command {
 			}
 			
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
 			
 			ctx := context.Background()
 			
-			var targetPage *client.Page
+			var targetPage *models.Page
 			var pageID int
 			
 			// Determine the target page
@@ -183,7 +185,7 @@ func newDescendantsGetCmd() *cobra.Command {
 }
 
 // exportDescendantsToDirectory exports the descendants to a directory structure
-func exportDescendantsToDirectory(apiClient *client.Client, sourcePage *client.Page, descendants []client.Page, outputDir, format string, depth int, skipContent, includeSelf bool) error {
+func exportDescendantsToDirectory(apiClient api.Client, sourcePage *models.Page, descendants []models.Page, outputDir, format string, depth int, skipContent, includeSelf bool) error {
 	// Create output directory if it doesn't exist
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
@@ -193,7 +195,7 @@ func exportDescendantsToDirectory(apiClient *client.Client, sourcePage *client.P
 	baseDir := outputDir
 	if includeSelf {
 		sourceID, _ := sourcePage.ID.Int() // Use 0 if not an integer
-		sourceDir := filepath.Join(outputDir, fmt.Sprintf("%d_%s", sourceID, utils.SanitizeFilename(sourcePage.Title)))
+		sourceDir := filepath.Join(outputDir, fmt.Sprintf("%d_%s", sourceID, utils.SanitizeFileName(sourcePage.Title)))
 		if err := os.MkdirAll(sourceDir, 0755); err != nil {
 			return fmt.Errorf("failed to create source page directory: %w", err)
 		}
@@ -203,9 +205,20 @@ func exportDescendantsToDirectory(apiClient *client.Client, sourcePage *client.P
 	// Export each descendant page
 	for _, page := range descendants {
 		pageID, _ := page.ID.Int() // Use 0 if not an integer
-		if err := utils.ExportPageToFile(apiClient, page, baseDir, format, skipContent); err != nil {
-			// Log error but continue with other pages
-			fmt.Fprintf(os.Stderr, "Warning: failed to export descendant page %d: %v\n", pageID, err)
+		// Export page content to file
+		if !skipContent {
+			content, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), format)
+			if err != nil {
+				// Log error but continue with other pages
+				fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, err)
+			} else {
+				// Create filename based on page ID and title
+				filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFileName(page.Title), utils.GetExtensionForFormat(format))
+				filePath := filepath.Join(baseDir, filename)
+				if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
+				}
+			}
 		}
 	}
 	

@@ -6,7 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"confcli/internal/client"
+	"confcli/pkg/confluence"
 )
 
 // NewLoginCmd creates the login command
@@ -16,7 +16,7 @@ func NewLoginCmd() *cobra.Command {
 		Short: "Authenticate with Confluence using browser",
 		Long:  `Open a browser to authenticate with Confluence and establish a session`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}

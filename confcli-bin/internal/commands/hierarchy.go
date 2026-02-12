@@ -10,9 +10,11 @@ import (
 	"github.com/spf13/viper"
 	"github.com/xlab/treeprint"
 
-	"confcli/internal/client"
+	"confcli/pkg/api"
+	"confcli/pkg/confluence"
+	"confcli/pkg/models"
 	"confcli/internal/formatter"
-	"confcli/internal/utils"
+	"confcli/pkg/utils"
 )
 
 
@@ -47,7 +49,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 			exportAttachments, _ := cmd.Flags().GetBool("export-attachments")
 			
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
@@ -104,8 +106,8 @@ func newHierarchySpaceCmd() *cobra.Command {
 				tree := treeprint.New()
 				
 				// Group pages by parent for tree structure
-				pageMap := make(map[int]*client.Page)
-				childrenMap := make(map[int][]*client.Page)
+				pageMap := make(map[int]*models.Page)
+				childrenMap := make(map[int][]*models.Page)
 
 				for i := range pages {
 					page := &pages[i]
@@ -147,7 +149,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 }
 
 // exportSpaceToDirectory exports the space hierarchy to a directory structure
-func exportSpaceToDirectory(apiClient *client.Client, space, outputDir, format string, depth int, skipContent, exportAttachments bool) error {
+func exportSpaceToDirectory(apiClient api.Client, space, outputDir, format string, depth int, skipContent, exportAttachments bool) error {
 	ctx := context.Background()
 	
 	// Get all pages in the space
@@ -168,8 +170,8 @@ func exportSpaceToDirectory(apiClient *client.Client, space, outputDir, format s
 	}
 
 	// Group pages by parent for directory structure
-	pageMap := make(map[int]*client.Page)
-	childrenMap := make(map[int][]*client.Page)
+	pageMap := make(map[int]*models.Page)
+	childrenMap := make(map[int][]*models.Page)
 
 	for i := range pages {
 		page := &pages[i]
@@ -189,9 +191,20 @@ func exportSpaceToDirectory(apiClient *client.Client, space, outputDir, format s
 	// Export pages to files
 	for _, page := range pages {
 		pageID, _ := page.ID.Int() // Use 0 if not an integer
-		if err := utils.ExportPageToFile(apiClient, page, spaceDir, format, skipContent); err != nil {
-			// Log error but continue with other pages
-			fmt.Fprintf(os.Stderr, "Warning: failed to export page %d: %v\n", pageID, err)
+		// Export page content to file
+		if !skipContent {
+			content, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), format)
+			if err != nil {
+				// Log error but continue with other pages
+				fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, err)
+			} else {
+				// Create filename based on page ID and title
+				filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFileName(page.Title), utils.GetExtensionForFormat(format))
+				filePath := filepath.Join(spaceDir, filename)
+				if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
+				}
+			}
 		}
 	}
 	
@@ -225,7 +238,7 @@ func exportSpaceToDirectory(apiClient *client.Client, space, outputDir, format s
 
 
 // buildTree builds a tree structure from pages
-func buildTree(tree treeprint.Tree, pages []*client.Page, childrenMap map[int][]*client.Page, maxDepth, currentDepth int) {
+func buildTree(tree treeprint.Tree, pages []*models.Page, childrenMap map[int][]*models.Page, maxDepth, currentDepth int) {
 	if maxDepth > 0 && currentDepth >= maxDepth {
 		return
 	}
@@ -236,7 +249,7 @@ func buildTree(tree treeprint.Tree, pages []*client.Page, childrenMap map[int][]
 			// Skip pages with non-integer IDs
 			continue
 		}
-		
+
 		branch := tree.AddBranch(fmt.Sprintf("%d: %s", pageID, page.Title))
 
 		// Add children to this branch

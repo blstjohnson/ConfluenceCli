@@ -42,14 +42,12 @@ profiles:
     token: "your-api-token"
     username: "your-email@example.com"
     auth_type: "bearer"
-    cache_ttl: 5
     read_only: false
   prod:
     url: "https://production-domain.atlassian.net/wiki"
     token: "production-api-token"
     username: "admin@example.com"
     auth_type: "bearer"
-    cache_ttl: 10
     read_only: true
 ```
 
@@ -114,17 +112,6 @@ confcli --read-only page get --id 123456
 confcli config set read_only true
 ```
 
-### Caching
-
-Cache TTL can be configured in minutes:
-
-```bash
-# Set cache TTL to 10 minutes
-confcli config set cache_ttl 10
-
-# Or override with flag (5 minutes)
-confcli --cache-ttl 5 hierarchy space --space DEV
-```
 
 ## Commands
 
@@ -323,7 +310,6 @@ The confcli tool follows a modular architecture:
   - `commands/` - CLI command implementations
   - `formatter/` - Output formatting
   - `converter/` - Content format conversion
-  - `cache/` - Disk-based caching
   - `utils/` - Utility functions
 
 ## API Integration

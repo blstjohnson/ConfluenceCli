@@ -10,7 +10,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"confcli/internal/client"
 	"confcli/internal/formatter"
 )
 
@@ -249,9 +248,8 @@ func TestHelpJsonCommand(t *testing.T) {
 
 // Additional tests to verify the functionality of the commands
 func TestMockClient(t *testing.T) {
-	// This is a mock test to verify that the client package can be imported
+	// This is a mock test to verify that the formatter package can be imported
 	// In a real test, we would create a mock client with test server
-	_ = &client.Client{}
 	_ = context.Background()
 	_ = formatter.FormatOutput
 }

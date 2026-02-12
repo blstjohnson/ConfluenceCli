@@ -11,9 +11,10 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"confcli/internal/client"
+	"confcli/pkg/confluence"
+	"confcli/pkg/models"
 	"confcli/internal/formatter"
-	"confcli/internal/utils"
+	"confcli/pkg/utils"
 )
 
 // NewPageCmd creates the page command
@@ -69,15 +70,15 @@ func newPageGetCmd() *cobra.Command {
 			}
 			
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
-			
+
 			ctx := context.Background()
-			
-			var page *client.Page
-			
+
+			var page *models.Page
+
 			// Determine how to retrieve the page
 			if id != 0 {
 				page, err = apiClient.GetPage(ctx, id)
@@ -110,22 +111,19 @@ func newPageGetCmd() *cobra.Command {
 			// Get content in the requested format
 			var content string
 			if full {
-				// For full export, get the complete page with all expansions
+				// For full export, get the complete page with minimal necessary expansions
 				completePage, err := apiClient.GetPageWithExpansions(ctx, page.ID.IntOrString(), []string{
-					"body.view", "body.storage", "body.editor", "body.export_view", "body.styled_view",
-					"metadata.labels", "metadata.properties", "metadata.frontend", "metadata.history",
+					"body.view", "body.storage", "body.export_view", "body.styled_view",
+					"metadata.labels", "metadata.properties", "metadata.history",
 					"children.page", "children.attachment", "children.comment",
-					"ancestors", "operations", "restrictions.read.restrictions.user", "restrictions.read.restrictions.group",
-					"restrictions.update.restrictions.user", "restrictions.update.restrictions.group",
-					"history", "history.lastUpdated", "history.previousVersion", "history.contributors",
-					"history.nextVersion", "history.frontend",
+					"ancestors", "operations", "history", "history.lastUpdated", "history.contributors",
 				})
 				if err != nil {
 					return fmt.Errorf("failed to get full page content: %w", err)
 				}
 				// Use the complete page data
 				page = completePage
-				
+
 				// Extract content in the requested format from the expanded page
 				if bodyData, ok := page.Body[format]; ok {
 					if contentMap, ok := bodyData.(map[string]interface{}); ok {
@@ -134,10 +132,10 @@ func newPageGetCmd() *cobra.Command {
 						}
 					}
 				}
-				
+
 				// If the requested format is not available, try alternatives
 				if content == "" {
-					for _, f := range []string{"storage", "view", "editor", "export_view", "styled_view"} {
+					for _, f := range []string{"storage", "view", "export_view", "styled_view"} {
 						if bodyData, ok := page.Body[f]; ok {
 							if contentMap, ok := bodyData.(map[string]interface{}); ok {
 								if value, ok := contentMap["value"].(string); ok {
@@ -175,7 +173,7 @@ func newPageGetCmd() *cobra.Command {
 					} else {
 						// This is a simplified approach - in reality, comments would come from a separate endpoint
 						// For now, we'll just store the raw content
-						page.Comments = []client.Comment{{Body: map[string]interface{}{"storage": map[string]interface{}{"value": comments}}}}
+						page.Comments = []models.Comment{{Body: map[string]interface{}{"storage": map[string]interface{}{"value": comments}}}}
 					}
 				}
 			}
@@ -309,7 +307,7 @@ func newPageCommentsCmd() *cobra.Command {
 			}
 
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
@@ -349,7 +347,7 @@ func newPageLabelsCmd() *cobra.Command {
 			}
 
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
@@ -394,7 +392,7 @@ func newPageCreateCmd() *cobra.Command {
 			}
 
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
@@ -470,7 +468,7 @@ func newPageUpdateCmd() *cobra.Command {
 			}
 
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
@@ -530,7 +528,7 @@ func newPageDeleteCmd() *cobra.Command {
 			}
 
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
@@ -575,7 +573,7 @@ func newPageCommentAddCmd() *cobra.Command {
 			}
 
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
@@ -631,7 +629,7 @@ func newPageLabelAddCmd() *cobra.Command {
 			}
 
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}

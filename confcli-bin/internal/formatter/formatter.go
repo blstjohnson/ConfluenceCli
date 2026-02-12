@@ -7,7 +7,7 @@ import (
 	"text/tabwriter"
 
 	"gopkg.in/yaml.v3"
-	"confcli/internal/client"
+	"confcli/pkg/models"
 )
 
 // FormatOutput formats the output based on the specified format
@@ -42,13 +42,13 @@ func formatYAML(data interface{}) error {
 // formatText formats the data as human-readable text
 func formatText(data interface{}) error {
 	switch v := data.(type) {
-	case *client.Page:
+	case *models.Page:
 		return formatPageText(v)
-	case []client.Page:
+	case []models.Page:
 		return formatPagesText(v)
-	case []*client.SearchResult:
+	case []*models.SearchResult:
 		return formatSearchResultsText(v)
-	case []client.SearchResult:
+	case []models.SearchResult:
 		return formatSearchResultsText(v)
 	default:
 		// For unknown types, fall back to JSON
@@ -99,17 +99,18 @@ func formatTextToString(data interface{}) (string, error) {
 }
 
 // formatPageText formats a single page as human-readable text
-func formatPageText(page *client.Page) error {
+func formatPageText(page *models.Page) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	
-	fmt.Fprintf(w, "ID:\t%d\n", page.ID)
+
+	pageID, _ := page.ID.Int()
+	fmt.Fprintf(w, "ID:\t%d\n", pageID)
 	fmt.Fprintf(w, "Title:\t%s\n", page.Title)
 	fmt.Fprintf(w, "Space ID:\t%d\n", page.SpaceID)
 	fmt.Fprintf(w, "Status:\t%s\n", page.Status)
 	fmt.Fprintf(w, "Created:\t%s\n", page.CreatedAt.Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(w, "Updated:\t%s\n", page.UpdatedAt.Format("2006-01-02 15:04:05"))
 	fmt.Fprintf(w, "Version:\t%d\n", page.Version.Number)
-	
+
 	if len(page.Labels) > 0 {
 		labels := make([]string, len(page.Labels))
 		for i, label := range page.Labels {
@@ -117,7 +118,7 @@ func formatPageText(page *client.Page) error {
 		}
 		fmt.Fprintf(w, "Labels:\t%s\n", fmt.Sprintf("[%s]", joinStrings(labels, ", ")))
 	}
-	
+
 	if len(page.Ancestors) > 0 {
 		ancestorTitles := make([]string, len(page.Ancestors))
 		for i, ancestor := range page.Ancestors {
@@ -125,97 +126,98 @@ func formatPageText(page *client.Page) error {
 		}
 		fmt.Fprintf(w, "Ancestors:\t%s\n", fmt.Sprintf("[%s]", joinStrings(ancestorTitles, " > ")))
 	}
-	
+
 	if len(page.Comments) > 0 {
 		fmt.Fprintf(w, "Comments:\t%d\n", len(page.Comments))
 	}
-	
+
 	if len(page.Attachments) > 0 {
 		fmt.Fprintf(w, "Attachments:\t%d\n", len(page.Attachments))
 	}
-	
+
 	fmt.Fprintln(w, "\nContent Preview:")
 	content := getPageContentPreview(page)
 	if len(content) > 200 {
 		content = content[:200] + "..."
 	}
 	fmt.Fprintln(w, content)
-	
+
 	return w.Flush()
 }
 
 // formatPagesText formats a slice of pages as human-readable text
-func formatPagesText(pages []client.Page) error {
+func formatPagesText(pages []models.Page) error {
 	if len(pages) == 0 {
 		fmt.Println("No pages found.")
 		return nil
 	}
-	
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(w, "ID\tTITLE\tSPACE ID\tVERSION\tUPDATED\n")
 	fmt.Fprintf(w, "--\t-----\t--------\t-------\t-------\n")
-	
+
 	for _, page := range pages {
-		fmt.Fprintf(w, "%d\t%s\t%d\t%d\t%s\n", 
-			page.ID, 
-			page.Title, 
-			page.SpaceID, 
-			page.Version.Number, 
+		pageID, _ := page.ID.Int()
+		fmt.Fprintf(w, "%d\t%s\t%d\t%d\t%s\n",
+			pageID,
+			page.Title,
+			page.SpaceID,
+			page.Version.Number,
 			page.UpdatedAt.Format("2006-01-02"))
 	}
-	
+
 	return w.Flush()
 }
 
 // formatSearchResultsText formats search results as human-readable text
 func formatSearchResultsText(results interface{}) error {
-	var searchResults []client.SearchResult
-	
+	var searchResults []models.SearchResult
+
 	switch v := results.(type) {
-	case []*client.SearchResult:
-		searchResults = make([]client.SearchResult, len(v))
+	case []*models.SearchResult:
+		searchResults = make([]models.SearchResult, len(v))
 		for i, r := range v {
 			searchResults[i] = *r
 		}
-	case []client.SearchResult:
+	case []models.SearchResult:
 		searchResults = v
 	default:
 		fmt.Println("No search results found.")
 		return nil
 	}
-	
+
 	if len(searchResults) == 0 {
 		fmt.Println("No search results found.")
 		return nil
 	}
-	
+
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintf(w, "ID\tTITLE\tTYPE\tSPACE\n")
 	fmt.Fprintf(w, "--\t-----\t----\t-----\n")
-	
+
 	for _, result := range searchResults {
 		spaceKey := ""
 		if result.Space.Key != "" {
 			spaceKey = result.Space.Key
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", 
-			result.ID, 
-			result.Title, 
-			result.Type, 
+		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n",
+			result.ID,
+			result.Title,
+			result.Type,
 			spaceKey)
 	}
-	
+
 	return w.Flush()
 }
 
 // getPageContentPreview extracts a preview of the page content
-func getPageContentPreview(page *client.Page) string {
+func getPageContentPreview(page *models.Page) string {
 	if page.Body == nil {
 		return ""
 	}
-	
+
 	// Try different content representations in order of preference
-	for _, format := range []string{"storage", "view", "editor", "export_view", "styled_view"} {
+	for _, format := range []string{"storage", "view", "export_view", "styled_view"} {
 		if content, exists := page.Body[format]; exists {
 			if contentMap, ok := content.(map[string]interface{}); ok {
 				if value, ok := contentMap["value"].(string); ok {
@@ -224,7 +226,7 @@ func getPageContentPreview(page *client.Page) string {
 			}
 		}
 	}
-	
+
 	return ""
 }
 

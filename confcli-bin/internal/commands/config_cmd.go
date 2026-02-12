@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"confcli/internal/config"
+	"confcli/pkg/config"
 )
 
 // NewConfigCmd creates the config command
@@ -61,7 +61,6 @@ func NewConfigCmd() *cobra.Command {
 				fmt.Printf("    Impersonate As: %s\n", profile.ImpersonateAs)
 				fmt.Printf("    Session Cookie: %s\n", hideSessionCookie(profile.SessionCookie))
 				fmt.Printf("    SAML Auth Cookie: %s\n", hideSAMLAuthCookie(profile.SAMLAuthCookie))
-				fmt.Printf("    Cache TTL: %d minutes\n", profile.CacheTTL)
 				fmt.Printf("    Read Only: %t\n", profile.ReadOnly)
 
 				// Don't show token in plain text for security
@@ -105,8 +104,6 @@ func NewConfigCmd() *cobra.Command {
 				currentProfile.ImpersonateAs = value
 			case "use_domain_auth":
 				fmt.Sscanf(value, "%t", &currentProfile.UseDomainAuth)
-			case "cache_ttl":
-				fmt.Sscanf(value, "%d", &currentProfile.CacheTTL)
 			case "read_only":
 				fmt.Sscanf(value, "%t", &currentProfile.ReadOnly)
 			case "session_cookie":

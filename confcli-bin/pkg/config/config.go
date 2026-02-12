@@ -72,11 +72,11 @@ func LoadConfig() (*Config, error) {
 					},
 				},
 			}
-			
+
 			if err := SaveConfig(defaultConfig); err != nil {
 				return nil, fmt.Errorf("failed to create default config: %w", err)
 			}
-			
+
 			// Reload the newly created config
 			if err := viper.ReadInConfig(); err != nil {
 				return nil, fmt.Errorf("failed to read default config: %w", err)

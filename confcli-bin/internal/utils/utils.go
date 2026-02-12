@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"confcli/internal/client"
+	"confcli/pkg/models"
+	"confcli/pkg/api"
 	"confcli/internal/formatter"
 )
 
@@ -49,15 +50,16 @@ func GetExtensionForFormat(format string) string {
 }
 
 // ExportPageToFile exports a single page to a file
-func ExportPageToFile(apiClient *client.Client, page client.Page, baseDir, format string, skipContent bool) error {
+func ExportPageToFile(apiClient api.Client, page models.Page, baseDir, format string, skipContent bool) error {
 	ctx := context.Background()
-	
+
 	// Create directory for the page
-	pageDir := filepath.Join(baseDir, fmt.Sprintf("%d_%s", page.ID, SanitizeFilename(page.Title)))
+	pageID, _ := page.ID.Int()
+	pageDir := filepath.Join(baseDir, fmt.Sprintf("%d_%s", pageID, SanitizeFilename(page.Title)))
 	if err := os.MkdirAll(pageDir, 0755); err != nil {
 		return fmt.Errorf("failed to create page directory: %w", err)
 	}
-	
+
 	// Export content in requested format(s)
 	if !skipContent {
 		if format == "both" {
@@ -71,7 +73,7 @@ func ExportPageToFile(apiClient *client.Client, page client.Page, baseDir, forma
 						return fmt.Errorf("failed to get page content: %w", err)
 					}
 				}
-				
+
 				ext := GetExtensionForFormat(format)
 				contentFile := filepath.Join(pageDir, fmt.Sprintf("index.%s", ext))
 				if err := os.WriteFile(contentFile, []byte(content), 0644); err != nil {
@@ -88,7 +90,7 @@ func ExportPageToFile(apiClient *client.Client, page client.Page, baseDir, forma
 					return fmt.Errorf("failed to get page content: %w", err)
 				}
 			}
-			
+
 			ext := GetExtensionForFormat(format)
 			contentFile := filepath.Join(pageDir, fmt.Sprintf("index.%s", ext))
 			if err := os.WriteFile(contentFile, []byte(content), 0644); err != nil {
@@ -96,7 +98,7 @@ func ExportPageToFile(apiClient *client.Client, page client.Page, baseDir, forma
 			}
 		}
 	}
-	
+
 	// Export metadata
 	metadata := map[string]interface{}{
 		"id":        page.ID,
@@ -108,16 +110,16 @@ func ExportPageToFile(apiClient *client.Client, page client.Page, baseDir, forma
 		"version":   page.Version,
 		"authorId":  page.AuthorID,
 	}
-	
+
 	metadataBytes, err := formatter.FormatOutputToString(metadata, "json")
 	if err != nil {
 		return fmt.Errorf("failed to format page metadata: %w", err)
 	}
-	
+
 	metadataFile := filepath.Join(pageDir, "metadata.json")
 	if err := os.WriteFile(metadataFile, []byte(metadataBytes), 0644); err != nil {
 		return fmt.Errorf("failed to write metadata file: %w", err)
 	}
-	
+
 	return nil
 }

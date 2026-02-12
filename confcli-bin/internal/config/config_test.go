@@ -19,14 +19,12 @@ profiles:
     token: "test-token"
     username: "test@example.com"
     auth_type: "bearer"
-    cache_ttl: 10
     read_only: false
   prod:
     url: "https://prod.atlassian.net/wiki"
     token: "prod-token"
     username: "admin@example.com"
     auth_type: "bearer"
-    cache_ttl: 5
     read_only: true
 `
 	
@@ -110,7 +108,6 @@ func TestSaveConfig(t *testing.T) {
 				Token:    "test-token",
 				Username: "test@example.com",
 				AuthType: "bearer",
-				CacheTTL: 10,
 				ReadOnly: false,
 			},
 		},

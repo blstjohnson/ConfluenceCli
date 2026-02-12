@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
-	"confcli/internal/config"
+	"confcli/pkg/config"
 )
 
 var cfgFile string
@@ -161,7 +161,6 @@ func loadConfig(profile, url, token, impersonateAs string, useDomainAuth bool) {
 	viper.Set("auth_type", currentProfile.AuthType)
 	viper.Set("impersonate_as", currentProfile.ImpersonateAs)
 	viper.Set("use_domain_auth", currentProfile.UseDomainAuth)
-	viper.Set("cache_ttl", currentProfile.CacheTTL)
 	viper.Set("read_only", currentProfile.ReadOnly)
 
 	// Set default output format if not already set

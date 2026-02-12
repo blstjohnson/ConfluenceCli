@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"confcli/internal/client"
+	"confcli/pkg/confluence"
 	"confcli/internal/formatter"
 )
 
@@ -29,7 +29,7 @@ func NewSearchCmd() *cobra.Command {
 			space, _ := cmd.Flags().GetString("space")
 
 			// Create API client
-			apiClient, err := client.NewClient()
+			apiClient, err := confluence.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
