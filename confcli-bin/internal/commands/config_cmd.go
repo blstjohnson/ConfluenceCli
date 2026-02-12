@@ -2,6 +2,7 @@ package commands
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -56,9 +57,13 @@ func NewConfigCmd() *cobra.Command {
 				fmt.Printf("  %s%s:\n", name, activeMarker)
 				fmt.Printf("    URL: %s\n", profile.URL)
 				fmt.Printf("    Auth Type: %s\n", profile.AuthType)
+				fmt.Printf("    Use Domain Auth: %t\n", profile.UseDomainAuth)
+				fmt.Printf("    Impersonate As: %s\n", profile.ImpersonateAs)
+				fmt.Printf("    Session Cookie: %s\n", hideSessionCookie(profile.SessionCookie))
+				fmt.Printf("    SAML Auth Cookie: %s\n", hideSAMLAuthCookie(profile.SAMLAuthCookie))
 				fmt.Printf("    Cache TTL: %d minutes\n", profile.CacheTTL)
 				fmt.Printf("    Read Only: %t\n", profile.ReadOnly)
-				
+
 				// Don't show token in plain text for security
 				if profile.Token != "" {
 					fmt.Printf("    Token: ***HIDDEN***\n")
@@ -96,10 +101,18 @@ func NewConfigCmd() *cobra.Command {
 				currentProfile.Username = value
 			case "auth_type":
 				currentProfile.AuthType = value
+			case "impersonate_as":
+				currentProfile.ImpersonateAs = value
+			case "use_domain_auth":
+				fmt.Sscanf(value, "%t", &currentProfile.UseDomainAuth)
 			case "cache_ttl":
 				fmt.Sscanf(value, "%d", &currentProfile.CacheTTL)
 			case "read_only":
 				fmt.Sscanf(value, "%t", &currentProfile.ReadOnly)
+			case "session_cookie":
+				currentProfile.SessionCookie = value
+			case "saml_auth_cookie":
+				currentProfile.SAMLAuthCookie = value
 			default:
 				return fmt.Errorf("unknown configuration key: %s", key)
 			}
@@ -150,4 +163,28 @@ func NewConfigCmd() *cobra.Command {
 	})
 
 	return configCmd
+}
+
+// Helper function to hide session cookie value for security
+func hideSessionCookie(cookie string) string {
+	if cookie == "" {
+		return ""
+	}
+	parts := strings.SplitN(cookie, "=", 2)
+	if len(parts) < 2 {
+		return "***HIDDEN***"
+	}
+	return fmt.Sprintf("%s=***HIDDEN***", parts[0])
+}
+
+// Helper function to hide SAML auth cookie value for security
+func hideSAMLAuthCookie(cookie string) string {
+	if cookie == "" {
+		return ""
+	}
+	parts := strings.SplitN(cookie, "=", 2)
+	if len(parts) < 2 {
+		return "***HIDDEN***"
+	}
+	return fmt.Sprintf("%s=***HIDDEN***", parts[0])
 }

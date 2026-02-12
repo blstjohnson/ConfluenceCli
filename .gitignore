@@ -16,8 +16,11 @@
 
 !README.md
 !LICENSE
-
-# !Makefile
+!Makefile
+!BUILD.md
+!build.sh
+!Dockerfile.build
+!.devcontainer/devcontainer.json
 
 # ...even if they are in subdirectories
 !*/

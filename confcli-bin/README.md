@@ -269,15 +269,16 @@ confcli completion powershell > confcli.ps1
 
 - Go 1.25+
 - Make
+- Docker (for cross-platform builds)
 
 ### Building
 
 ```bash
 # Build for current platform
-make build
+go build -o confcli ./cmd/confcli
 
-# Build for all platforms
-make build-all
+# Build for all platforms using Docker (requires Docker)
+make release
 
 # Run tests
 make test
@@ -286,11 +287,30 @@ make test
 make clean
 ```
 
-### Docker Build
+### Cross-Platform Docker Build
+
+To build binaries for Windows, Linux, and macOS using Docker:
 
 ```bash
-make docker-build
+# Build all binaries using Docker
+make build-docker
+
+# Create release packages
+make release
 ```
+
+Alternatively, use the build script:
+
+```bash
+./build.sh
+```
+
+This will create binaries for:
+- Linux (AMD64 and ARM64)
+- Windows (AMD64 and ARM64) 
+- macOS (AMD64 and ARM64)
+
+The binaries will be placed in the `dist/releases/` directory.
 
 ## Architecture
 

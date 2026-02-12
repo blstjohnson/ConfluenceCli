@@ -82,7 +82,11 @@ func newDescendantsGetCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("failed to get page by title: %w", err)
 				}
-				pageID = targetPage.ID
+				var ok bool
+				pageID, ok = targetPage.ID.Int()
+				if !ok {
+					return fmt.Errorf("target page ID is not an integer: %v", targetPage.ID)
+				}
 			}
 			
 			// Get descendants
@@ -119,14 +123,17 @@ func newDescendantsGetCmd() *cobra.Command {
 				// Add the source page if include-self is true
 				if includeSelf {
 					tree = treeprint.New()
-					sourceBranch := tree.AddBranch(fmt.Sprintf("%d: %s", targetPage.ID, targetPage.Title))
+					sourceID, _ := targetPage.ID.Int() // Use 0 if not an integer
+					sourceBranch := tree.AddBranch(fmt.Sprintf("%d: %s", sourceID, targetPage.Title))
 					for _, descendant := range descendants {
-						sourceBranch.AddBranch(fmt.Sprintf("%d: %s", descendant.ID, descendant.Title))
+						descendantID, _ := descendant.ID.Int() // Use 0 if not an integer
+						sourceBranch.AddBranch(fmt.Sprintf("%d: %s", descendantID, descendant.Title))
 					}
 				} else {
 					// Just show descendants
 					for _, descendant := range descendants {
-						tree.AddBranch(fmt.Sprintf("%d: %s", descendant.ID, descendant.Title))
+						descendantID, _ := descendant.ID.Int() // Use 0 if not an integer
+						tree.AddBranch(fmt.Sprintf("%d: %s", descendantID, descendant.Title))
 					}
 				}
 				
@@ -144,12 +151,14 @@ func newDescendantsGetCmd() *cobra.Command {
 				// Add the source page if include-self is true
 				currentTree := tree
 				if includeSelf {
-					currentTree = tree.AddBranch(fmt.Sprintf("%d: %s", targetPage.ID, targetPage.Title))
+					sourceID, _ := targetPage.ID.Int() // Use 0 if not an integer
+					currentTree = tree.AddBranch(fmt.Sprintf("%d: %s", sourceID, targetPage.Title))
 				}
-				
+
 				// Add descendants to the tree
 				for _, descendant := range descendants {
-					currentTree.AddBranch(fmt.Sprintf("%d: %s", descendant.ID, descendant.Title))
+					descendantID, _ := descendant.ID.Int() // Use 0 if not an integer
+					currentTree.AddBranch(fmt.Sprintf("%d: %s", descendantID, descendant.Title))
 				}
 				
 				fmt.Println(tree.String())
@@ -183,7 +192,8 @@ func exportDescendantsToDirectory(apiClient *client.Client, sourcePage *client.P
 	// If include-self is true, create a directory for the source page
 	baseDir := outputDir
 	if includeSelf {
-		sourceDir := filepath.Join(outputDir, fmt.Sprintf("%d_%s", sourcePage.ID, utils.SanitizeFilename(sourcePage.Title)))
+		sourceID, _ := sourcePage.ID.Int() // Use 0 if not an integer
+		sourceDir := filepath.Join(outputDir, fmt.Sprintf("%d_%s", sourceID, utils.SanitizeFilename(sourcePage.Title)))
 		if err := os.MkdirAll(sourceDir, 0755); err != nil {
 			return fmt.Errorf("failed to create source page directory: %w", err)
 		}
@@ -192,9 +202,10 @@ func exportDescendantsToDirectory(apiClient *client.Client, sourcePage *client.P
 	
 	// Export each descendant page
 	for _, page := range descendants {
+		pageID, _ := page.ID.Int() // Use 0 if not an integer
 		if err := utils.ExportPageToFile(apiClient, page, baseDir, format, skipContent); err != nil {
 			// Log error but continue with other pages
-			fmt.Fprintf(os.Stderr, "Warning: failed to export descendant page %d: %v\n", page.ID, err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to export descendant page %d: %v\n", pageID, err)
 		}
 	}
 	

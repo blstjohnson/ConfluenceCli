@@ -1,0 +1,66 @@
+# Multi-stage Dockerfile for building confcli binaries for multiple platforms
+# Build from the root directory of the project: docker build -f Dockerfile.build -t confcli-builder .
+
+# Build stage
+FROM golang:1.25-alpine AS builder
+
+# Install git (needed for go modules)
+RUN apk add --no-cache git
+
+# Set working directory
+WORKDIR /app
+
+# Copy go mod files
+COPY confcli-bin/go.mod go.mod
+COPY confcli-bin/go.sum go.sum
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY confcli-bin/ .
+
+# Build for Linux
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o confcli-linux-amd64 ./cmd/confcli
+
+# Build for Windows
+RUN CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o confcli-windows-amd64.exe ./cmd/confcli
+
+# Build for macOS
+RUN CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o confcli-darwin-amd64 ./cmd/confcli
+
+# Build for macOS ARM64
+RUN CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o confcli-darwin-arm64 ./cmd/confcli
+
+# Build for Linux ARM64
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o confcli-linux-arm64 ./cmd/confcli
+
+# Build for Windows ARM64
+RUN CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -o confcli-windows-arm64.exe ./cmd/confcli
+
+# Final stage - create a minimal image with just the binaries
+FROM alpine:latest
+
+# Install zip utility for packaging
+RUN apk --no-cache add zip
+
+WORKDIR /dist
+
+# Copy all built binaries from the builder stage
+COPY --from=builder /app/confcli-linux-amd64 .
+COPY --from=builder /app/confcli-windows-amd64.exe .
+COPY --from=builder /app/confcli-darwin-amd64 .
+COPY --from=builder /app/confcli-darwin-arm64 .
+COPY --from=builder /app/confcli-linux-arm64 .
+COPY --from=builder /app/confcli-windows-arm64.exe .
+
+# Create ZIP archives for each platform
+RUN zip confcli-linux-amd64.zip confcli-linux-amd64 && \
+    zip confcli-windows-amd64.zip confcli-windows-amd64.exe && \
+    zip confcli-darwin-amd64.zip confcli-darwin-amd64 && \
+    zip confcli-darwin-arm64.zip confcli-darwin-arm64 && \
+    zip confcli-linux-arm64.zip confcli-linux-arm64 && \
+    zip confcli-windows-arm64.zip confcli-windows-arm64.exe
+
+# Set the default command to keep the container running so we can copy the binaries
+CMD ["sh"]

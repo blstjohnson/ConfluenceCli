@@ -10,12 +10,16 @@ import (
 
 // Profile represents a configuration profile
 type Profile struct {
-	URL       string `mapstructure:"url"`
-	Token     string `mapstructure:"token"`
-	Username  string `mapstructure:"username"`
-	AuthType  string `mapstructure:"auth_type"`
-	CacheTTL  int    `mapstructure:"cache_ttl"` // in minutes
-	ReadOnly  bool   `mapstructure:"read_only"`
+	URL            string `mapstructure:"url"`
+	Token          string `mapstructure:"token"`
+	Username       string `mapstructure:"username"`
+	AuthType       string `mapstructure:"auth_type"`
+	ImpersonateAs  string `mapstructure:"impersonate_as"`  // User to impersonate
+	UseDomainAuth  bool   `mapstructure:"use_domain_auth"` // Use current domain user for authentication
+	SessionCookie  string `mapstructure:"session_cookie"`  // Session cookie for browser-based auth
+	SAMLAuthCookie string `mapstructure:"saml_auth_cookie"` // SAML auth cookie for identity provider
+	CacheTTL       int    `mapstructure:"cache_ttl"`       // in minutes
+	ReadOnly       bool   `mapstructure:"read_only"`
 }
 
 // Config represents the main configuration
@@ -37,7 +41,11 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("profiles.default.url", "")
 	viper.SetDefault("profiles.default.token", "")
 	viper.SetDefault("profiles.default.username", "")
-	viper.SetDefault("profiles.default.auth_type", "bearer")
+	viper.SetDefault("profiles.default.auth_type", "bearer") // Default to bearer token
+	viper.SetDefault("profiles.default.impersonate_as", "")  // No impersonation by default
+	viper.SetDefault("profiles.default.use_domain_auth", false) // Don't use domain auth by default
+	viper.SetDefault("profiles.default.session_cookie", "")   // No session cookie by default
+	viper.SetDefault("profiles.default.saml_auth_cookie", "") // No SAML auth cookie by default
 	viper.SetDefault("profiles.default.cache_ttl", DefaultCacheTTL)
 	viper.SetDefault("profiles.default.read_only", false)
 
@@ -59,12 +67,14 @@ func LoadConfig() (*Config, error) {
 				CurrentProfile: DefaultProfileName,
 				Profiles: map[string]*Profile{
 					DefaultProfileName: {
-						URL:      "",
-						Token:    "",
-						Username: "",
-						AuthType: "bearer",
-						CacheTTL: DefaultCacheTTL,
-						ReadOnly: false,
+						URL:           "",
+						Token:         "",
+						Username:      "",
+						AuthType:      "bearer", // Default to bearer token
+						ImpersonateAs: "",       // No impersonation by default
+						UseDomainAuth: false,    // Don't use domain auth by default
+						CacheTTL:      DefaultCacheTTL,
+						ReadOnly:      false,
 					},
 				},
 			}
@@ -95,12 +105,16 @@ func LoadConfig() (*Config, error) {
 		if config.Profiles[config.CurrentProfile] == nil {
 			// If default doesn't exist either, create it
 			config.Profiles[config.CurrentProfile] = &Profile{
-				URL:      "",
-				Token:    "",
-				Username: "",
-				AuthType: "bearer",
-				CacheTTL: DefaultCacheTTL,
-				ReadOnly: false,
+				URL:            "",
+				Token:          "",
+				Username:       "",
+				AuthType:       "bearer", // Default to bearer token
+				ImpersonateAs:  "",       // No impersonation by default
+				UseDomainAuth:  false,    // Don't use domain auth by default
+				SessionCookie:  "",       // No session cookie by default
+				SAMLAuthCookie: "",       // No SAML auth cookie by default
+				CacheTTL:       DefaultCacheTTL,
+				ReadOnly:       false,
 			}
 		}
 	}
@@ -127,6 +141,10 @@ func SaveConfig(config *Config) error {
 		viper.Set(fmt.Sprintf("profiles.%s.token", name), profile.Token)
 		viper.Set(fmt.Sprintf("profiles.%s.username", name), profile.Username)
 		viper.Set(fmt.Sprintf("profiles.%s.auth_type", name), profile.AuthType)
+		viper.Set(fmt.Sprintf("profiles.%s.impersonate_as", name), profile.ImpersonateAs)
+		viper.Set(fmt.Sprintf("profiles.%s.use_domain_auth", name), profile.UseDomainAuth)
+		viper.Set(fmt.Sprintf("profiles.%s.session_cookie", name), profile.SessionCookie)
+		viper.Set(fmt.Sprintf("profiles.%s.saml_auth_cookie", name), profile.SAMLAuthCookie)
 		viper.Set(fmt.Sprintf("profiles.%s.cache_ttl", name), profile.CacheTTL)
 		viper.Set(fmt.Sprintf("profiles.%s.read_only", name), profile.ReadOnly)
 	}

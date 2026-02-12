@@ -88,7 +88,8 @@ func newHierarchySpaceCmd() *cobra.Command {
 				// For simplicity, we'll just show top-level pages
 				// A full implementation would build the tree structure
 				for _, page := range pages {
-					tree.AddBranch(fmt.Sprintf("%d: %s", page.ID, page.Title))
+					pageID, _ := page.ID.Int() // Use 0 if not an integer
+					tree.AddBranch(fmt.Sprintf("%d: %s", pageID, page.Title))
 				}
 				
 				fmt.Println(tree.String())
@@ -105,14 +106,20 @@ func newHierarchySpaceCmd() *cobra.Command {
 				// Group pages by parent for tree structure
 				pageMap := make(map[int]*client.Page)
 				childrenMap := make(map[int][]*client.Page)
-				
+
 				for i := range pages {
 					page := &pages[i]
-					pageMap[page.ID] = page
-					
-					// This is a simplified approach - in reality, we'd need to determine parent-child relationships
-					// For now, we'll just treat all pages as top-level
-					childrenMap[0] = append(childrenMap[0], page)
+					pageID, ok := page.ID.Int()
+					if ok {
+						pageMap[pageID] = page
+
+						// This is a simplified approach - in reality, we'd need to determine parent-child relationships
+						// For now, we'll just treat all pages as top-level
+						childrenMap[0] = append(childrenMap[0], page)
+					} else {
+						// Skip pages with non-integer IDs
+						continue
+					}
 				}
 				
 				// Build the tree
@@ -166,18 +173,25 @@ func exportSpaceToDirectory(apiClient *client.Client, space, outputDir, format s
 
 	for i := range pages {
 		page := &pages[i]
-		pageMap[page.ID] = page
+		pageID, ok := page.ID.Int()
+		if ok {
+			pageMap[pageID] = page
 
-		// This is a simplified approach - in reality, we'd need to determine parent-child relationships
-		// For now, we'll just put all pages in the root
-		childrenMap[0] = append(childrenMap[0], page)
+			// This is a simplified approach - in reality, we'd need to determine parent-child relationships
+			// For now, we'll just put all pages in the root
+			childrenMap[0] = append(childrenMap[0], page)
+		} else {
+			// Skip pages with non-integer IDs
+			continue
+		}
 	}
 
 	// Export pages to files
 	for _, page := range pages {
+		pageID, _ := page.ID.Int() // Use 0 if not an integer
 		if err := utils.ExportPageToFile(apiClient, page, spaceDir, format, skipContent); err != nil {
 			// Log error but continue with other pages
-			fmt.Fprintf(os.Stderr, "Warning: failed to export page %d: %v\n", page.ID, err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to export page %d: %v\n", pageID, err)
 		}
 	}
 	
@@ -215,12 +229,18 @@ func buildTree(tree treeprint.Tree, pages []*client.Page, childrenMap map[int][]
 	if maxDepth > 0 && currentDepth >= maxDepth {
 		return
 	}
-	
+
 	for _, page := range pages {
-		branch := tree.AddBranch(fmt.Sprintf("%d: %s", page.ID, page.Title))
+		pageID, ok := page.ID.Int()
+		if !ok {
+			// Skip pages with non-integer IDs
+			continue
+		}
 		
+		branch := tree.AddBranch(fmt.Sprintf("%d: %s", pageID, page.Title))
+
 		// Add children to this branch
-		children := childrenMap[page.ID]
+		children := childrenMap[pageID]
 		if len(children) > 0 {
 			buildTree(branch, children, childrenMap, maxDepth, currentDepth+1)
 		}

@@ -108,45 +108,86 @@ func newPageGetCmd() *cobra.Command {
 			}
 			
 			// Get content in the requested format
-			content, err := apiClient.GetPageContent(ctx, page.ID, format)
-			if err != nil {
-				// If the requested format is not available, try alternatives
-				content, err = apiClient.GetPageContent(ctx, page.ID, "storage")
+			var content string
+			if full {
+				// For full export, get the complete page with all expansions
+				completePage, err := apiClient.GetPageWithExpansions(ctx, page.ID.IntOrString(), []string{
+					"body.view", "body.storage", "body.editor", "body.export_view", "body.styled_view",
+					"metadata.labels", "metadata.properties", "metadata.frontend", "metadata.history",
+					"children.page", "children.attachment", "children.comment",
+					"ancestors", "operations", "restrictions.read.restrictions.user", "restrictions.read.restrictions.group",
+					"restrictions.update.restrictions.user", "restrictions.update.restrictions.group",
+					"history", "history.lastUpdated", "history.previousVersion", "history.contributors",
+					"history.nextVersion", "history.frontend",
+				})
 				if err != nil {
-					return fmt.Errorf("failed to get page content: %w", err)
+					return fmt.Errorf("failed to get full page content: %w", err)
+				}
+				// Use the complete page data
+				page = completePage
+				
+				// Extract content in the requested format from the expanded page
+				if bodyData, ok := page.Body[format]; ok {
+					if contentMap, ok := bodyData.(map[string]interface{}); ok {
+						if value, ok := contentMap["value"].(string); ok {
+							content = value
+						}
+					}
+				}
+				
+				// If the requested format is not available, try alternatives
+				if content == "" {
+					for _, f := range []string{"storage", "view", "editor", "export_view", "styled_view"} {
+						if bodyData, ok := page.Body[f]; ok {
+							if contentMap, ok := bodyData.(map[string]interface{}); ok {
+								if value, ok := contentMap["value"].(string); ok {
+									content = value
+									break
+								}
+							}
+						}
+					}
+				}
+			} else {
+				// For non-full export, use the original method
+				content, err = apiClient.GetPageContent(ctx, page.ID.IntOrString(), format)
+				if err != nil {
+					// If the requested format is not available, try alternatives
+					content, err = apiClient.GetPageContent(ctx, page.ID.IntOrString(), "storage")
+					if err != nil {
+						return fmt.Errorf("failed to get page content: %w", err)
+					}
 				}
 			}
-			
-			// Add content to the page object
-			if page.Body == nil {
-				page.Body = make(map[string]interface{})
-			}
-			page.Body[format] = map[string]interface{}{
-				"value":          content,
-				"representation": format,
-			}
-			
+
 			// Get additional data if requested
 			if withComments || full {
-				comments, err := apiClient.GetPageContent(ctx, page.ID, "comment") // This would need to be implemented properly
-				if err != nil {
-					// Handle error but don't fail the whole operation
-					fmt.Fprintf(os.Stderr, "Warning: could not retrieve comments: %v\n", err)
+				// Extract the ID as an integer if possible, otherwise skip additional content retrieval
+				pageID, ok := page.ID.Int()
+				if !ok {
+					// If the ID is not an integer, we can't make the API call with it
+					fmt.Fprintf(os.Stderr, "Warning: page ID is not an integer, cannot retrieve additional content\n")
 				} else {
-					// This is a simplified approach - in reality, comments would come from a separate endpoint
-					// For now, we'll just store the raw content
-					page.Comments = []client.Comment{{Body: map[string]interface{}{"storage": map[string]interface{}{"value": comments}}}}
+					comments, err := apiClient.GetPageContent(ctx, pageID, "comment") // This would need to be implemented properly
+					if err != nil {
+						// Handle error but don't fail the whole operation
+						fmt.Fprintf(os.Stderr, "Warning: could not retrieve comments: %v\n", err)
+					} else {
+						// This is a simplified approach - in reality, comments would come from a separate endpoint
+						// For now, we'll just store the raw content
+						page.Comments = []client.Comment{{Body: map[string]interface{}{"storage": map[string]interface{}{"value": comments}}}}
+					}
 				}
 			}
-			
+
 			if withLabels || full {
 				// Labels would come from a separate API call
 				// This is a simplified implementation
 			}
-			
+
 			// Determine output format
 			outputFormat := viper.GetString("output_format")
-			
+
 			// Handle output to file or directory
 			if output != "" {
 				if err := os.WriteFile(output, []byte(content), 0644); err != nil {
@@ -158,14 +199,15 @@ func newPageGetCmd() *cobra.Command {
 				if err := os.MkdirAll(outputDir, 0755); err != nil {
 					return fmt.Errorf("failed to create output directory: %w", err)
 				}
-				
+
 				// Write content to file
-				filename := fmt.Sprintf("%d.%s", page.ID, utils.GetExtensionForFormat(format))
+				idStr := page.ID.String()
+				filename := fmt.Sprintf("%s.%s", idStr, utils.GetExtensionForFormat(format))
 				filePath := filepath.Join(outputDir, filename)
 				if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 					return fmt.Errorf("failed to write content to file: %w", err)
 				}
-				
+
 				// If full export is requested, also save metadata
 				if full {
 					metadata := map[string]interface{}{
@@ -181,18 +223,18 @@ func newPageGetCmd() *cobra.Command {
 						"comments":    page.Comments,
 						"attachments": page.Attachments,
 					}
-					
+
 					metadataBytes, err := formatter.FormatOutputToString(metadata, "json")
 					if err != nil {
 						return fmt.Errorf("failed to format metadata: %w", err)
 					}
-					
-					metadataFilePath := filepath.Join(outputDir, fmt.Sprintf("%d.metadata.json", page.ID))
+
+					metadataFilePath := filepath.Join(outputDir, fmt.Sprintf("%s.metadata.json", idStr))
 					if err := os.WriteFile(metadataFilePath, []byte(metadataBytes), 0644); err != nil {
 						return fmt.Errorf("failed to write metadata to file: %w", err)
 					}
 				}
-				
+
 				fmt.Printf("Page exported to %s\n", outputDir)
 			} else {
 				// Output to stdout
@@ -212,7 +254,7 @@ func newPageGetCmd() *cobra.Command {
 							"modified": page.UpdatedAt,
 						},
 					}
-					
+
 					if withLabels || full {
 						data["labels"] = page.Labels
 					}
@@ -224,7 +266,7 @@ func newPageGetCmd() *cobra.Command {
 						data["ancestors"] = page.Ancestors
 						data["versions"] = []interface{}{page.Version} // Simplified
 					}
-					
+
 					return formatter.FormatOutput(data, "json")
 				} else {
 					// For text output, just show the page info
