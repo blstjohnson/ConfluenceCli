@@ -15,7 +15,6 @@ type Profile struct {
 	Username       string `mapstructure:"username"`
 	AuthType       string `mapstructure:"auth_type"`
 	ImpersonateAs  string `mapstructure:"impersonate_as"`  // User to impersonate
-	UseDomainAuth  bool   `mapstructure:"use_domain_auth"` // Use current domain user for authentication
 	SessionCookie  string `mapstructure:"session_cookie"`  // Session cookie for browser-based auth
 	SAMLAuthCookie string `mapstructure:"saml_auth_cookie"` // SAML auth cookie for identity provider
 	ReadOnly       bool   `mapstructure:"read_only"`
@@ -39,7 +38,6 @@ func LoadConfig() (*Config, error) {
 	viper.SetDefault("profiles.default.username", "")
 	viper.SetDefault("profiles.default.auth_type", "bearer") // Default to bearer token
 	viper.SetDefault("profiles.default.impersonate_as", "")  // No impersonation by default
-	viper.SetDefault("profiles.default.use_domain_auth", false) // Don't use domain auth by default
 	viper.SetDefault("profiles.default.session_cookie", "")   // No session cookie by default
 	viper.SetDefault("profiles.default.saml_auth_cookie", "") // No SAML auth cookie by default
 	viper.SetDefault("profiles.default.read_only", false)
@@ -67,7 +65,6 @@ func LoadConfig() (*Config, error) {
 						Username:      "",
 						AuthType:      "bearer", // Default to bearer token
 						ImpersonateAs: "",       // No impersonation by default
-						UseDomainAuth: false,    // Don't use domain auth by default
 						ReadOnly:      false,
 					},
 				},
@@ -104,7 +101,6 @@ func LoadConfig() (*Config, error) {
 				Username:       "",
 				AuthType:       "bearer", // Default to bearer token
 				ImpersonateAs:  "",       // No impersonation by default
-				UseDomainAuth:  false,    // Don't use domain auth by default
 				SessionCookie:  "",       // No session cookie by default
 				SAMLAuthCookie: "",       // No SAML auth cookie by default
 				ReadOnly:       false,
@@ -135,7 +131,6 @@ func SaveConfig(config *Config) error {
 		viper.Set(fmt.Sprintf("profiles.%s.username", name), profile.Username)
 		viper.Set(fmt.Sprintf("profiles.%s.auth_type", name), profile.AuthType)
 		viper.Set(fmt.Sprintf("profiles.%s.impersonate_as", name), profile.ImpersonateAs)
-		viper.Set(fmt.Sprintf("profiles.%s.use_domain_auth", name), profile.UseDomainAuth)
 		viper.Set(fmt.Sprintf("profiles.%s.session_cookie", name), profile.SessionCookie)
 		viper.Set(fmt.Sprintf("profiles.%s.saml_auth_cookie", name), profile.SAMLAuthCookie)
 		viper.Set(fmt.Sprintf("profiles.%s.read_only", name), profile.ReadOnly)

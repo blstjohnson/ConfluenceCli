@@ -23,7 +23,6 @@ func NewRootCmd() *cobra.Command {
 	var url string
 	var token string
 	var impersonateAs string
-	var useDomainAuth bool
 	var debug bool
 
 	rootCmd := &cobra.Command{
@@ -33,7 +32,7 @@ func NewRootCmd() *cobra.Command {
 It allows you to retrieve, search, and manage Confluence pages.`,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			// Load configuration
-			loadConfig(profile, url, token, impersonateAs, useDomainAuth)
+			loadConfig(profile, url, token, impersonateAs, false) // Removed domain auth option
 
 			// Set read-only mode if flag is set
 			if readOnly {
@@ -71,7 +70,6 @@ It allows you to retrieve, search, and manage Confluence pages.`,
 	rootCmd.PersistentFlags().StringVar(&url, "url", "", "Confluence instance URL")
 	rootCmd.PersistentFlags().StringVar(&token, "token", "", "Authentication token")
 	rootCmd.PersistentFlags().StringVar(&impersonateAs, "impersonate-as", "", "Impersonate as user (requires admin privileges)")
-	rootCmd.PersistentFlags().BoolVar(&useDomainAuth, "use-domain-auth", false, "Use current domain user for authentication (no token required)")
 
 	// Add commands
 	rootCmd.AddCommand(NewPageCmd())
@@ -120,7 +118,7 @@ func initConfig() {
 }
 
 // loadConfig loads configuration with proper precedence: flag > env > config file > default
-func loadConfig(profile, url, token, impersonateAs string, useDomainAuth bool) {
+func loadConfig(profile, url, token, impersonateAs string, _ bool) {
 	// Initialize config
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -148,11 +146,6 @@ func loadConfig(profile, url, token, impersonateAs string, useDomainAuth bool) {
 		cfg.Profiles[cfg.CurrentProfile].ImpersonateAs = impersonateAs
 	}
 
-	// Apply domain auth if specified via flag
-	if useDomainAuth {
-		cfg.Profiles[cfg.CurrentProfile].UseDomainAuth = useDomainAuth
-	}
-
 	// Set values in viper
 	currentProfile := cfg.Profiles[cfg.CurrentProfile]
 	viper.Set("url", currentProfile.URL)
@@ -160,7 +153,7 @@ func loadConfig(profile, url, token, impersonateAs string, useDomainAuth bool) {
 	viper.Set("username", currentProfile.Username)
 	viper.Set("auth_type", currentProfile.AuthType)
 	viper.Set("impersonate_as", currentProfile.ImpersonateAs)
-	viper.Set("use_domain_auth", currentProfile.UseDomainAuth)
+	viper.Set("use_domain_auth", false) // Kept for backward compatibility but always false
 	viper.Set("read_only", currentProfile.ReadOnly)
 
 	// Set default output format if not already set

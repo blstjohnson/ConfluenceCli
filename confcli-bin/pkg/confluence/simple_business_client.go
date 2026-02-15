@@ -489,7 +489,7 @@ func (sbc *SimpleBusinessClient) AuthenticateViaBrowser(ctx context.Context) err
 
 	sbc.httpClient.Logger.Info("Opening browser for authentication...")
 	sbc.httpClient.Logger.Info("Please log in to Confluence in the browser.")
-	sbc.httpClient.Logger.Info("After successful login, close the browser window.")
+	sbc.httpClient.Logger.Info("After successful login, return to this terminal.")
 
 	// Open the login URL in the default browser
 	err := openBrowser(loginURL)
@@ -497,93 +497,247 @@ func (sbc *SimpleBusinessClient) AuthenticateViaBrowser(ctx context.Context) err
 		return fmt.Errorf("failed to open browser: %w", err)
 	}
 
-	sbc.httpClient.Logger.Info("Browser opened. Please complete the login process.")
-	sbc.httpClient.Logger.Info("Waiting for authentication to complete...")
+	fmt.Println("\nPlease complete the login process in your browser.")
+	fmt.Println("Once you've logged in, press Enter here to continue...")
 
-	// Poll for authentication with a timeout
-	const maxWaitTime = 60 * time.Second // Increased timeout to allow for SAML second factor
-	const pollInterval = 5 * time.Second
-	startTime := time.Now()
+	// Wait for user to press Enter
+	var input string
+	fmt.Scanln(&input)
 
-	var sessionCookie, samlAuthCookie *http.Cookie
+	// First, try the standard approach
+	err = sbc.standardCookieCapture(ctx)
+	if err != nil {
+		sbc.httpClient.Logger.Info("Standard cookie capture failed: %v. Trying enhanced approach...", err)
+		
+		// If standard approach fails, return an error suggesting to configure token
+		return fmt.Errorf("authentication failed - please configure your token or use browser-based authentication")
+	}
 
-	for time.Since(startTime) < maxWaitTime {
-		// Test the authentication by making a simple request to get current user info
-		// Confluence Server typically uses /rest/api/user/current
-		// Confluence Cloud might use a different endpoint
-		testPath := fmt.Sprintf("%s/user/current", sbc.httpClient.APIPrefix)
-		resp, err := sbc.httpClient.makeRequest(ctx, "GET", testPath, nil)
-		if err != nil {
-			// If /user/current fails, try a simple content request as fallback
-			testPath = fmt.Sprintf("%s/content?limit=1", sbc.httpClient.APIPrefix)
-			resp, err = sbc.httpClient.makeRequest(ctx, "GET", testPath, nil)
-			if err != nil {
-				// Authentication may not be complete yet, continue polling
-				sbc.httpClient.Logger.Debug("Authentication test request failed, continuing to poll: %v", err)
-				time.Sleep(pollInterval)
-				continue
-			}
+	// Now validate the authentication by making a test request with browser auth type
+	originalAuthType := sbc.httpClient.AuthType
+	sbc.httpClient.AuthType = "browser"
+
+	defer func() {
+		sbc.httpClient.AuthType = originalAuthType
+	}()
+
+	// Try to get current user info to validate the session
+	userInfo, err := sbc.getCurrentUserInfo(ctx)
+	if err != nil {
+		sbc.httpClient.Logger.Info("Standard validation failed: %v. Trying enhanced approach...", err)
+		return fmt.Errorf("authentication failed - please configure your token or use browser-based authentication")
+	}
+
+	// For SSO setups, sometimes we get anonymous initially, so let's try a different endpoint
+	if userInfo.DisplayName == "Anonymous" || userInfo.DisplayName == "" {
+		// Try getting user info from a different endpoint that might work better with SSO
+		userInfo, err = sbc.getCurrentUserDetails(ctx)
+		if err != nil || userInfo.DisplayName == "Anonymous" || userInfo.DisplayName == "" {
+			sbc.httpClient.Logger.Info("Standard validation failed with anonymous user. Trying enhanced approach...")
+			return fmt.Errorf("authentication failed - please configure your token or use browser-based authentication")
 		}
-
-		// Capture cookies from the response
-		cookies := resp.Cookies()
-
-		// Look for session cookies in the response
-		for _, cookie := range cookies {
-			// Common Confluence session cookie names
-			if strings.HasPrefix(cookie.Name, "JSESSIONID") ||
-			   strings.HasPrefix(cookie.Name, "seraph.rememberme.cookie") ||
-			   strings.Contains(strings.ToLower(cookie.Name), "session") {
-				if sessionCookie == nil || sessionCookie.Value != cookie.Value {
-					sessionCookie = cookie
-					sbc.httpClient.Logger.Info("Session cookie captured: %s", sessionCookie.Name)
-				}
-			}
-
-			// Look for SAML auth cookies
-			if strings.Contains(strings.ToLower(cookie.Name), "saml") ||
-			   strings.Contains(strings.ToLower(cookie.Name), "auth_") ||
-			   strings.Contains(strings.ToLower(cookie.Name), "_auth") {
-				if samlAuthCookie == nil || samlAuthCookie.Value != cookie.Value {
-					samlAuthCookie = cookie
-					sbc.httpClient.Logger.Info("SAML auth cookie captured: %s", samlAuthCookie.Name)
-				}
-			}
-		}
-
-		resp.Body.Close()
-
-		// Check if we have both session and SAML cookies (or at least one if SAML is not required)
-		if sessionCookie != nil {
-			// If we have a session cookie, we might still need to wait for SAML cookies
-			// But if we've waited long enough and still don't have SAML cookies, continue anyway
-			if samlAuthCookie != nil || time.Since(startTime) > 30*time.Second {
-				break
-			}
-		}
-
-		time.Sleep(pollInterval)
 	}
 
-	// Check if we've timed out
-	if sessionCookie == nil && time.Since(startTime) >= maxWaitTime {
-		return fmt.Errorf("authentication timed out after %v", maxWaitTime)
-	}
-
-	// Store the cookies in the client instance
-	if sessionCookie != nil {
-		sbc.httpClient.SessionCookie = fmt.Sprintf("%s=%s", sessionCookie.Name, sessionCookie.Value)
-	}
-
-	if samlAuthCookie != nil {
-		sbc.httpClient.SAMLAuthCookie = fmt.Sprintf("%s=%s", samlAuthCookie.Name, samlAuthCookie.Value)
-	}
-
-	// Verify that we have at least a session cookie
-	if sbc.httpClient.SessionCookie == "" {
-		return fmt.Errorf("failed to capture session cookie after authentication")
-	}
-
-	sbc.httpClient.Logger.Info("Authentication successful!")
+	sbc.httpClient.Logger.Info("Authentication successful! Logged in as: %s", userInfo.DisplayName)
 	return nil
 }
+
+// standardCookieCapture performs the original cookie capture approach
+func (sbc *SimpleBusinessClient) standardCookieCapture(ctx context.Context) error {
+	// Force a request to the Confluence instance to trigger cookie setting in the HTTP client
+	// This is key for capturing cookies that were already set in the browser
+	testPaths := []string{
+		fmt.Sprintf("%s/", sbc.httpClient.APIPrefix), // Root path
+		fmt.Sprintf("%s/plugins/servlet/no.kantega.saml", sbc.httpClient.APIPrefix), // SAML plugin path
+		fmt.Sprintf("%s/plugins/servlet/saml", sbc.httpClient.APIPrefix), // Alternative SAML path
+		"/", // Root of the domain
+	}
+
+	// Try multiple paths to ensure we capture all relevant cookies
+	// Use the new method that properly handles redirects and captures cookies
+	for _, path := range testPaths {
+		err := sbc.httpClient.TriggerAuthAndCaptureCookies(ctx, path)
+		if err != nil {
+			// Continue to next path if this one fails
+			continue
+		}
+		// Small delay to allow cookies to be processed
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Check if we captured any cookies from the request
+	cookies := sbc.httpClient.HTTPClient.Jar.Cookies(sbc.httpClient.BaseURL)
+	if len(cookies) > 0 {
+		// Look for session and SAML cookies in the jar
+		for _, cookie := range cookies {
+			if strings.HasPrefix(cookie.Name, "JSESSIONID") ||
+				strings.HasPrefix(cookie.Name, "seraph.rememberme.cookie") ||
+				strings.Contains(strings.ToLower(cookie.Name), "session") {
+
+				sbc.httpClient.SessionCookie = fmt.Sprintf("%s=%s", cookie.Name, cookie.Value)
+				sbc.httpClient.Logger.Info("Captured session cookie: %s", cookie.Name)
+			}
+
+			if strings.Contains(strings.ToLower(cookie.Name), "saml") ||
+				strings.Contains(strings.ToLower(cookie.Name), "auth_") ||
+				strings.Contains(strings.ToLower(cookie.Name), "_auth") ||
+				strings.Contains(strings.ToLower(cookie.Name), "idp_last_account") {
+
+				sbc.httpClient.SAMLAuthCookie = fmt.Sprintf("%s=%s", cookie.Name, cookie.Value)
+				sbc.httpClient.Logger.Info("Captured SAML auth cookie: %s", cookie.Name)
+			}
+		}
+	}
+	
+	return nil
+}
+
+// enhancedCookieCapture performs enhanced cookie capture for SSO/IDP scenarios
+func (sbc *SimpleBusinessClient) enhancedCookieCapture(ctx context.Context) error {
+	sbc.httpClient.Logger.Info("Enhanced cookie capture for SSO/IDP scenario not available - please configure your token or use browser-based authentication")
+	
+	return fmt.Errorf("enhanced authentication not available - please configure your token or use browser-based authentication")
+}
+
+// hasValidSession checks if we already have valid session cookies
+func (sbc *SimpleBusinessClient) hasValidSession() bool {
+	// If we already have session cookies, try to validate them
+	if sbc.httpClient.SessionCookie != "" {
+		// Create a temporary request to validate the session
+		testPath := fmt.Sprintf("%s/user/current", sbc.httpClient.APIPrefix)
+
+		// Temporarily set auth type to browser to use cookies
+		originalAuthType := sbc.httpClient.AuthType
+		sbc.httpClient.AuthType = "browser"
+
+		req, err := http.NewRequest("GET", sbc.httpClient.BaseURL.String()+testPath, nil)
+		if err != nil {
+			sbc.httpClient.AuthType = originalAuthType
+			return false
+		}
+
+		// Apply authentication headers/cookies
+		if err := sbc.httpClient.setAuthHeader(req); err != nil {
+			sbc.httpClient.AuthType = originalAuthType
+			return false
+		}
+
+		// Perform the request manually to check session validity
+		resp, err := sbc.httpClient.HTTPClient.Do(req)
+		sbc.httpClient.AuthType = originalAuthType // Restore original auth type
+
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+
+		// If we get a successful response, the session is valid
+		return resp.StatusCode == http.StatusOK
+	}
+
+	return false
+}
+
+// getCurrentUserInfo gets information about the current authenticated user
+func (sbc *SimpleBusinessClient) getCurrentUserInfo(ctx context.Context) (*models.User, error) {
+	testPath := fmt.Sprintf("%s/user/current", sbc.httpClient.APIPrefix)
+	resp, err := sbc.httpClient.makeRequest(ctx, "GET", testPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to get user info, status: %d", resp.StatusCode)
+	}
+
+	var userInfo models.User
+	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
+		return nil, err
+	}
+
+	return &userInfo, nil
+}
+
+// GetComments retrieves comments for a page
+func (sbc *SimpleBusinessClient) GetComments(ctx context.Context, pageID int) ([]models.Comment, error) {
+	resp, err := sbc.httpClient.GetCommentsRaw(ctx, pageID)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Results []models.Comment `json:"results"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return result.Results, nil
+}
+
+// GetLabels retrieves labels for a page
+func (sbc *SimpleBusinessClient) GetLabels(ctx context.Context, pageID int) ([]models.Label, error) {
+	resp, err := sbc.httpClient.GetLabelsRaw(ctx, pageID)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Results []models.Label `json:"results"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	return result.Results, nil
+}
+
+
+// getCurrentUserDetails gets more detailed information about the current authenticated user
+// This uses a different endpoint that might work better with SSO setups
+func (sbc *SimpleBusinessClient) getCurrentUserDetails(ctx context.Context) (*models.User, error) {
+	// Try using the current user endpoint with expanded fields
+	testPath := fmt.Sprintf("%s/user/current?expand=details.personal", sbc.httpClient.APIPrefix)
+	resp, err := sbc.httpClient.makeRequest(ctx, "GET", testPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		// Try a different endpoint that might work with SSO
+		testPath = fmt.Sprintf("%s/myself", sbc.httpClient.APIPrefix)
+		resp, err = sbc.httpClient.makeRequest(ctx, "GET", testPath, nil)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("failed to get user info from alternative endpoint, status: %d", resp.StatusCode)
+		}
+	}
+
+	var userInfo models.User
+	if err := json.NewDecoder(resp.Body).Decode(&userInfo); err != nil {
+		return nil, err
+	}
+
+	return &userInfo, nil
+}
+

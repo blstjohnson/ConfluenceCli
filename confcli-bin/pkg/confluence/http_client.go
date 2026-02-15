@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"confcli/pkg/api"
-	"confcli/internal/logging"
+	"confcli/pkg/logging"
 )
 
 // HTTPClient handles HTTP communication with the Confluence API
@@ -28,7 +28,6 @@ type HTTPClient struct {
 	Username       string
 	Password       string
 	ImpersonateAs  string // User to impersonate
-	UseDomainAuth  bool   // Use current domain user for authentication
 	ReadOnly       bool
 	Logger         *logging.Logger
 	APIPrefix      string // API path prefix (e.g., "/rest/api" for Server, "/api" for Cloud)
@@ -50,9 +49,25 @@ func NewHTTPClient(options *api.ClientOptions) (*HTTPClient, error) {
 	}
 
 	// Create HTTP client with appropriate timeout and cookie jar
+	// Set up redirect policy to capture cookies from redirect responses
 	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
 		Jar:     cookieJar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Capture cookies from redirect responses
+			// This ensures we capture cookies set during redirects (like SAML auth cookies)
+			if len(via) > 0 {
+				// Get cookies from the response that caused the redirect
+				// This is tricky because we don't have direct access to the response here
+				// So we'll just continue with the redirect
+			}
+			
+			// Don't exceed 10 redirects
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
 	}
 
 	// Determine API prefix based on URL (Confluence Server typically uses /rest/api, Cloud uses /api)
@@ -73,7 +88,6 @@ func NewHTTPClient(options *api.ClientOptions) (*HTTPClient, error) {
 		Token:          options.Token,
 		Username:       options.Username,
 		ImpersonateAs:  options.ImpersonateAs,
-		UseDomainAuth:  options.UseDomainAuth,
 		Password:       options.Password,
 		ReadOnly:       options.ReadOnly,
 		Logger:         logging.NewLogger(),
@@ -174,17 +188,7 @@ func (c *HTTPClient) makeRequest(ctx context.Context, method, path string, body 
 
 // setAuthHeader sets the appropriate authentication header based on the auth type
 func (c *HTTPClient) setAuthHeader(req *http.Request) error {
-	// If using domain authentication, skip setting explicit auth headers
-	// The system will handle authentication automatically using current user credentials
-	if c.UseDomainAuth {
-		// Still add impersonation header if configured
-		if c.ImpersonateAs != "" {
-			req.Header.Set("X-AsUser", c.ImpersonateAs)
-		}
-		return nil
-	}
-
-	// Handle browser-based authentication
+	// Handle browser-based authentication (manual cookies)
 	if strings.ToLower(c.AuthType) == "browser" {
 		// For browser-based auth, cookies are automatically handled by the HTTP client's cookie jar
 		// The cookies were pre-loaded in setCookiesFromConfig()
@@ -201,10 +205,6 @@ func (c *HTTPClient) setAuthHeader(req *http.Request) error {
 		if c.Token != "" {
 			req.Header.Set("Authorization", "Bearer "+c.Token)
 		}
-	case "basic":
-		if c.Username != "" && c.Token != "" {
-			req.SetBasicAuth(c.Username, c.Token)
-		}
 	default:
 		return fmt.Errorf("unsupported auth type: %s", c.AuthType)
 	}
@@ -215,6 +215,140 @@ func (c *HTTPClient) setAuthHeader(req *http.Request) error {
 	}
 
 	return nil
+}
+
+// TriggerAuthAndCaptureCookies makes a request that triggers the authentication flow
+// and ensures all cookies (including those set during redirects) are captured
+func (c *HTTPClient) TriggerAuthAndCaptureCookies(ctx context.Context, path string) error {
+	// Create a new request
+	fullURL := c.BaseURL.ResolveReference(&url.URL{Path: path})
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL.String(), nil)
+	if err != nil {
+		return err
+	}
+
+	// Set headers
+	req.Header.Set("Accept", "application/json")
+
+	// Set authentication header
+	if err := c.setAuthHeader(req); err != nil {
+		return err
+	}
+
+	// Perform the request - this will follow redirects and store cookies in the jar
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Read the response body to ensure all redirects are processed
+	_, _ = io.ReadAll(resp.Body)
+
+	return nil
+}
+
+// EnhancedTriggerAuthAndCaptureCookies makes a request that triggers the authentication flow
+// with enhanced cookie capture during redirects
+func (c *HTTPClient) EnhancedTriggerAuthAndCaptureCookies(ctx context.Context, path string) error {
+	// Create a custom transport that captures cookies during redirects
+	transport := c.HTTPClient.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+
+	// Wrap the transport to capture cookies during redirects
+	trackingTransport := &CookieTrackingRoundTripper{
+		Transport: transport,
+		BaseURL:   c.BaseURL,
+		Logger:    c.Logger,
+		Client:    c,
+	}
+
+	// Create a temporary client with our custom transport
+	tempClient := &http.Client{
+		Transport: trackingTransport,
+		Timeout:   c.HTTPClient.Timeout,
+		CheckRedirect: c.HTTPClient.CheckRedirect, // Use the same redirect policy
+	}
+
+	// Create a new request
+	fullURL := c.BaseURL.ResolveReference(&url.URL{Path: path})
+	req, err := http.NewRequestWithContext(ctx, "GET", fullURL.String(), nil)
+	if err != nil {
+		return err
+	}
+
+	// Set headers
+	req.Header.Set("Accept", "application/json")
+
+	// Set authentication header
+	if err := c.setAuthHeader(req); err != nil {
+		return err
+	}
+
+	// Perform the request - this will follow redirects and store cookies in the jar
+	resp, err := tempClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Read the response body to ensure all redirects are processed
+	_, _ = io.ReadAll(resp.Body)
+
+	return nil
+}
+
+// CookieTrackingRoundTripper wraps an HTTP transport to capture cookies during redirects
+type CookieTrackingRoundTripper struct {
+	Transport http.RoundTripper
+	BaseURL   *url.URL
+	Logger    *logging.Logger
+	Client    *HTTPClient
+}
+
+func (ctr *CookieTrackingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	ctr.Logger.Debug("Making request to: %s", req.URL.String())
+
+	// Add any existing cookies to the request
+	existingCookies := ctr.Client.HTTPClient.Jar.Cookies(req.URL)
+	for _, cookie := range existingCookies {
+		req.AddCookie(cookie)
+	}
+
+	// Perform the request
+	resp, err := ctr.Transport.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+
+	// Capture cookies from the response
+	if resp != nil {
+		cookies := resp.Cookies()
+		ctr.Logger.Debug("Captured %d cookies from response to: %s", len(cookies), req.URL.String())
+
+		for _, cookie := range cookies {
+			ctr.Logger.Debug("Response cookie: %s=%s (domain: %s)", cookie.Name, cookie.Value, cookie.Domain)
+
+			// Store cookies in the main jar
+			ctr.Client.HTTPClient.Jar.SetCookies(req.URL, []*http.Cookie{cookie})
+
+			// Also check if this is an IDP-related cookie that we should store separately
+			if strings.Contains(strings.ToLower(cookie.Name), "idp_last_account") ||
+				strings.Contains(strings.ToLower(cookie.Name), "saml") ||
+				strings.Contains(strings.ToLower(cookie.Name), "auth_") ||
+				strings.Contains(strings.ToLower(cookie.Name), "_auth") ||
+				strings.Contains(strings.ToLower(cookie.Name), "idp") ||
+				strings.Contains(strings.ToLower(cookie.Name), "sso") {
+				
+				ctr.Client.SAMLAuthCookie = fmt.Sprintf("%s=%s", cookie.Name, cookie.Value)
+				ctr.Logger.Info("Captured SAML/IDP auth cookie: %s", cookie.Name)
+			}
+		}
+	}
+
+	return resp, err
 }
 
 // setCookiesFromConfig adds configured cookies to the HTTP client's cookie jar
@@ -519,6 +653,18 @@ func (c *HTTPClient) GetPageWithExpansionsRaw(ctx context.Context, id interface{
 	return c.makeRequest(ctx, "GET", path, nil)
 }
 
+// GetCommentsRaw retrieves comments for a page (raw API call without business logic)
+func (c *HTTPClient) GetCommentsRaw(ctx context.Context, pageID int) (*http.Response, error) {
+	path := fmt.Sprintf("%s/content/%d/comment", c.APIPrefix, pageID)
+	return c.makeRequest(ctx, "GET", path, nil)
+}
+
+// GetLabelsRaw retrieves labels for a page (raw API call without business logic)
+func (c *HTTPClient) GetLabelsRaw(ctx context.Context, pageID int) (*http.Response, error) {
+	path := fmt.Sprintf("%s/content/%d/label", c.APIPrefix, pageID)
+	return c.makeRequest(ctx, "GET", path, nil)
+}
+
 // openBrowser opens the specified URL in the default browser
 func openBrowser(url string) error {
 	var err error
@@ -535,4 +681,15 @@ func openBrowser(url string) error {
 	}
 
 	return err
+}
+
+// GetBaseURL returns the base URL of the HTTP client
+func (c *HTTPClient) GetBaseURL() string {
+	return c.BaseURL.String()
+}
+
+// OpenBrowser opens the specified URL in the default browser
+func OpenBrowser(args ...string) error {
+	cmd := exec.Command(args[0], args[1:]...)
+	return cmd.Start()
 }

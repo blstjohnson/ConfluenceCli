@@ -19,7 +19,6 @@ type ClientOptions struct {
 	Username       string
 	Password       string
 	ImpersonateAs  string
-	UseDomainAuth  bool
 	ReadOnly       bool
 	SessionCookie  string
 	SAMLAuthCookie string
@@ -47,6 +46,8 @@ type SpaceOperations interface {
 
 // ContentOperations defines operations related to content (comments, labels, etc.)
 type ContentOperations interface {
+	GetComments(ctx context.Context, pageID int) ([]models.Comment, error)
+	GetLabels(ctx context.Context, pageID int) ([]models.Label, error)
 	AddComment(ctx context.Context, pageID int, text string, parentCommentID *int) (*models.Comment, error)
 	AddLabel(ctx context.Context, pageID int, labelName string) error
 }

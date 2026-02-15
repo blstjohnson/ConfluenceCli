@@ -57,7 +57,6 @@ func NewConfigCmd() *cobra.Command {
 				fmt.Printf("  %s%s:\n", name, activeMarker)
 				fmt.Printf("    URL: %s\n", profile.URL)
 				fmt.Printf("    Auth Type: %s\n", profile.AuthType)
-				fmt.Printf("    Use Domain Auth: %t\n", profile.UseDomainAuth)
 				fmt.Printf("    Impersonate As: %s\n", profile.ImpersonateAs)
 				fmt.Printf("    Session Cookie: %s\n", hideSessionCookie(profile.SessionCookie))
 				fmt.Printf("    SAML Auth Cookie: %s\n", hideSAMLAuthCookie(profile.SAMLAuthCookie))
@@ -102,8 +101,6 @@ func NewConfigCmd() *cobra.Command {
 				currentProfile.AuthType = value
 			case "impersonate_as":
 				currentProfile.ImpersonateAs = value
-			case "use_domain_auth":
-				fmt.Sscanf(value, "%t", &currentProfile.UseDomainAuth)
 			case "read_only":
 				fmt.Sscanf(value, "%t", &currentProfile.ReadOnly)
 			case "session_cookie":

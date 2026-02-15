@@ -86,3 +86,10 @@ func ContainsString(slice []string, item string) bool {
 	}
 	return false
 }
+
+// StripHTMLTags removes HTML tags from a string
+func StripHTMLTags(htmlText string) string {
+	// Regular expression to match HTML tags
+	re := regexp.MustCompile(`<[^>]*>`)
+	return re.ReplaceAllString(htmlText, "")
+}

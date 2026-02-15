@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/viper"
 
 	"confcli/pkg/confluence"
-	"confcli/internal/formatter"
+	"confcli/pkg/formatter"
 )
 
 // NewSearchCmd creates the search command

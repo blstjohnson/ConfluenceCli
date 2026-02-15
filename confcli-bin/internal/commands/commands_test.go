@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"confcli/internal/formatter"
+	"confcli/pkg/formatter"
 )
 
 func TestNewRootCmd(t *testing.T) {

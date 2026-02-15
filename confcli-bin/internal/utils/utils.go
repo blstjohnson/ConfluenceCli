@@ -9,7 +9,7 @@ import (
 
 	"confcli/pkg/models"
 	"confcli/pkg/api"
-	"confcli/internal/formatter"
+	"confcli/pkg/formatter"
 )
 
 // SanitizeFilename removes invalid characters from filenames

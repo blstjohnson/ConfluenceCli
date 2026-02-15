@@ -13,7 +13,7 @@ import (
 	"confcli/pkg/api"
 	"confcli/pkg/confluence"
 	"confcli/pkg/models"
-	"confcli/internal/formatter"
+	"confcli/pkg/formatter"
 	"confcli/pkg/utils"
 )
 
