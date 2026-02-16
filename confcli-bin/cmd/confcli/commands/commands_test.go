@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"confcli/pkg/formatter"
+	"confcli/pkg/formatters"
 )
 
 func TestNewRootCmd(t *testing.T) {
@@ -251,5 +251,5 @@ func TestMockClient(t *testing.T) {
 	// This is a mock test to verify that the formatter package can be imported
 	// In a real test, we would create a mock client with test server
 	_ = context.Background()
-	_ = formatter.FormatOutput
+	_ = formatters.FormatOutput
 }

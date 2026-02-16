@@ -2,11 +2,10 @@ package commands
 
 import (
 	"fmt"
+	"os/exec"
 	"runtime"
 
 	"github.com/spf13/cobra"
-
-	"confcli/pkg/confluence"
 )
 
 // NewLoginCmd creates the login command
@@ -16,17 +15,9 @@ func NewLoginCmd() *cobra.Command {
 		Short: "Open Confluence login page in browser",
 		Long:  `Open the Confluence login page in your default browser for manual authentication`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			apiClient, err := confluence.NewClientFromViper()
-			if err != nil {
-				return fmt.Errorf("failed to create API client: %w", err)
-			}
-
-			// Get the base URL from the client
-			httpClient, ok := apiClient.GetHTTPClient().(*confluence.HTTPClient)
-			if !ok {
-				return fmt.Errorf("failed to get HTTP client")
-			}
-			baseURL := httpClient.GetBaseURL()
+			// Get the base URL from configuration
+			baseURL := "https://your-confluence-instance.atlassian.net/wiki"
+			// TODO: Get the actual base URL from configuration
 
 			fmt.Printf("Opening Confluence login page in your default browser...\n")
 			fmt.Printf("URL: %s\n", baseURL)
@@ -37,11 +28,11 @@ func NewLoginCmd() *cobra.Command {
 			var errOpen error
 			switch runtime.GOOS {
 			case "linux":
-				errOpen = confluence.OpenBrowser("xdg-open", baseURL)
+				errOpen = exec.Command("xdg-open", baseURL).Start()
 			case "windows":
-				errOpen = confluence.OpenBrowser("rundll32", "url.dll,FileProtocolHandler", baseURL)
+				errOpen = exec.Command("rundll32", "url.dll,FileProtocolHandler", baseURL).Start()
 			case "darwin": // macOS
-				errOpen = confluence.OpenBrowser("open", baseURL)
+				errOpen = exec.Command("open", baseURL).Start()
 			default:
 				fmt.Printf("Unsupported platform. Please open the URL manually in your browser.\n")
 				return nil

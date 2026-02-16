@@ -1,95 +1,133 @@
 package utils
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+
+	"confcli/pkg/models"
+	"confcli/pkg/api"
+	"confcli/pkg/formatters"
 )
 
-// GetExtensionForFormat returns the file extension for a given format
-func GetExtensionForFormat(format string) string {
-	switch strings.ToLower(format) {
-	case "html", "xhtml":
-		return "html"
-	case "storage", "xml":
-		return "xml"
-	case "wiki", "wikimarkup":
-		return "wiki"
-	case "markdown", "md":
-		return "md"
-	case "plain", "plaintext":
-		return "txt"
-	case "json":
-		return "json"
-	case "pdf":
-		return "pdf"
-	case "word", "docx":
-		return "docx"
-	case "excel", "xlsx":
-		return "xlsx"
-	case "powerpoint", "pptx":
-		return "pptx"
-	default:
-		return "txt" // Default to text
-	}
-}
-
-// IsValidURL checks if a string is a valid URL
-func IsValidURL(url string) bool {
-	// Basic URL validation using regex
-	regex := `^(https?://)?([a-zA-Z0-9.-]+\.[a-zA-Z]{2,})(:[0-9]+)?(/.*)?$`
-	re := regexp.MustCompile(regex)
-	return re.MatchString(url)
-}
-
-// SanitizeFileName sanitizes a string to be used as a filename
-func SanitizeFileName(name string) string {
+// SanitizeFilename removes invalid characters from filenames
+func SanitizeFilename(filename string) string {
 	// Replace invalid characters with underscores
-	name = strings.ReplaceAll(name, "/", "_")
-	name = strings.ReplaceAll(name, "\\", "_")
-	name = strings.ReplaceAll(name, ":", "_")
-	name = strings.ReplaceAll(name, "*", "_")
-	name = strings.ReplaceAll(name, "?", "_")
-	name = strings.ReplaceAll(name, "\"", "_")
-	name = strings.ReplaceAll(name, "<", "_")
-	name = strings.ReplaceAll(name, ">", "_")
-	name = strings.ReplaceAll(name, "|", "_")
-	
-	// Limit length to 255 characters
-	if len(name) > 255 {
-		name = name[:255]
-	}
-	
-	return name
-}
+	filename = strings.ReplaceAll(filename, "/", "_")
+	filename = strings.ReplaceAll(filename, "\\", "_")
+	filename = strings.ReplaceAll(filename, ":", "_")
+	filename = strings.ReplaceAll(filename, "*", "_")
+	filename = strings.ReplaceAll(filename, "?", "_")
+	filename = strings.ReplaceAll(filename, "\"", "_")
+	filename = strings.ReplaceAll(filename, "<", "_")
+	filename = strings.ReplaceAll(filename, ">", "_")
+	filename = strings.ReplaceAll(filename, "|", "_")
 
-// FormatBytes converts bytes to human-readable format
-func FormatBytes(bytes int64) string {
-	const unit = 1024
-	if bytes < unit {
-		return fmt.Sprintf("%d B", bytes)
+	// Limit length
+	if len(filename) > 100 {
+		filename = filename[:100]
 	}
-	div, exp := int64(unit), 0
-	for n := bytes / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
-}
 
-// ContainsString checks if a slice contains a string
-func ContainsString(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
+	return filename
 }
 
 // StripHTMLTags removes HTML tags from a string
-func StripHTMLTags(htmlText string) string {
-	// Regular expression to match HTML tags
-	re := regexp.MustCompile(`<[^>]*>`)
-	return re.ReplaceAllString(htmlText, "")
+func StripHTMLTags(html string) string {
+	// Compile regex to match HTML tags
+	re := regexp.MustCompile("<[^>]*>")
+	return re.ReplaceAllString(html, "")
+}
+
+// GetExtensionForFormat returns the file extension for a given format
+func GetExtensionForFormat(format string) string {
+	switch format {
+	case "markdown", "md":
+		return "md"
+	case "storage":
+		return "storage"
+	case "html":
+		return "html"
+	case "plain":
+		return "txt"
+	default:
+		return "txt"
+	}
+}
+
+// ExportPageToFile exports a single page to a file
+func ExportPageToFile(apiClient api.Client, page models.Page, baseDir, format string, skipContent bool) error {
+	ctx := context.Background()
+
+	// Create directory for the page
+	pageID, _ := page.ID.Int()
+	pageDir := filepath.Join(baseDir, fmt.Sprintf("%d_%s", pageID, SanitizeFilename(page.Title)))
+	if err := os.MkdirAll(pageDir, 0755); err != nil {
+		return fmt.Errorf("failed to create page directory: %w", err)
+	}
+
+	// Export content in requested format(s)
+	if !skipContent {
+		if format == "both" {
+			// Export in both markdown and storage formats
+			for _, format := range []string{"markdown", "storage"} {
+				content, err := apiClient.GetPageContent(ctx, page.ID, format)
+				if err != nil {
+					// Try alternative format if primary fails
+					content, err = apiClient.GetPageContent(ctx, page.ID, "storage")
+					if err != nil {
+						return fmt.Errorf("failed to get page content: %w", err)
+					}
+				}
+
+				ext := GetExtensionForFormat(format)
+				contentFile := filepath.Join(pageDir, fmt.Sprintf("index.%s", ext))
+				if err := os.WriteFile(contentFile, []byte(content), 0644); err != nil {
+					return fmt.Errorf("failed to write content file: %w", err)
+				}
+			}
+		} else {
+			// Export in single format
+			content, err := apiClient.GetPageContent(ctx, page.ID, format)
+			if err != nil {
+				// Try storage as fallback
+				content, err = apiClient.GetPageContent(ctx, page.ID, "storage")
+				if err != nil {
+					return fmt.Errorf("failed to get page content: %w", err)
+				}
+			}
+
+			ext := GetExtensionForFormat(format)
+			contentFile := filepath.Join(pageDir, fmt.Sprintf("index.%s", ext))
+			if err := os.WriteFile(contentFile, []byte(content), 0644); err != nil {
+				return fmt.Errorf("failed to write content file: %w", err)
+			}
+		}
+	}
+
+	// Export metadata
+	metadata := map[string]interface{}{
+		"id":        page.ID,
+		"title":     page.Title,
+		"spaceId":   page.SpaceID,
+		"status":    page.Status,
+		"createdAt": page.CreatedAt,
+		"updatedAt": page.UpdatedAt,
+		"version":   page.Version,
+		"authorId":  page.AuthorID,
+	}
+
+	metadataBytes, err := formatters.FormatOutputToString(metadata, "json")
+	if err != nil {
+		return fmt.Errorf("failed to format page metadata: %w", err)
+	}
+
+	metadataFile := filepath.Join(pageDir, "metadata.json")
+	if err := os.WriteFile(metadataFile, []byte(metadataBytes), 0644); err != nil {
+		return fmt.Errorf("failed to write metadata file: %w", err)
+	}
+
+	return nil
 }

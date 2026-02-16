@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"confcli/internal/commands"
+	"confcli/cmd/confcli/commands"
 )
 
 func main() {

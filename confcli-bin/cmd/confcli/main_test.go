@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"confcli/internal/commands"
+	"confcli/cmd/confcli/commands"
 )
 
 func TestRootCmd(t *testing.T) {

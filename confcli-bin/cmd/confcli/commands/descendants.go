@@ -11,11 +11,11 @@ import (
 	"github.com/spf13/viper"
 	"github.com/xlab/treeprint"
 
-	"confcli/pkg/api"
-	"confcli/pkg/confluence"
+	"confcli/pkg/clients"
 	"confcli/pkg/models"
-	"confcli/pkg/formatter"
+	"confcli/pkg/formatters"
 	"confcli/pkg/utils"
+	"confcli/pkg/usecases"
 )
 
 // NewDescendantsCmd creates the descendants command
@@ -38,7 +38,6 @@ func newDescendantsGetCmd() *cobra.Command {
 		Short: "Get descendants of a page",
 		Long:  "Retrieve and export descendants of a specific Confluence page",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Get command-line flags
 			id, _ := cmd.Flags().GetInt("id")
 			path, _ := cmd.Flags().GetString("path")
 			depth, _ := cmd.Flags().GetInt("depth")
@@ -48,24 +47,22 @@ func newDescendantsGetCmd() *cobra.Command {
 			treeView, _ := cmd.Flags().GetBool("tree")
 			includeSelf, _ := cmd.Flags().GetBool("include-self")
 			skipContent, _ := cmd.Flags().GetBool("skip-content")
-			
-			// Validate inputs
+
 			if id == 0 && path == "" {
 				return fmt.Errorf("must specify either --id or --path")
 			}
-			
-			// Create API client
-			apiClient, err := confluence.NewClientFromViper()
+
+			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
-			
+
 			ctx := context.Background()
-			
+			pageUseCase := usecases.NewPageUseCase(apiClient)
+
 			var targetPage *models.Page
 			var pageID int
-			
-			// Determine the target page
+
 			if id != 0 {
 				targetPage, err = apiClient.GetPage(ctx, id)
 				if err != nil {
@@ -73,13 +70,12 @@ func newDescendantsGetCmd() *cobra.Command {
 				}
 				pageID = id
 			} else {
-				// Parse path to get space and title
 				parts := strings.Split(path, "/")
 				if len(parts) < 2 {
 					return fmt.Errorf("invalid path format, expected Space/Page or Space/Parent/Child/.../Page")
 				}
 				space := parts[0]
-				title := parts[len(parts)-1] // Last part is the page title
+				title := parts[len(parts)-1]
 				targetPage, err = apiClient.GetPageByTitle(ctx, space, title)
 				if err != nil {
 					return fmt.Errorf("failed to get page by title: %w", err)
@@ -90,87 +86,74 @@ func newDescendantsGetCmd() *cobra.Command {
 					return fmt.Errorf("target page ID is not an integer: %v", targetPage.ID)
 				}
 			}
-			
-			// Get descendants
-			descendants, err := apiClient.GetDescendants(ctx, pageID, depth)
-			if err != nil {
-				return fmt.Errorf("failed to get descendants: %w", err)
+
+			hierarchyReq := &usecases.GetPageHierarchyRequest{
+				PageID: pageID,
+				Depth:  depth,
 			}
-			
-			// Determine output format
+
+			hierarchyResp, err := pageUseCase.GetPageHierarchy(ctx, hierarchyReq)
+			if err != nil {
+				return fmt.Errorf("failed to get page hierarchy: %w", err)
+			}
+
+			descendants := hierarchyResp.Descendants
 			outputFormat := viper.GetString("output_format")
-			
-			// Handle different output modes
+
 			if flat {
-				// Output as flat list
 				if outputFormat == "json" {
-					// Convert pages to flat structure with parent IDs
 					flatPages := make([]map[string]interface{}, len(descendants))
 					for i, page := range descendants {
 						flatPages[i] = map[string]interface{}{
 							"id":       page.ID,
 							"title":    page.Title,
-							"parentId": pageID, // Simplified - in reality, we'd need to determine actual parent
-							"depth":    1,      // Simplified - in reality, we'd calculate actual depth
+							"parentId": pageID,
+							"depth":    1,
 						}
 					}
-					return formatter.FormatOutput(flatPages, "json")
+					return formatters.FormatOutput(flatPages, "json")
 				} else {
-					return formatter.FormatOutput(descendants, "text")
+					return formatters.FormatOutput(descendants, "text")
 				}
 			} else if treeView {
-				// Display as ASCII tree
 				tree := treeprint.New()
-				
-				// Add the source page if include-self is true
 				if includeSelf {
-					tree = treeprint.New()
-					sourceID, _ := targetPage.ID.Int() // Use 0 if not an integer
+					sourceID, _ := targetPage.ID.Int()
 					sourceBranch := tree.AddBranch(fmt.Sprintf("%d: %s", sourceID, targetPage.Title))
 					for _, descendant := range descendants {
-						descendantID, _ := descendant.ID.Int() // Use 0 if not an integer
+						descendantID, _ := descendant.ID.Int()
 						sourceBranch.AddBranch(fmt.Sprintf("%d: %s", descendantID, descendant.Title))
 					}
 				} else {
-					// Just show descendants
 					for _, descendant := range descendants {
-						descendantID, _ := descendant.ID.Int() // Use 0 if not an integer
+						descendantID, _ := descendant.ID.Int()
 						tree.AddBranch(fmt.Sprintf("%d: %s", descendantID, descendant.Title))
 					}
 				}
-				
 				fmt.Println(tree.String())
 			} else if outputDir != "" {
-				// Export to directory structure
-				if err := exportDescendantsToDirectory(apiClient, targetPage, descendants, outputDir, format, depth, skipContent, includeSelf); err != nil {
+				if err := exportDescendantsToDirectory(apiClient, targetPage, descendants, outputDir, format, skipContent, includeSelf); err != nil {
 					return fmt.Errorf("failed to export descendants to directory: %w", err)
 				}
 				fmt.Printf("Descendants of page %d exported to %s\n", pageID, outputDir)
 			} else {
-				// Default: show tree in console
 				tree := treeprint.New()
-				
-				// Add the source page if include-self is true
 				currentTree := tree
 				if includeSelf {
-					sourceID, _ := targetPage.ID.Int() // Use 0 if not an integer
+					sourceID, _ := targetPage.ID.Int()
 					currentTree = tree.AddBranch(fmt.Sprintf("%d: %s", sourceID, targetPage.Title))
 				}
-
-				// Add descendants to the tree
 				for _, descendant := range descendants {
-					descendantID, _ := descendant.ID.Int() // Use 0 if not an integer
+					descendantID, _ := descendant.ID.Int()
 					currentTree.AddBranch(fmt.Sprintf("%d: %s", descendantID, descendant.Title))
 				}
-				
 				fmt.Println(tree.String())
 			}
-			
+
 			return nil
 		},
 	}
-	
-	// Add flags
+
 	cmd.Flags().Int("id", 0, "Page ID")
 	cmd.Flags().String("path", "", "Page path (e.g., Space/Parent/Child)")
 	cmd.Flags().Int("depth", 0, "Recursion depth (default: unlimited)")
@@ -180,40 +163,34 @@ func newDescendantsGetCmd() *cobra.Command {
 	cmd.Flags().Bool("tree", false, "Display ASCII tree in console")
 	cmd.Flags().Bool("include-self", false, "Include the source page in output/export")
 	cmd.Flags().Bool("skip-content", false, "Export only structure, no content")
-	
+
 	return cmd
 }
 
 // exportDescendantsToDirectory exports the descendants to a directory structure
-func exportDescendantsToDirectory(apiClient api.Client, sourcePage *models.Page, descendants []models.Page, outputDir, format string, depth int, skipContent, includeSelf bool) error {
-	// Create output directory if it doesn't exist
+func exportDescendantsToDirectory(apiClient interface{ GetPageContent(context.Context, interface{}, string) (string, error) }, sourcePage *models.Page, descendants []models.Page, outputDir, format string, skipContent, includeSelf bool) error {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
-	
-	// If include-self is true, create a directory for the source page
+
 	baseDir := outputDir
 	if includeSelf {
-		sourceID, _ := sourcePage.ID.Int() // Use 0 if not an integer
-		sourceDir := filepath.Join(outputDir, fmt.Sprintf("%d_%s", sourceID, utils.SanitizeFileName(sourcePage.Title)))
+		sourceID, _ := sourcePage.ID.Int()
+		sourceDir := filepath.Join(outputDir, fmt.Sprintf("%d_%s", sourceID, utils.SanitizeFilename(sourcePage.Title)))
 		if err := os.MkdirAll(sourceDir, 0755); err != nil {
 			return fmt.Errorf("failed to create source page directory: %w", err)
 		}
 		baseDir = sourceDir
 	}
-	
-	// Export each descendant page
+
 	for _, page := range descendants {
-		pageID, _ := page.ID.Int() // Use 0 if not an integer
-		// Export page content to file
+		pageID, _ := page.ID.Int()
 		if !skipContent {
 			content, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), format)
 			if err != nil {
-				// Log error but continue with other pages
 				fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, err)
 			} else {
-				// Create filename based on page ID and title
-				filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFileName(page.Title), utils.GetExtensionForFormat(format))
+				filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(format))
 				filePath := filepath.Join(baseDir, filename)
 				if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 					fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
@@ -221,7 +198,6 @@ func exportDescendantsToDirectory(apiClient api.Client, sourcePage *models.Page,
 			}
 		}
 	}
-	
+
 	return nil
 }
-

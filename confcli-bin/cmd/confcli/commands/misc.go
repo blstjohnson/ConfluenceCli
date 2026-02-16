@@ -7,8 +7,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"confcli/pkg/confluence"
-	"confcli/pkg/formatter"
+	"confcli/pkg/clients"
+	"confcli/pkg/formatters"
+	"confcli/pkg/usecases"
 )
 
 // NewSearchCmd creates the search command
@@ -17,51 +18,50 @@ func NewSearchCmd() *cobra.Command {
 		Use:   "search [query]",
 		Short: "Search for pages",
 		Long:  "Search for Confluence pages using CQL or simple query",
-		Args:  cobra.ArbitraryArgs, // Allow no arguments for CQL-only searches
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query := ""
 			if len(args) > 0 {
 				query = args[0]
 			}
-			
+
 			cql, _ := cmd.Flags().GetString("cql")
 			limit, _ := cmd.Flags().GetInt("limit")
 			space, _ := cmd.Flags().GetString("space")
 
-			// Create API client
-			apiClient, err := confluence.NewClientFromViper()
+			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
 
 			ctx := context.Background()
+			searchUseCase := usecases.NewSearchUseCase(apiClient)
 
-			// Build CQL query
-			finalCQL := cql
-			if finalCQL == "" {
-				if query != "" {
-					finalCQL = fmt.Sprintf("text ~ \"%s\"", query)
-				} else {
-					return fmt.Errorf("either a query or --cql must be provided")
-				}
+			var finalCQL string
+			if cql != "" {
+				finalCQL = cql
+			} else if query != "" {
+				finalCQL = fmt.Sprintf("text ~ \"%s\"", query)
+			} else {
+				return fmt.Errorf("either a query or --cql must be provided")
 			}
 
-			// Add space filter if specified
 			if space != "" {
 				finalCQL = fmt.Sprintf("space = \"%s\" AND (%s)", space, finalCQL)
 			}
 
-			// Perform search
-			results, err := apiClient.Search(ctx, finalCQL, limit)
+			req := &usecases.SearchPagesRequest{
+				CQL:   finalCQL,
+				Limit: limit,
+			}
+
+			resp, err := searchUseCase.SearchPages(ctx, req)
 			if err != nil {
 				return fmt.Errorf("failed to search: %w", err)
 			}
 
-			// Determine output format
 			outputFormat := viper.GetString("output_format")
-
-			// Format and output results
-			return formatter.FormatOutput(results, outputFormat)
+			return formatters.FormatOutput(resp.Results, outputFormat)
 		},
 	}
 
@@ -112,6 +112,6 @@ Fish:
 			}
 		},
 	}
-	
+
 	return cmd
 }

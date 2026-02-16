@@ -11,11 +11,11 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"confcli/pkg/confluence"
-	"confcli/pkg/models"
-	"confcli/pkg/formatter"
-	"confcli/pkg/converter"
+	"confcli/pkg/clients"
+	"confcli/pkg/formatters"
+	"confcli/pkg/converters"
 	"confcli/pkg/utils"
+	"confcli/pkg/usecases"
 )
 
 // NewPageCmd creates the page command
@@ -51,14 +51,10 @@ func newPageGetCmd() *cobra.Command {
 			title, _ := cmd.Flags().GetString("title")
 			path, _ := cmd.Flags().GetString("path")
 			format, _ := cmd.Flags().GetString("format")
-			version, _ := cmd.Flags().GetInt("version")
-			date, _ := cmd.Flags().GetString("date")
 			output, _ := cmd.Flags().GetString("output")
 			outputDir, _ := cmd.Flags().GetString("output-dir")
-			full, _ := cmd.Flags().GetBool("full")
 			withComments, _ := cmd.Flags().GetBool("with-comments")
 			withLabels, _ := cmd.Flags().GetBool("with-labels")
-			withMetadata, _ := cmd.Flags().GetBool("with-metadata")
 
 			// Validate inputs
 			if id == 0 && title == "" && path == "" {
@@ -71,207 +67,97 @@ func newPageGetCmd() *cobra.Command {
 				}
 			}
 
-			// Create API client
-			apiClient, err := confluence.NewClientFromViper()
+			// Create API client and usecase
+			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
-
+			
+			pageUseCase := usecases.NewPageUseCase(apiClient)
 			ctx := context.Background()
 
-			var page *models.Page
-
-			// Determine how to retrieve the page
-			if id != 0 {
-				page, err = apiClient.GetPage(ctx, id)
-			} else if path != "" {
-				// Parse path to get space and title
+			// Parse path if provided
+			if path != "" {
 				parts := strings.Split(path, "/")
 				if len(parts) < 2 {
 					return fmt.Errorf("invalid path format, expected Space/Page or Space/Parent/Child/.../Page")
 				}
 				space = parts[0]
-				title = parts[len(parts)-1] // Last part is the page title
-				page, err = apiClient.GetPageByTitle(ctx, space, title)
-			} else {
-				page, err = apiClient.GetPageByTitle(ctx, space, title)
+				title = parts[len(parts)-1]
 			}
 
+			// Use usecase to get page with content
+			req := &usecases.GetPageWithContentRequest{
+				PageID:       id,
+				SpaceKey:     space,
+				Title:        title,
+				Format:       format,
+				WithComments: withComments,
+				WithLabels:   withLabels,
+			}
+
+			resp, err := pageUseCase.GetPageWithContent(ctx, req)
 			if err != nil {
 				return fmt.Errorf("failed to get page: %w", err)
 			}
 
-			// If version or date is specified, we might need to get historical content
-			if version > 0 || date != "" {
-				// Note: Getting historical content would require additional API calls
-				// This is a simplified implementation
-				if version > 0 && version != page.Version.Number {
-					return fmt.Errorf("getting specific version not implemented in this example")
-				}
-			}
-
-			// Get only the storage format as the main content initially
-			content, err := apiClient.GetPageContent(ctx, page.ID.IntOrString(), "storage")
-			if err != nil {
-				return fmt.Errorf("failed to get page storage content: %w", err)
-			}
-
-			// Apply transformations to the storage content if needed
-			transformedContent := content
+			// Apply content transformation if needed
+			transformedContent := resp.Content
 			if format != "storage" {
-				// Apply transformation based on requested format
 				switch format {
 				case "markdown":
-					transformedContent, err = converter.StorageToMarkdown(content)
+					transformedContent, err = converters.StorageToMarkdown(resp.Content)
 					if err != nil {
 						return fmt.Errorf("failed to convert storage to markdown: %w", err)
 					}
-				case "html":
-					// For now, we'll just use the storage content as HTML since it's already HTML-like
-					// In a real implementation, we might need to clean up the storage format
-					transformedContent = content
 				case "plain":
-					// For plain text, strip HTML tags from storage content
-					transformedContent = utils.StripHTMLTags(content)
+					transformedContent = utils.StripHTMLTags(resp.Content)
 				}
 			}
 
-			// Get additional data only if requested
-			if withComments || full {
-				pageID, ok := page.ID.Int()
-				if !ok {
-					fmt.Fprintf(os.Stderr, "Warning: page ID is not an integer, cannot retrieve comments\n")
-				} else {
-					comments, err := apiClient.GetComments(ctx, pageID)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: could not retrieve comments: %v\n", err)
-					} else {
-						page.Comments = comments
-					}
-				}
-			}
-
-			if withLabels || full {
-				pageID, ok := page.ID.Int()
-				if !ok {
-					fmt.Fprintf(os.Stderr, "Warning: page ID is not an integer, cannot retrieve labels\n")
-				} else {
-					labels, err := apiClient.GetLabels(ctx, pageID)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: could not retrieve labels: %v\n", err)
-					} else {
-						page.Labels = labels
-					}
-				}
-			}
-
-			if withMetadata || full {
-				// Get additional metadata if requested
-				// This could include history, properties, etc.
-				expandedPage, err := apiClient.GetPageWithExpansions(ctx, page.ID.IntOrString(), []string{
-					"metadata.labels", "metadata.properties", "metadata.history",
-					"history", "history.lastUpdated", "history.contributors",
-					"version", "ancestors", "operations",
-				})
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: could not retrieve additional metadata: %v\n", err)
-				} else {
-					// Update the page with expanded data
-					page.Labels = expandedPage.Labels
-					page.Ancestors = expandedPage.Ancestors
-					page.Version = expandedPage.Version
-				}
-			}
-
-			// Determine output format
+			// Handle output
 			outputFormat := viper.GetString("output_format")
-
-			// Handle output to file or directory
+			
 			if output != "" {
 				if err := os.WriteFile(output, []byte(transformedContent), 0644); err != nil {
 					return fmt.Errorf("failed to write content to file: %w", err)
 				}
 				fmt.Printf("Content saved to %s\n", output)
 			} else if outputDir != "" {
-				// Create output directory if it doesn't exist
 				if err := os.MkdirAll(outputDir, 0755); err != nil {
 					return fmt.Errorf("failed to create output directory: %w", err)
 				}
 
-				// Write content to file
-				idStr := page.ID.String()
+				idStr := resp.Page.ID.String()
 				filename := fmt.Sprintf("%s.%s", idStr, utils.GetExtensionForFormat(format))
 				filePath := filepath.Join(outputDir, filename)
 				if err := os.WriteFile(filePath, []byte(transformedContent), 0644); err != nil {
 					return fmt.Errorf("failed to write content to file: %w", err)
 				}
-
-				// If full export is requested, also save metadata
-				if full {
-					metadata := map[string]interface{}{
-						"id":          page.ID,
-						"title":       page.Title,
-						"spaceId":     page.SpaceID,
-						"status":      page.Status,
-						"createdAt":   page.CreatedAt,
-						"updatedAt":   page.UpdatedAt,
-						"version":     page.Version,
-						"authorId":    page.AuthorID,
-						"labels":      page.Labels,
-						"comments":    page.Comments,
-						"attachments": page.Attachments,
-					}
-
-					metadataBytes, err := formatter.FormatOutputToString(metadata, "json")
-					if err != nil {
-						return fmt.Errorf("failed to format metadata: %w", err)
-					}
-
-					metadataFilePath := filepath.Join(outputDir, fmt.Sprintf("%s.metadata.json", idStr))
-					if err := os.WriteFile(metadataFilePath, []byte(metadataBytes), 0644); err != nil {
-						return fmt.Errorf("failed to write metadata to file: %w", err)
-					}
-				}
-
 				fmt.Printf("Page exported to %s\n", outputDir)
 			} else {
-				// Output to stdout
 				if outputFormat == "json" {
-					// For JSON output, include all requested data
 					data := map[string]interface{}{
-						"id":       page.ID,
-						"title":    page.Title,
-						"version":  page.Version.Number,
-						"space":    page.SpaceID,
+						"id":       resp.Page.ID,
+						"title":    resp.Page.Title,
+						"version":  resp.Page.Version.Number,
+						"space":    resp.Page.SpaceID,
 						"content": map[string]string{
-							"storage": content, // Always include the raw storage content
+							"storage": resp.Content,
 						},
 						"transformedContent": map[string]string{
-							format: transformedContent, // Include the transformed content in the requested format
-						},
-						"metadata": map[string]interface{}{
-							"created":  page.CreatedAt,
-							"author":   page.AuthorID,
-							"modified": page.UpdatedAt,
+							format: transformedContent,
 						},
 					}
-
-					if withLabels || full {
-						data["labels"] = page.Labels
+					if withLabels {
+						data["labels"] = resp.Labels
 					}
-					if withComments || full {
-						data["comments"] = page.Comments
+					if withComments {
+						data["comments"] = resp.Comments
 					}
-					if withMetadata || full {
-						// Add more metadata fields
-						data["ancestors"] = page.Ancestors
-						data["versions"] = []interface{}{page.Version} // Simplified
-					}
-
-					return formatter.FormatOutput(data, "json")
+					return formatters.FormatOutput(data, "json")
 				} else {
-					// For text output, just show the page info
-					return formatter.FormatOutput(page, outputFormat)
+					return formatters.FormatOutput(resp.Page, outputFormat)
 				}
 			}
 
@@ -279,24 +165,18 @@ func newPageGetCmd() *cobra.Command {
 		},
 	}
 
-	// Add flags
 	cmd.Flags().Int("id", 0, "Page ID")
 	cmd.Flags().String("space", "", "Space key")
 	cmd.Flags().String("title", "", "Page title")
 	cmd.Flags().String("path", "", "Page path (e.g., Space/Parent/Child)")
 	cmd.Flags().StringP("format", "f", "markdown", "Content format: markdown, storage, html, plain")
-	cmd.Flags().Int("version", 0, "Version number (0 = latest)")
-	cmd.Flags().String("date", "", "Date in YYYY-MM-DD format")
 	cmd.Flags().StringP("output", "o", "", "Save content to file")
 	cmd.Flags().String("output-dir", "", "Save full page to directory")
-	cmd.Flags().Bool("full", false, "Full export (content in multiple formats, metadata, comments, history)")
 	cmd.Flags().Bool("with-comments", false, "Include comments in output")
 	cmd.Flags().Bool("with-labels", false, "Include labels in output")
-	cmd.Flags().Bool("with-metadata", false, "Include additional metadata in output")
 
 	return cmd
 }
-
 
 func newPageCommentsCmd() *cobra.Command {
 	return &cobra.Command{
@@ -310,30 +190,19 @@ func newPageCommentsCmd() *cobra.Command {
 				return fmt.Errorf("invalid page ID: %w", err)
 			}
 
-			// Create API client
-			apiClient, err := confluence.NewClientFromViper()
+			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
 
 			ctx := context.Background()
-
-			// Get the page to verify it exists
-			page, err := apiClient.GetPage(ctx, pageID)
+			comments, err := apiClient.GetComments(ctx, pageID)
 			if err != nil {
-				return fmt.Errorf("failed to get page: %w", err)
+				return fmt.Errorf("failed to get comments: %w", err)
 			}
 
-			// Get comments for the page
-			// Note: This is a simplified implementation - in reality, comments would come from a separate API endpoint
-			// For now, we'll use the comments field from the page object
-			comments := page.Comments
-
-			// Determine output format
 			outputFormat := viper.GetString("output_format")
-
-			// Format and output comments
-			return formatter.FormatOutput(comments, outputFormat)
+			return formatters.FormatOutput(comments, outputFormat)
 		},
 	}
 }
@@ -350,28 +219,19 @@ func newPageLabelsCmd() *cobra.Command {
 				return fmt.Errorf("invalid page ID: %w", err)
 			}
 
-			// Create API client
-			apiClient, err := confluence.NewClientFromViper()
+			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
 
 			ctx := context.Background()
-
-			// Get the page to verify it exists
-			page, err := apiClient.GetPage(ctx, pageID)
+			labels, err := apiClient.GetLabels(ctx, pageID)
 			if err != nil {
-				return fmt.Errorf("failed to get page: %w", err)
+				return fmt.Errorf("failed to get labels: %w", err)
 			}
 
-			// Get labels for the page
-			labels := page.Labels
-
-			// Determine output format
 			outputFormat := viper.GetString("output_format")
-
-			// Format and output labels
-			return formatter.FormatOutput(labels, outputFormat)
+			return formatters.FormatOutput(labels, outputFormat)
 		},
 	}
 }
@@ -390,20 +250,17 @@ func newPageCreateCmd() *cobra.Command {
 			format, _ := cmd.Flags().GetString("format")
 			confirm, _ := cmd.Flags().GetBool("confirm")
 
-			// Check if confirmation is required
 			if !confirm {
 				return fmt.Errorf("--confirm flag required for write operations")
 			}
 
-			// Create API client
-			apiClient, err := confluence.NewClientFromViper()
+			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
 
 			ctx := context.Background()
 
-			// Get content
 			var content string
 			if contentFile != "" {
 				contentBytes, err := os.ReadFile(contentFile)
@@ -417,23 +274,27 @@ func newPageCreateCmd() *cobra.Command {
 				return fmt.Errorf("either --content-file or --content-stdin must be provided")
 			}
 
-			// Prepare parent ID
 			var parentID *int
 			if parent != 0 {
 				parentID = &parent
 			}
 
-			// Create the page
-			newPage, err := apiClient.CreatePage(ctx, space, parentID, title, content, format)
+			pageUseCase := usecases.NewPageUseCase(apiClient)
+			req := &usecases.CreatePageWithValidationRequest{
+				SpaceKey: space,
+				ParentID: parentID,
+				Title:    title,
+				Content:  content,
+				Format:   format,
+			}
+
+			resp, err := pageUseCase.CreatePageWithValidation(ctx, req)
 			if err != nil {
 				return fmt.Errorf("failed to create page: %w", err)
 			}
 
-			// Determine output format
 			outputFormat := viper.GetString("output_format")
-
-			// Format and output the created page
-			return formatter.FormatOutput(newPage, outputFormat)
+			return formatters.FormatOutput(resp.Page, outputFormat)
 		},
 	}
 
@@ -466,20 +327,17 @@ func newPageUpdateCmd() *cobra.Command {
 			versionComment, _ := cmd.Flags().GetString("version-comment")
 			confirm, _ := cmd.Flags().GetBool("confirm")
 
-			// Check if confirmation is required
 			if !confirm {
 				return fmt.Errorf("--confirm flag required for write operations")
 			}
 
-			// Create API client
-			apiClient, err := confluence.NewClientFromViper()
+			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
 
 			ctx := context.Background()
 
-			// Get content
 			var content string
 			if contentFile != "" {
 				contentBytes, err := os.ReadFile(contentFile)
@@ -491,17 +349,20 @@ func newPageUpdateCmd() *cobra.Command {
 				return fmt.Errorf("content file must be provided with --content-file")
 			}
 
-			// Update the page
-			updatedPage, err := apiClient.UpdatePage(ctx, pageID, content, versionComment)
+			pageUseCase := usecases.NewPageUseCase(apiClient)
+			req := &usecases.UpdatePageWithVersionRequest{
+				PageID:         pageID,
+				Content:        content,
+				VersionComment: versionComment,
+			}
+
+			resp, err := pageUseCase.UpdatePageWithVersion(ctx, req)
 			if err != nil {
 				return fmt.Errorf("failed to update page: %w", err)
 			}
 
-			// Determine output format
 			outputFormat := viper.GetString("output_format")
-
-			// Format and output the updated page
-			return formatter.FormatOutput(updatedPage, outputFormat)
+			return formatters.FormatOutput(resp.Page, outputFormat)
 		},
 	}
 
@@ -526,21 +387,24 @@ func newPageDeleteCmd() *cobra.Command {
 
 			confirm, _ := cmd.Flags().GetBool("confirm")
 
-			// Check if confirmation is required
 			if !confirm {
 				return fmt.Errorf("--confirm flag required for write operations")
 			}
 
-			// Create API client
-			apiClient, err := confluence.NewClientFromViper()
+			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
 
 			ctx := context.Background()
+			
+			pageUseCase := usecases.NewPageUseCase(apiClient)
+			req := &usecases.DeletePageWithConfirmationRequest{
+				PageID:    pageID,
+				Confirmed: confirm,
+			}
 
-			// Delete the page
-			err = apiClient.DeletePage(ctx, pageID)
+			err = pageUseCase.DeletePageWithConfirmation(ctx, req)
 			if err != nil {
 				return fmt.Errorf("failed to delete page: %w", err)
 			}
@@ -571,36 +435,29 @@ func newPageCommentAddCmd() *cobra.Command {
 			parentComment, _ := cmd.Flags().GetInt("parent-comment")
 			confirm, _ := cmd.Flags().GetBool("confirm")
 
-			// Check if confirmation is required
 			if !confirm {
 				return fmt.Errorf("--confirm flag required for write operations")
 			}
 
-			// Create API client
-			apiClient, err := confluence.NewClientFromViper()
+			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
 
 			ctx := context.Background()
 
-			// Prepare parent comment ID
 			var parentCommentID *int
 			if parentComment != 0 {
 				parentCommentID = &parentComment
 			}
 
-			// Add the comment
 			newComment, err := apiClient.AddComment(ctx, pageID, text, parentCommentID)
 			if err != nil {
 				return fmt.Errorf("failed to add comment: %w", err)
 			}
 
-			// Determine output format
 			outputFormat := viper.GetString("output_format")
-
-			// Format and output the created comment
-			return formatter.FormatOutput(newComment, outputFormat)
+			return formatters.FormatOutput(newComment, outputFormat)
 		},
 	}
 
@@ -627,20 +484,17 @@ func newPageLabelAddCmd() *cobra.Command {
 			label, _ := cmd.Flags().GetString("label")
 			confirm, _ := cmd.Flags().GetBool("confirm")
 
-			// Check if confirmation is required
 			if !confirm {
 				return fmt.Errorf("--confirm flag required for write operations")
 			}
 
-			// Create API client
-			apiClient, err := confluence.NewClientFromViper()
+			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
 
 			ctx := context.Background()
 
-			// Add the label
 			err = apiClient.AddLabel(ctx, pageID, label)
 			if err != nil {
 				return fmt.Errorf("failed to add label: %w", err)
