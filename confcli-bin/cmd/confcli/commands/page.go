@@ -106,7 +106,8 @@ func newPageGetCmd() *cobra.Command {
 			if format != "storage" {
 				switch format {
 				case "markdown":
-					transformedContent, err = converters.StorageToMarkdown(resp.Content)
+					baseURL := viper.GetString("url")
+					transformedContent, err = converters.StorageToMarkdown(resp.Content, baseURL)
 					if err != nil {
 						return fmt.Errorf("failed to convert storage to markdown: %w", err)
 					}
@@ -141,7 +142,7 @@ func newPageGetCmd() *cobra.Command {
 						"id":       resp.Page.ID,
 						"title":    resp.Page.Title,
 						"version":  resp.Page.Version.Number,
-						"space":    resp.Page.SpaceID,
+						"space":    resp.Page.Space.ID,
 						"content": map[string]string{
 							"storage": resp.Content,
 						},
@@ -157,7 +158,8 @@ func newPageGetCmd() *cobra.Command {
 					}
 					return formatters.FormatOutput(data, "json")
 				} else {
-					return formatters.FormatOutput(resp.Page, outputFormat)
+					// For text/yaml output, display page info with content
+					return formatters.FormatOutputWithContent(resp.Page, transformedContent, format)
 				}
 			}
 

@@ -129,43 +129,50 @@ func NewPageUseCase(apiClient api.Client) PageUseCase {
 
 // GetPageWithContent retrieves a page with its content and optional expansions
 func (uc *pageUseCase) GetPageWithContent(ctx context.Context, req *GetPageWithContentRequest) (*GetPageWithContentResponse, error) {
-	// Get the page
+	// Get the page with necessary expansions for metadata
+	expansions := []string{"space", "history", "version"}
+	
 	var page *models.Page
 	var err error
-	
+
 	if req.PageID != 0 {
-		page, err = uc.apiClient.GetPage(ctx, req.PageID)
+		page, err = uc.apiClient.GetPageWithExpansions(ctx, req.PageID, expansions)
 	} else {
+		// GetPageByTitle doesn't support expansions, so we need to get the page ID first
 		page, err = uc.apiClient.GetPageByTitle(ctx, req.SpaceKey, req.Title)
+		if err == nil {
+			// Then fetch with expansions
+			page, err = uc.apiClient.GetPageWithExpansions(ctx, page.ID.IntOrString(), expansions)
+		}
 	}
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Get content
 	content, err := uc.apiClient.GetPageContent(ctx, page.ID.IntOrString(), "storage")
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Get optional data
 	var comments []models.Comment
 	var labels []models.Label
-	
+
 	if req.WithComments {
 		pageID, ok := page.ID.Int()
 		if ok {
 			comments, _ = uc.apiClient.GetComments(ctx, pageID)
 		}
 	}
-	
+
 	if req.WithLabels {
 		pageID, ok := page.ID.Int()
 		if ok {
 			labels, _ = uc.apiClient.GetLabels(ctx, pageID)
 		}
 	}
-	
+
 	return &GetPageWithContentResponse{
 		Page:    page,
 		Content: content,

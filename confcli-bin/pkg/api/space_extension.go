@@ -34,7 +34,7 @@ type FetchSpaceResponse struct {
 // FetchSpace fetches a space by its key
 func (e *SpaceExtension) FetchSpace(ctx context.Context, req *FetchSpaceRequest) (*FetchSpaceResponse, error) {
 	path := fmt.Sprintf("%s/space/%s", e.client.APIPrefix, req.SpaceKey)
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	resp, err := e.client.MakeRequest(ctx, "GET", path, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -76,8 +76,8 @@ func (e *SpaceExtension) FetchAllPagesInSpace(ctx context.Context, req *FetchAll
 	params.Add("start", fmt.Sprintf("%d", req.Start))
 	params.Add("limit", fmt.Sprintf("%d", req.Limit))
 
-	path := e.client.APIPrefix + "/content?" + params.Encode()
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	path := e.client.APIPrefix + "/content"
+	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, err
 	}

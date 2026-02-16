@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 
+	"confcli/pkg/converters"
 	"confcli/pkg/models"
 	"confcli/pkg/api"
 	"confcli/pkg/formatters"
@@ -58,7 +59,7 @@ func GetExtensionForFormat(format string) string {
 }
 
 // ExportPageToFile exports a single page to a file
-func ExportPageToFile(apiClient api.Client, page models.Page, baseDir, format string, skipContent bool) error {
+func ExportPageToFile(apiClient api.Client, page models.Page, baseDir, format string, skipContent bool, baseURL string) error {
 	ctx := context.Background()
 
 	// Create directory for the page
@@ -72,30 +73,50 @@ func ExportPageToFile(apiClient api.Client, page models.Page, baseDir, format st
 	if !skipContent {
 		if format == "both" {
 			// Export in both markdown and storage formats
-			for _, format := range []string{"markdown", "storage"} {
-				content, err := apiClient.GetPageContent(ctx, page.ID, format)
+			// Get storage format first
+			storageContent, err := apiClient.GetPageContent(ctx, page.ID, "storage")
+			if err != nil {
+				return fmt.Errorf("failed to get page content: %w", err)
+			}
+
+			// Write storage format
+			storageFile := filepath.Join(pageDir, "index.storage")
+			if err := os.WriteFile(storageFile, []byte(storageContent), 0644); err != nil {
+				return fmt.Errorf("failed to write storage content file: %w", err)
+			}
+
+			// Convert to markdown and write
+			markdownContent, err := converters.StorageToMarkdown(storageContent, baseURL)
+			if err != nil {
+				return fmt.Errorf("failed to convert to markdown: %w", err)
+			}
+			markdownFile := filepath.Join(pageDir, "index.md")
+			if err := os.WriteFile(markdownFile, []byte(markdownContent), 0644); err != nil {
+				return fmt.Errorf("failed to write markdown content file: %w", err)
+			}
+		} else {
+			// Export in single format
+			var content string
+			var err error
+
+			if format == "markdown" {
+				// Get storage format and convert to markdown
+				storageContent, err := apiClient.GetPageContent(ctx, page.ID, "storage")
 				if err != nil {
-					// Try alternative format if primary fails
+					return fmt.Errorf("failed to get page content: %w", err)
+				}
+				content, err = converters.StorageToMarkdown(storageContent, baseURL)
+				if err != nil {
+					return fmt.Errorf("failed to convert to markdown: %w", err)
+				}
+			} else {
+				content, err = apiClient.GetPageContent(ctx, page.ID, format)
+				if err != nil {
+					// Try storage as fallback
 					content, err = apiClient.GetPageContent(ctx, page.ID, "storage")
 					if err != nil {
 						return fmt.Errorf("failed to get page content: %w", err)
 					}
-				}
-
-				ext := GetExtensionForFormat(format)
-				contentFile := filepath.Join(pageDir, fmt.Sprintf("index.%s", ext))
-				if err := os.WriteFile(contentFile, []byte(content), 0644); err != nil {
-					return fmt.Errorf("failed to write content file: %w", err)
-				}
-			}
-		} else {
-			// Export in single format
-			content, err := apiClient.GetPageContent(ctx, page.ID, format)
-			if err != nil {
-				// Try storage as fallback
-				content, err = apiClient.GetPageContent(ctx, page.ID, "storage")
-				if err != nil {
-					return fmt.Errorf("failed to get page content: %w", err)
 				}
 			}
 
@@ -111,12 +132,11 @@ func ExportPageToFile(apiClient api.Client, page models.Page, baseDir, format st
 	metadata := map[string]interface{}{
 		"id":        page.ID,
 		"title":     page.Title,
-		"spaceId":   page.SpaceID,
+		"spaceId":   page.Space.ID,
 		"status":    page.Status,
-		"createdAt": page.CreatedAt,
-		"updatedAt": page.UpdatedAt,
+		"createdAt": page.CreatedAt(),
+		"updatedAt": page.UpdatedAt(),
 		"version":   page.Version,
-		"authorId":  page.AuthorID,
 	}
 
 	metadataBytes, err := formatters.FormatOutputToString(metadata, "json")

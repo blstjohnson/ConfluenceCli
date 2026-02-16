@@ -10,21 +10,19 @@ import (
 
 // Logger provides logging functionality with debug level support
 type Logger struct {
-	debugEnabled bool
-	logger       *log.Logger
+	logger *log.Logger
 }
 
 // NewLogger creates a new logger instance
 func NewLogger() *Logger {
 	return &Logger{
-		debugEnabled: viper.GetBool("debug"),
-		logger:       log.New(os.Stderr, "", log.LstdFlags),
+		logger: log.New(os.Stderr, "", log.LstdFlags),
 	}
 }
 
 // Debug logs a debug message if debug mode is enabled
 func (l *Logger) Debug(format string, args ...interface{}) {
-	if l.debugEnabled {
+	if viper.GetBool("debug") {
 		message := fmt.Sprintf("[DEBUG] "+format, args...)
 		l.logger.Output(2, message) // Skip this function in the call stack
 	}
@@ -50,5 +48,5 @@ func (l *Logger) Error(format string, args ...interface{}) {
 
 // IsDebugEnabled returns whether debug logging is enabled
 func (l *Logger) IsDebugEnabled() bool {
-	return l.debugEnabled
+	return viper.GetBool("debug")
 }

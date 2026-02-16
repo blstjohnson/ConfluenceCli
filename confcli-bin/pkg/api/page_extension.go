@@ -36,13 +36,13 @@ type FetchPageResponse struct {
 // FetchPage fetches a page with optional expansions
 func (e *PageExtension) FetchPage(ctx context.Context, req *FetchPageRequest) (*FetchPageResponse, error) {
 	path := fmt.Sprintf("%s/content/%d", e.client.APIPrefix, req.PageID)
+	var params url.Values
 	if len(req.Expansions) > 0 {
-		params := url.Values{}
+		params = url.Values{}
 		params.Add("expand", strings.Join(req.Expansions, ","))
-		path = path + "?" + params.Encode()
 	}
 
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -78,8 +78,8 @@ func (e *PageExtension) FindPageByTitle(ctx context.Context, req *FindPageByTitl
 	params.Add("space", req.SpaceKey)
 	params.Add("title", req.Title)
 
-	path := e.client.APIPrefix + "/content?" + params.Encode()
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	path := e.client.APIPrefix + "/content"
+	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -124,8 +124,8 @@ func (e *PageExtension) FetchPageContent(ctx context.Context, req *FetchPageCont
 	params := url.Values{}
 	params.Add("expand", expansion)
 
-	path := fmt.Sprintf("%s/content/%s?%s", e.client.APIPrefix, idStr, params.Encode())
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	path := fmt.Sprintf("%s/content/%s", e.client.APIPrefix, idStr)
+	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +166,7 @@ type FetchPageChildrenResponse struct {
 // FetchPageChildren fetches children of a page
 func (e *PageExtension) FetchPageChildren(ctx context.Context, req *FetchPageChildrenRequest) (*FetchPageChildrenResponse, error) {
 	path := fmt.Sprintf("%s/content/%d/child/page", e.client.APIPrefix, req.PageID)
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	resp, err := e.client.MakeRequest(ctx, "GET", path, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +233,7 @@ func (e *PageExtension) CreatePage(ctx context.Context, req *CreatePageRequest) 
 		return nil, err
 	}
 
-	resp, err := e.client.MakeRequest(ctx, "POST", e.client.APIPrefix+"/content", strings.NewReader(string(jsonData)))
+	resp, err := e.client.MakeRequest(ctx, "POST", e.client.APIPrefix+"/content", nil, strings.NewReader(string(jsonData)))
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +307,7 @@ func (e *PageExtension) UpdatePage(ctx context.Context, req *UpdatePageRequest) 
 	}
 
 	path := fmt.Sprintf("%s/content/%d", e.client.APIPrefix, req.PageID)
-	resp, err := e.client.MakeRequest(ctx, "PUT", path, strings.NewReader(string(jsonData)))
+	resp, err := e.client.MakeRequest(ctx, "PUT", path, nil, strings.NewReader(string(jsonData)))
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +338,7 @@ func (e *PageExtension) DeletePage(ctx context.Context, req *DeletePageRequest) 
 	}
 
 	path := fmt.Sprintf("%s/content/%d", e.client.APIPrefix, req.PageID)
-	resp, err := e.client.MakeRequest(ctx, "DELETE", path, nil)
+	resp, err := e.client.MakeRequest(ctx, "DELETE", path, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -355,7 +355,7 @@ func (e *PageExtension) DeletePage(ctx context.Context, req *DeletePageRequest) 
 // fetchCurrentPageInfo fetches the current page info for update operations
 func (e *PageExtension) fetchCurrentPageInfo(ctx context.Context, pageID int) (*models.Page, error) {
 	path := fmt.Sprintf("%s/content/%d", e.client.APIPrefix, pageID)
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	resp, err := e.client.MakeRequest(ctx, "GET", path, nil, nil)
 	if err != nil {
 		return nil, err
 	}

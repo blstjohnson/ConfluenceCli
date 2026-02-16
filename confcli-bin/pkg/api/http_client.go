@@ -106,9 +106,14 @@ func NewHTTPClient(options *ClientOptions) (*HTTPClient, error) {
 }
 
 // MakeRequest performs an HTTP request to the Confluence API
-func (c *HTTPClient) MakeRequest(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	// Construct the full URL
-	fullURL := c.BaseURL.ResolveReference(&url.URL{Path: path})
+func (c *HTTPClient) MakeRequest(ctx context.Context, method, path string, queryParams url.Values, body io.Reader) (*http.Response, error) {
+	// Construct the full URL with optional query parameters
+	var fullURL *url.URL
+	if len(queryParams) > 0 {
+		fullURL = c.BaseURL.ResolveReference(&url.URL{Path: path, RawQuery: queryParams.Encode()})
+	} else {
+		fullURL = c.BaseURL.ResolveReference(&url.URL{Path: path})
+	}
 
 	req, err := http.NewRequestWithContext(ctx, method, fullURL.String(), body)
 	if err != nil {
@@ -402,7 +407,7 @@ func (c *HTTPClient) setCookiesFromConfig() {
 // GetPageRaw retrieves a page by its ID (raw API call without business logic)
 func (c *HTTPClient) GetPageRaw(ctx context.Context, id int) (*http.Response, error) {
 	path := fmt.Sprintf("%s/content/%d", c.APIPrefix, id)
-	return c.MakeRequest(ctx, "GET", path, nil)
+	return c.MakeRequest(ctx, "GET", path, nil, nil)
 }
 
 // GetPageByTitleRaw retrieves a page by its space key and title (raw API call without business logic)
@@ -411,8 +416,8 @@ func (c *HTTPClient) GetPageByTitleRaw(ctx context.Context, spaceKey, title stri
 	params.Add("space", spaceKey)
 	params.Add("title", title)
 
-	path := c.APIPrefix + "/content?" + params.Encode()
-	return c.MakeRequest(ctx, "GET", path, nil)
+	path := c.APIPrefix + "/content"
+	return c.MakeRequest(ctx, "GET", path, params, nil)
 }
 
 // GetPageContentRaw retrieves the content of a page (raw API call without business logic)
@@ -433,20 +438,20 @@ func (c *HTTPClient) GetPageContentRaw(ctx context.Context, id interface{}, form
 	params := url.Values{}
 	params.Add("expand", expansion)
 
-	path := fmt.Sprintf("%s/content/%s?%s", c.APIPrefix, idStr, params.Encode())
-	return c.MakeRequest(ctx, "GET", path, nil)
+	path := fmt.Sprintf("%s/content/%s", c.APIPrefix, idStr)
+	return c.MakeRequest(ctx, "GET", path, params, nil)
 }
 
 // GetPageChildrenRaw retrieves the children of a page (raw API call without business logic)
 func (c *HTTPClient) GetPageChildrenRaw(ctx context.Context, id int) (*http.Response, error) {
 	path := fmt.Sprintf("%s/content/%d/child/page", c.APIPrefix, id)
-	return c.MakeRequest(ctx, "GET", path, nil)
+	return c.MakeRequest(ctx, "GET", path, nil, nil)
 }
 
 // GetSpaceRaw retrieves a space by its key (raw API call without business logic)
 func (c *HTTPClient) GetSpaceRaw(ctx context.Context, key string) (*http.Response, error) {
 	path := fmt.Sprintf("%s/space/%s", c.APIPrefix, key)
-	return c.MakeRequest(ctx, "GET", path, nil)
+	return c.MakeRequest(ctx, "GET", path, nil, nil)
 }
 
 // GetAllPagesInSpaceRaw retrieves all pages in a space (raw API call without business logic)
@@ -456,8 +461,8 @@ func (c *HTTPClient) GetAllPagesInSpaceRaw(ctx context.Context, spaceKey string)
 	params.Add("start", "0")
 	params.Add("limit", "100")
 
-	path := c.APIPrefix + "/content?" + params.Encode()
-	return c.MakeRequest(ctx, "GET", path, nil)
+	path := c.APIPrefix + "/content"
+	return c.MakeRequest(ctx, "GET", path, params, nil)
 }
 
 // SearchRaw searches for pages using CQL (raw API call without business logic)
@@ -468,8 +473,8 @@ func (c *HTTPClient) SearchRaw(ctx context.Context, cql string, limit int) (*htt
 		params.Add("limit", fmt.Sprintf("%d", limit))
 	}
 
-	path := c.APIPrefix + "/search?" + params.Encode()
-	return c.MakeRequest(ctx, "GET", path, nil)
+	path := c.APIPrefix + "/search"
+	return c.MakeRequest(ctx, "GET", path, params, nil)
 }
 
 // CreatePageRaw creates a new page (raw API call without business logic)
@@ -504,7 +509,7 @@ func (c *HTTPClient) CreatePageRaw(ctx context.Context, spaceKey string, parentI
 		return nil, err
 	}
 
-	return c.MakeRequest(ctx, "POST", c.APIPrefix+"/content", bytes.NewBuffer(jsonData))
+	return c.MakeRequest(ctx, "POST", c.APIPrefix+"/content", nil, bytes.NewBuffer(jsonData))
 }
 
 // UpdatePageRaw updates an existing page (raw API call without business logic)
@@ -561,7 +566,7 @@ func (c *HTTPClient) UpdatePageRaw(ctx context.Context, id int, content string, 
 	}
 
 	path := fmt.Sprintf("%s/content/%d", c.APIPrefix, id)
-	return c.MakeRequest(ctx, "PUT", path, bytes.NewBuffer(jsonData))
+	return c.MakeRequest(ctx, "PUT", path, nil, bytes.NewBuffer(jsonData))
 }
 
 // DeletePageRaw deletes a page (raw API call without business logic)
@@ -571,7 +576,7 @@ func (c *HTTPClient) DeletePageRaw(ctx context.Context, id int) (*http.Response,
 	}
 
 	path := fmt.Sprintf("%s/content/%d", c.APIPrefix, id)
-	return c.MakeRequest(ctx, "DELETE", path, nil)
+	return c.MakeRequest(ctx, "DELETE", path, nil, nil)
 }
 
 // AddCommentRaw adds a comment to a page (raw API call without business logic)
@@ -607,7 +612,7 @@ func (c *HTTPClient) AddCommentRaw(ctx context.Context, pageID int, text string,
 		return nil, err
 	}
 
-	return c.MakeRequest(ctx, "POST", c.APIPrefix+"/content", bytes.NewBuffer(jsonData))
+	return c.MakeRequest(ctx, "POST", c.APIPrefix+"/content", nil, bytes.NewBuffer(jsonData))
 }
 
 // AddLabelRaw adds a label to a page (raw API call without business logic)
@@ -627,7 +632,7 @@ func (c *HTTPClient) AddLabelRaw(ctx context.Context, pageID int, labelName stri
 	}
 
 	path := fmt.Sprintf("%s/content/%d/label", c.APIPrefix, pageID)
-	return c.MakeRequest(ctx, "POST", path, bytes.NewBuffer(jsonData))
+	return c.MakeRequest(ctx, "POST", path, nil, bytes.NewBuffer(jsonData))
 }
 
 // GetPageWithExpansionsRaw retrieves a page with specified expansions (raw API call without business logic)
@@ -648,20 +653,20 @@ func (c *HTTPClient) GetPageWithExpansionsRaw(ctx context.Context, id interface{
 	params := url.Values{}
 	params.Add("expand", expandParam)
 
-	path := fmt.Sprintf("%s/content/%s?%s", c.APIPrefix, idStr, params.Encode())
-	return c.MakeRequest(ctx, "GET", path, nil)
+	path := fmt.Sprintf("%s/content/%s", c.APIPrefix, idStr)
+	return c.MakeRequest(ctx, "GET", path, params, nil)
 }
 
 // GetCommentsRaw retrieves comments for a page (raw API call without business logic)
 func (c *HTTPClient) GetCommentsRaw(ctx context.Context, pageID int) (*http.Response, error) {
 	path := fmt.Sprintf("%s/content/%d/comment", c.APIPrefix, pageID)
-	return c.MakeRequest(ctx, "GET", path, nil)
+	return c.MakeRequest(ctx, "GET", path, nil, nil)
 }
 
 // GetLabelsRaw retrieves labels for a page (raw API call without business logic)
 func (c *HTTPClient) GetLabelsRaw(ctx context.Context, pageID int) (*http.Response, error) {
 	path := fmt.Sprintf("%s/content/%d/label", c.APIPrefix, pageID)
-	return c.MakeRequest(ctx, "GET", path, nil)
+	return c.MakeRequest(ctx, "GET", path, nil, nil)
 }
 
 // openBrowser opens the specified URL in the default browser

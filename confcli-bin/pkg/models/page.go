@@ -64,21 +64,61 @@ func (p PageID) IntOrString() interface{} {
 
 // Page represents a Confluence page
 type Page struct {
-	ID          PageID                 `json:"id,omitempty"`
-	Title       string                 `json:"title,omitempty"`
-	SpaceID     int                    `json:"spaceId,omitempty"`
-	Status      string                 `json:"status,omitempty"`
-	CreatedAt   time.Time              `json:"createdAt,omitempty"`
-	UpdatedAt   time.Time              `json:"updatedAt,omitempty"`
-	Version     Version                `json:"version,omitempty"`
-	AuthorID    string                 `json:"authorId,omitempty"`
-	Body        map[string]interface{} `json:"body,omitempty"`
-	Links       map[string]string      `json:"_links,omitempty"`
-	Ancestors   []Page                 `json:"ancestors,omitempty"`
-	Descendants []Page                 `json:"descendants,omitempty"`
-	Attachments []Attachment           `json:"attachments,omitempty"`
-	Labels      []Label                `json:"labels,omitempty"`
-	Comments    []Comment              `json:"comments,omitempty"`
+	ID        PageID                 `json:"id,omitempty"`
+	Type      string                 `json:"type,omitempty"`
+	Status    string                 `json:"status,omitempty"`
+	Title     string                 `json:"title,omitempty"`
+	Space     Space                  `json:"space,omitempty"`
+	Body      map[string]interface{} `json:"body,omitempty"`
+	Version   Version                `json:"version,omitempty"`
+	History   History                `json:"history,omitempty"`
+	Links     map[string]string      `json:"_links,omitempty"`
+	Ancestors []Page                 `json:"ancestors,omitempty"`
+	Children  Children               `json:"children,omitempty"`
+	Descendants []Page               `json:"descendants,omitempty"`
+	Attachments []Attachment         `json:"attachments,omitempty"`
+	Labels    []Label                `json:"labels,omitempty"`
+	Comments  []Comment              `json:"comments,omitempty"`
+}
+
+// SpaceID returns the space ID from the space object
+func (p *Page) SpaceID() int {
+	return p.Space.ID
+}
+
+// CreatedAt returns the created time from history
+func (p *Page) CreatedAt() time.Time {
+	if !p.History.CreatedDate.IsZero() {
+		return p.History.CreatedDate
+	}
+	return time.Time{}
+}
+
+// UpdatedAt returns the updated time from version.when (more reliable than history)
+func (p *Page) UpdatedAt() time.Time {
+	if !p.Version.UpdatedAt.IsZero() {
+		return p.Version.UpdatedAt
+	}
+	if !p.History.LastUpdated.When.IsZero() {
+		return p.History.LastUpdated.When
+	}
+	return time.Time{}
+}
+
+// History represents the history of a page
+type History struct {
+	CreatedDate   time.Time `json:"createdDate,omitempty"`
+	LastUpdated   LastUpdated `json:"lastUpdated,omitempty"`
+}
+
+// LastUpdated represents the last updated information
+type LastUpdated struct {
+	When time.Time `json:"when,omitempty"`
+}
+
+// Children represents the children of a page
+type Children struct {
+	Page []Page `json:"page,omitempty"`
 }
 
 // Version represents the version of a page

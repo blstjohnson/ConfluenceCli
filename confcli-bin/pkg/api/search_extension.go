@@ -43,15 +43,15 @@ func (e *SearchExtension) Search(ctx context.Context, req *SearchRequest) (*Sear
 	params := url.Values{}
 	params.Add("cql", req.CQL)
 	params.Add("start", fmt.Sprintf("%d", req.Start))
-	
+
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 25 // Default limit
 	}
 	params.Add("limit", fmt.Sprintf("%d", limit))
 
-	path := e.client.APIPrefix + "/search?" + params.Encode()
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	path := e.client.APIPrefix + "/search"
+	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -35,7 +35,7 @@ type FetchCommentsResponse struct {
 // FetchComments fetches comments for a page
 func (e *ContentExtension) FetchComments(ctx context.Context, req *FetchCommentsRequest) (*FetchCommentsResponse, error) {
 	path := fmt.Sprintf("%s/content/%d/comment", e.client.APIPrefix, req.PageID)
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	resp, err := e.client.MakeRequest(ctx, "GET", path, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +70,7 @@ type FetchLabelsResponse struct {
 // FetchLabels fetches labels for a page
 func (e *ContentExtension) FetchLabels(ctx context.Context, req *FetchLabelsRequest) (*FetchLabelsResponse, error) {
 	path := fmt.Sprintf("%s/content/%d/label", e.client.APIPrefix, req.PageID)
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	resp, err := e.client.MakeRequest(ctx, "GET", path, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +137,7 @@ func (e *ContentExtension) AddComment(ctx context.Context, req *AddCommentReques
 		return nil, err
 	}
 
-	resp, err := e.client.MakeRequest(ctx, "POST", e.client.APIPrefix+"/content", strings.NewReader(string(jsonData)))
+	resp, err := e.client.MakeRequest(ctx, "POST", e.client.APIPrefix+"/content", nil, strings.NewReader(string(jsonData)))
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +179,7 @@ func (e *ContentExtension) AddLabel(ctx context.Context, req *AddLabelRequest) e
 	}
 
 	path := fmt.Sprintf("%s/content/%d/label", e.client.APIPrefix, req.PageID)
-	resp, err := e.client.MakeRequest(ctx, "POST", path, strings.NewReader(string(jsonData)))
+	resp, err := e.client.MakeRequest(ctx, "POST", path, nil, strings.NewReader(string(jsonData)))
 	if err != nil {
 		return err
 	}
@@ -211,8 +211,8 @@ func (e *ContentExtension) FetchPageWithExpansions(ctx context.Context, req *Fet
 	params := url.Values{}
 	params.Add("expand", expandParam)
 
-	path := fmt.Sprintf("%s/content/%s?%s", e.client.APIPrefix, idStr, params.Encode())
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil)
+	path := fmt.Sprintf("%s/content/%s", e.client.APIPrefix, idStr)
+	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, err
 	}

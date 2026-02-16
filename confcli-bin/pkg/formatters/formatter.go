@@ -24,6 +24,26 @@ func FormatOutput(data interface{}, format string) error {
 	}
 }
 
+// FormatOutputWithContent formats a page with its content based on the specified format
+func FormatOutputWithContent(page *models.Page, content string, contentFormat string) error {
+	switch contentFormat {
+	case "json":
+		data := map[string]interface{}{
+			"page":    page,
+			"content": content,
+		}
+		return formatJSON(data)
+	case "yaml":
+		data := map[string]interface{}{
+			"page":    page,
+			"content": content,
+		}
+		return formatYAML(data)
+	default:
+		return formatPageWithContentText(page, content)
+	}
+}
+
 // formatJSON formats the data as JSON
 func formatJSON(data interface{}) error {
 	encoder := json.NewEncoder(os.Stdout)
@@ -105,10 +125,20 @@ func formatPageText(page *models.Page) error {
 	pageID, _ := page.ID.Int()
 	fmt.Fprintf(w, "ID:\t%d\n", pageID)
 	fmt.Fprintf(w, "Title:\t%s\n", page.Title)
-	fmt.Fprintf(w, "Space ID:\t%d\n", page.SpaceID)
+	fmt.Fprintf(w, "Space ID:\t%d\n", page.Space.ID)
 	fmt.Fprintf(w, "Status:\t%s\n", page.Status)
-	fmt.Fprintf(w, "Created:\t%s\n", page.CreatedAt.Format("2006-01-02 15:04:05"))
-	fmt.Fprintf(w, "Updated:\t%s\n", page.UpdatedAt.Format("2006-01-02 15:04:05"))
+	createdAt := page.CreatedAt()
+	if !createdAt.IsZero() {
+		fmt.Fprintf(w, "Created:\t%s\n", createdAt.Format("2006-01-02 15:04:05"))
+	} else {
+		fmt.Fprintf(w, "Created:\tN/A\n")
+	}
+	updatedAt := page.UpdatedAt()
+	if !updatedAt.IsZero() {
+		fmt.Fprintf(w, "Updated:\t%s\n", updatedAt.Format("2006-01-02 15:04:05"))
+	} else {
+		fmt.Fprintf(w, "Updated:\tN/A\n")
+	}
 	fmt.Fprintf(w, "Version:\t%d\n", page.Version.Number)
 
 	if len(page.Labels) > 0 {
@@ -145,6 +175,59 @@ func formatPageText(page *models.Page) error {
 	return w.Flush()
 }
 
+// formatPageWithContentText formats a single page with full content as human-readable text
+func formatPageWithContentText(page *models.Page, content string) error {
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+
+	pageID, _ := page.ID.Int()
+	fmt.Fprintf(w, "ID:\t%d\n", pageID)
+	fmt.Fprintf(w, "Title:\t%s\n", page.Title)
+	fmt.Fprintf(w, "Space ID:\t%d\n", page.Space.ID)
+	fmt.Fprintf(w, "Status:\t%s\n", page.Status)
+	createdAt := page.CreatedAt()
+	if !createdAt.IsZero() {
+		fmt.Fprintf(w, "Created:\t%s\n", createdAt.Format("2006-01-02 15:04:05"))
+	} else {
+		fmt.Fprintf(w, "Created:\tN/A\n")
+	}
+	updatedAt := page.UpdatedAt()
+	if !updatedAt.IsZero() {
+		fmt.Fprintf(w, "Updated:\t%s\n", updatedAt.Format("2006-01-02 15:04:05"))
+	} else {
+		fmt.Fprintf(w, "Updated:\tN/A\n")
+	}
+	fmt.Fprintf(w, "Version:\t%d\n", page.Version.Number)
+
+	if len(page.Labels) > 0 {
+		labels := make([]string, len(page.Labels))
+		for i, label := range page.Labels {
+			labels[i] = label.Name
+		}
+		fmt.Fprintf(w, "Labels:\t%s\n", fmt.Sprintf("[%s]", joinStrings(labels, ", ")))
+	}
+
+	if len(page.Ancestors) > 0 {
+		ancestorTitles := make([]string, len(page.Ancestors))
+		for i, ancestor := range page.Ancestors {
+			ancestorTitles[i] = ancestor.Title
+		}
+		fmt.Fprintf(w, "Ancestors:\t%s\n", fmt.Sprintf("[%s]", joinStrings(ancestorTitles, " > ")))
+	}
+
+	if len(page.Comments) > 0 {
+		fmt.Fprintf(w, "Comments:\t%d\n", len(page.Comments))
+	}
+
+	if len(page.Attachments) > 0 {
+		fmt.Fprintf(w, "Attachments:\t%d\n", len(page.Attachments))
+	}
+
+	fmt.Fprintln(w, "\nContent:")
+	fmt.Fprintln(w, content)
+
+	return w.Flush()
+}
+
 // formatPagesText formats a slice of pages as human-readable text
 func formatPagesText(pages []models.Page) error {
 	if len(pages) == 0 {
@@ -158,12 +241,17 @@ func formatPagesText(pages []models.Page) error {
 
 	for _, page := range pages {
 		pageID, _ := page.ID.Int()
+		updatedAt := page.UpdatedAt()
+		updatedStr := "N/A"
+		if !updatedAt.IsZero() {
+			updatedStr = updatedAt.Format("2006-01-02")
+		}
 		fmt.Fprintf(w, "%d\t%s\t%d\t%d\t%s\n",
 			pageID,
 			page.Title,
-			page.SpaceID,
+			page.Space.ID,
 			page.Version.Number,
-			page.UpdatedAt.Format("2006-01-02"))
+			updatedStr)
 	}
 
 	return w.Flush()
