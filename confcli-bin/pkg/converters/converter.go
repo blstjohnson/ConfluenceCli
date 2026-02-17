@@ -7,6 +7,9 @@ import (
 )
 
 // StorageToMarkdown converts Confluence storage format to Markdown
+// This is the basic implementation using regex-based conversion
+// For better conversion with support for Confluence macros (info/warning/note/tip panels,
+// status macros, expand macros, code blocks, user mentions), use StorageToMarkdownAdvanced
 func StorageToMarkdown(storageContent string, baseURL string) (string, error) {
 	// This is a basic implementation that handles common Confluence storage elements
 	// In a real implementation, we would use a proper HTML to Markdown converter

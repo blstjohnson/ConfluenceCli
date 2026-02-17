@@ -113,7 +113,8 @@ func newPageGetCmd() *cobra.Command {
 				switch format {
 				case "markdown":
 					baseURL := viper.GetString("url")
-					transformedContent, err = converters.StorageToMarkdown(resp.Content, baseURL)
+					// Use advanced converter with support for Confluence macros
+					transformedContent, err = converters.StorageToMarkdownAdvanced(resp.Content, baseURL)
 					if err != nil {
 						return fmt.Errorf("failed to convert storage to markdown: %w", err)
 					}
