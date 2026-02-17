@@ -60,6 +60,38 @@ func GetExtensionForFormat(format string) string {
 	}
 }
 
+// ConvertContentFromStorage converts storage format to the requested format
+// Confluence only supports "storage" and "editor" formats natively
+// For other formats, we convert from storage
+func ConvertContentFromStorage(storageContent, format, baseURL string) (string, error) {
+	switch format {
+	case "storage", "html":
+		// Storage format is already HTML-based, return as-is
+		return storageContent, nil
+	case "edit", "editor":
+		// Editor format should be fetched directly, not converted from storage
+		// This function assumes storage input, so return as-is for editor
+		return storageContent, nil
+	case "markdown", "md":
+		return converters.StorageToMarkdown(storageContent, baseURL)
+	case "plain":
+		return StripHTMLTags(storageContent), nil
+	default:
+		// For unknown formats, return storage as-is
+		return storageContent, nil
+	}
+}
+
+// GetContentFormatForAPI returns the appropriate format to request from Confluence API
+// Confluence only supports "storage" and "editor" formats natively
+func GetContentFormatForAPI(requestedFormat string) string {
+	if requestedFormat == "edit" {
+		return "editor"
+	}
+	// For all other formats, fetch storage and convert later
+	return "storage"
+}
+
 // ExportPageToFile exports a single page to a file
 func ExportPageToFile(apiClient api.Client, page models.Page, baseDir, format string, skipContent bool, baseURL string) error {
 	ctx := context.Background()
@@ -76,7 +108,7 @@ func ExportPageToFile(apiClient api.Client, page models.Page, baseDir, format st
 		if format == "both" {
 			// Export in both markdown and storage formats
 			// Get storage format first
-			storageContent, err := apiClient.GetPageContent(ctx, page.ID, "storage")
+			storageContent, err := apiClient.GetPageContent(ctx, page.ID, "storage", 0)
 			if err != nil {
 				return fmt.Errorf("failed to get page content: %w", err)
 			}
@@ -98,28 +130,17 @@ func ExportPageToFile(apiClient api.Client, page models.Page, baseDir, format st
 			}
 		} else {
 			// Export in single format
-			var content string
-			var err error
-
-			if format == "markdown" {
-				// Get storage format and convert to markdown
-				storageContent, err := apiClient.GetPageContent(ctx, page.ID, "storage")
-				if err != nil {
-					return fmt.Errorf("failed to get page content: %w", err)
-				}
-				content, err = converters.StorageToMarkdown(storageContent, baseURL)
-				if err != nil {
-					return fmt.Errorf("failed to convert to markdown: %w", err)
-				}
-			} else {
-				content, err = apiClient.GetPageContent(ctx, page.ID, format)
-				if err != nil {
-					// Try storage as fallback
-					content, err = apiClient.GetPageContent(ctx, page.ID, "storage")
-					if err != nil {
-						return fmt.Errorf("failed to get page content: %w", err)
-					}
-				}
+			// Get content format - Confluence only supports "storage" and "editor" formats
+			apiFormat := GetContentFormatForAPI(format)
+			storageContent, err := apiClient.GetPageContent(ctx, page.ID, apiFormat, 0)
+			if err != nil {
+				return fmt.Errorf("failed to get page content: %w", err)
+			}
+			
+			// Convert from storage to requested format if needed
+			content, err := ConvertContentFromStorage(storageContent, format, baseURL)
+			if err != nil {
+				return fmt.Errorf("failed to convert content: %w", err)
 			}
 
 			ext := GetExtensionForFormat(format)

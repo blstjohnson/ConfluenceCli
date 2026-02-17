@@ -10,7 +10,7 @@ import (
 type PageRepository interface {
 	GetPage(ctx context.Context, id int) (*models.Page, error)
 	GetPageByTitle(ctx context.Context, spaceKey, title string) (*models.Page, error)
-	GetPageContent(ctx context.Context, id interface{}, format string) (string, error)
+	GetPageContent(ctx context.Context, id interface{}, format string, version int) (string, error)
 	GetPageChildren(ctx context.Context, id int) ([]models.Page, error)
 	GetPageWithExpansions(ctx context.Context, id interface{}, expansions []string) (*models.Page, error)
 	GetDescendants(ctx context.Context, id int, depth int) ([]models.Page, error)

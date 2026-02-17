@@ -107,8 +107,9 @@ func (e *PageExtension) FindPageByTitle(ctx context.Context, req *FindPageByTitl
 
 // FetchPageContentRequest represents a request to fetch page content
 type FetchPageContentRequest struct {
-	PageID interface{}
-	Format string
+	PageID  interface{}
+	Format  string
+	Version int // Optional: 0 means current version
 }
 
 // FetchPageContentResponse represents the response from fetching page content
@@ -128,6 +129,11 @@ func (e *PageExtension) FetchPageContent(ctx context.Context, req *FetchPageCont
 	expansion := fmt.Sprintf("body.%s", format)
 	params := url.Values{}
 	params.Add("expand", expansion)
+	
+	// Add version parameter if specified
+	if req.Version > 0 {
+		params.Add("version", fmt.Sprintf("%d", req.Version))
+	}
 
 	path := fmt.Sprintf("%s/content/%s", e.client.APIPrefix, idStr)
 	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)

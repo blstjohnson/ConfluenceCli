@@ -150,12 +150,13 @@ func (uc *pageUseCase) GetPageWithContent(ctx context.Context, req *GetPageWithC
 		return nil, err
 	}
 
-	// Get content - use "editor" format for "edit" request
-	contentFormat := req.Format
-	if contentFormat == "edit" {
+	// Get content - Confluence only supports "storage" and "editor" formats natively
+	// For other formats (markdown, plain, html), fetch storage and convert later
+	contentFormat := "storage"
+	if req.Format == "edit" {
 		contentFormat = "editor"
 	}
-	content, err := uc.apiClient.GetPageContent(ctx, page.ID.IntOrString(), contentFormat)
+	content, err := uc.apiClient.GetPageContent(ctx, page.ID.IntOrString(), contentFormat, req.Version)
 	if err != nil {
 		return nil, err
 	}

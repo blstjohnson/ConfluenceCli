@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -34,6 +35,7 @@ func NewPageCmd() *cobra.Command {
 	pageCmd.AddCommand(newPageDeleteCmd())
 	pageCmd.AddCommand(newPageCommentAddCmd())
 	pageCmd.AddCommand(newPageLabelAddCmd())
+	pageCmd.AddCommand(newPageDiffCmd())
 
 	return pageCmd
 }
@@ -51,6 +53,7 @@ func newPageGetCmd() *cobra.Command {
 			title, _ := cmd.Flags().GetString("title")
 			path, _ := cmd.Flags().GetString("path")
 			format, _ := cmd.Flags().GetString("format")
+			version, _ := cmd.Flags().GetInt("version")
 			output, _ := cmd.Flags().GetString("output")
 			outputDir, _ := cmd.Flags().GetString("output-dir")
 			withComments, _ := cmd.Flags().GetBool("with-comments")
@@ -72,7 +75,7 @@ func newPageGetCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to create API client: %w", err)
 			}
-			
+
 			pageUseCase := usecases.NewPageUseCase(apiClient)
 			ctx := context.Background()
 
@@ -92,6 +95,7 @@ func newPageGetCmd() *cobra.Command {
 				SpaceKey:     space,
 				Title:        title,
 				Format:       format,
+				Version:      version,
 				WithComments: withComments,
 				WithLabels:   withLabels,
 			}
@@ -102,6 +106,8 @@ func newPageGetCmd() *cobra.Command {
 			}
 
 			// Apply content transformation if needed
+			// Confluence only supports "storage" and "editor" formats natively
+			// For other formats, we fetch storage and convert
 			transformedContent := resp.Content
 			if format != "storage" && format != "edit" {
 				switch format {
@@ -113,6 +119,9 @@ func newPageGetCmd() *cobra.Command {
 					}
 				case "plain":
 					transformedContent = utils.StripHTMLTags(resp.Content)
+				case "html":
+					// Storage format is already HTML-based, use as-is
+					transformedContent = resp.Content
 				}
 			}
 
@@ -172,6 +181,7 @@ func newPageGetCmd() *cobra.Command {
 	cmd.Flags().String("title", "", "Page title")
 	cmd.Flags().String("path", "", "Page path (e.g., Space/Parent/Child)")
 	cmd.Flags().StringP("format", "f", "markdown", "Content format: markdown, storage, html, plain, edit")
+	cmd.Flags().Int("version", 0, "Page version number (0 for current)")
 	cmd.Flags().StringP("output", "o", "", "Save content to file")
 	cmd.Flags().String("output-dir", "", "Save full page to directory")
 	cmd.Flags().Bool("with-comments", false, "Include comments in output")
@@ -515,4 +525,179 @@ func newPageLabelAddCmd() *cobra.Command {
 	cmd.MarkFlagRequired("label")
 
 	return cmd
+}
+
+// newPageDiffCmd implements the page diff command
+func newPageDiffCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "diff <id>",
+		Short: "Show diff between two versions of a page",
+		Long:  "Show a git-diff-like output comparing two versions of a Confluence page",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			pageID, err := strconv.Atoi(args[0])
+			if err != nil {
+				return fmt.Errorf("invalid page ID: %w", err)
+			}
+
+			oldVersion, _ := cmd.Flags().GetInt("old-version")
+			newVersion, _ := cmd.Flags().GetInt("new-version")
+			format, _ := cmd.Flags().GetString("format")
+			color, _ := cmd.Flags().GetBool("color")
+
+			if oldVersion <= 0 || newVersion <= 0 {
+				return fmt.Errorf("both --old-version and --new-version must be specified with positive version numbers")
+			}
+
+			if oldVersion == newVersion {
+				return fmt.Errorf("old-version and new-version must be different")
+			}
+
+			apiClient, err := clients.NewClientFromViper()
+			if err != nil {
+				return fmt.Errorf("failed to create API client: %w", err)
+			}
+
+			ctx := context.Background()
+
+			// Get old version content - Confluence only supports "storage" and "editor" formats
+			apiFormat := utils.GetContentFormatForAPI(format)
+			oldStorageContent, err := apiClient.GetPageContent(ctx, pageID, apiFormat, oldVersion)
+			if err != nil {
+				return fmt.Errorf("failed to get old version content: %w", err)
+			}
+
+			// Get new version content
+			newStorageContent, err := apiClient.GetPageContent(ctx, pageID, apiFormat, newVersion)
+			if err != nil {
+				return fmt.Errorf("failed to get new version content: %w", err)
+			}
+
+			// Convert from storage to requested format if needed
+			oldContent, err := utils.ConvertContentFromStorage(oldStorageContent, format, viper.GetString("url"))
+			if err != nil {
+				return fmt.Errorf("failed to convert old version content: %w", err)
+			}
+
+			newContent, err := utils.ConvertContentFromStorage(newStorageContent, format, viper.GetString("url"))
+			if err != nil {
+				return fmt.Errorf("failed to convert new version content: %w", err)
+			}
+
+			// Generate diff
+			diffOutput, err := generateDiff(pageID, oldVersion, newVersion, oldContent, newContent, color)
+			if err != nil {
+				return fmt.Errorf("failed to generate diff: %w", err)
+			}
+
+			fmt.Print(diffOutput)
+			return nil
+		},
+	}
+
+	cmd.Flags().Int("old-version", 0, "Old version number to compare from (required)")
+	cmd.Flags().Int("new-version", 0, "New version number to compare to (required)")
+	cmd.Flags().StringP("format", "f", "storage", "Content format: storage, edit (editor)")
+	cmd.Flags().Bool("color", true, "Use colored output")
+
+	cmd.MarkFlagRequired("old-version")
+	cmd.MarkFlagRequired("new-version")
+
+	return cmd
+}
+
+// generateDiff generates a git-diff-like output between two versions
+func generateDiff(pageID, oldVersion, newVersion int, oldContent, newContent string, color bool) (string, error) {
+	// Create temporary files for diff
+	tmpDir, err := os.MkdirTemp("", "confcli-diff-*")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldFile := filepath.Join(tmpDir, "old")
+	newFile := filepath.Join(tmpDir, "new")
+
+	if err := os.WriteFile(oldFile, []byte(oldContent), 0644); err != nil {
+		return "", fmt.Errorf("failed to write old content: %w", err)
+	}
+	if err := os.WriteFile(newFile, []byte(newContent), 0644); err != nil {
+		return "", fmt.Errorf("failed to write new content: %w", err)
+	}
+
+	// Run git diff --no-index
+	var colorFlag string
+	if color {
+		colorFlag = "--color=always"
+	} else {
+		colorFlag = "--color=never"
+	}
+
+	diffCmd := exec.Command("git", "diff", "--no-index", colorFlag, "--", oldFile, newFile)
+	output, err := diffCmd.Output()
+	exitErr, ok := err.(*exec.ExitError)
+	
+	// git diff --no-index returns exit code 1 when files differ, which is expected
+	if err != nil && (!ok || exitErr.ExitCode() != 1) {
+		// If git is not available, fall back to simple diff
+		return generateSimpleDiff(pageID, oldVersion, newVersion, oldContent, newContent, color), nil
+	}
+
+	// Replace file paths in diff output with version numbers
+	diffOutput := string(output)
+	diffOutput = strings.ReplaceAll(diffOutput, oldFile, fmt.Sprintf("version %d", oldVersion))
+	diffOutput = strings.ReplaceAll(diffOutput, newFile, fmt.Sprintf("version %d", newVersion))
+
+	return diffOutput, nil
+}
+
+// generateSimpleDiff generates a simple unified diff when git is not available
+func generateSimpleDiff(pageID, oldVersion, newVersion int, oldContent, newContent string, color bool) string {
+	oldLines := strings.Split(oldContent, "\n")
+	newLines := strings.Split(newContent, "\n")
+
+	var result strings.Builder
+
+	// Header
+	result.WriteString(fmt.Sprintf("diff --page %d --old-version %d --new-version %d\n", pageID, oldVersion, newVersion))
+	result.WriteString(fmt.Sprintf("--- version %d\n", oldVersion))
+	result.WriteString(fmt.Sprintf("+++ version %d\n", newVersion))
+
+	// Simple line-by-line comparison
+	maxLen := len(oldLines)
+	if len(newLines) > maxLen {
+		maxLen = len(newLines)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var oldLine, newLine string
+		if i < len(oldLines) {
+			oldLine = oldLines[i]
+		}
+		if i < len(newLines) {
+			newLine = newLines[i]
+		}
+
+		if oldLine == newLine {
+			// Unchanged line - skip for brevity
+			continue
+		}
+
+		if oldLine != "" {
+			if color {
+				result.WriteString(fmt.Sprintf("\033[31m- %s\033[0m\n", oldLine))
+			} else {
+				result.WriteString(fmt.Sprintf("- %s\n", oldLine))
+			}
+		}
+		if newLine != "" {
+			if color {
+				result.WriteString(fmt.Sprintf("\033[32m+ %s\033[0m\n", newLine))
+			} else {
+				result.WriteString(fmt.Sprintf("+ %s\n", newLine))
+			}
+		}
+	}
+
+	return result.String()
 }

@@ -168,7 +168,7 @@ func newDescendantsGetCmd() *cobra.Command {
 }
 
 // exportDescendantsToDirectory exports the descendants to a directory structure
-func exportDescendantsToDirectory(apiClient interface{ GetPageContent(context.Context, interface{}, string) (string, error) }, sourcePage *models.Page, descendants []models.Page, outputDir, format string, skipContent, includeSelf bool) error {
+func exportDescendantsToDirectory(apiClient interface{ GetPageContent(context.Context, interface{}, string, int) (string, error) }, sourcePage *models.Page, descendants []models.Page, outputDir, format string, skipContent, includeSelf bool) error {
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
@@ -186,14 +186,22 @@ func exportDescendantsToDirectory(apiClient interface{ GetPageContent(context.Co
 	for _, page := range descendants {
 		pageID, _ := page.ID.Int()
 		if !skipContent {
-			content, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), format)
+			// Get content format - Confluence only supports "storage" and "editor" formats
+			apiFormat := utils.GetContentFormatForAPI(format)
+			storageContent, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, err)
 			} else {
-				filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(format))
-				filePath := filepath.Join(baseDir, filename)
-				if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
+				// Convert from storage to requested format if needed
+				content, err := utils.ConvertContentFromStorage(storageContent, format, "")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to convert content for page %d: %v\n", pageID, err)
+				} else {
+					filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(format))
+					filePath := filepath.Join(baseDir, filename)
+					if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
+					}
 				}
 			}
 		}

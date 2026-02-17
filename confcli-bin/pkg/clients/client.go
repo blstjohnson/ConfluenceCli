@@ -88,8 +88,8 @@ func (c *client) GetPageByTitle(ctx context.Context, spaceKey, title string) (*m
 }
 
 // GetPageContent retrieves the content of a page in the specified format
-func (c *client) GetPageContent(ctx context.Context, id interface{}, format string) (string, error) {
-	return c.pageService.GetPageContent(ctx, id, format)
+func (c *client) GetPageContent(ctx context.Context, id interface{}, format string, version int) (string, error) {
+	return c.pageService.GetPageContent(ctx, id, format, version)
 }
 
 // GetPageChildren retrieves the children of a page

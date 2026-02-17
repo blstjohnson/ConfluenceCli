@@ -128,7 +128,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 
 // exportSpaceToDirectory exports the space hierarchy to a directory structure
 func exportSpaceToDirectory(apiClient interface {
-	GetPageContent(context.Context, interface{}, string) (string, error)
+	GetPageContent(context.Context, interface{}, string, int) (string, error)
 	GetSpace(context.Context, string) (*models.Space, error)
 	GetAllPagesInSpace(context.Context, string) ([]models.Page, error)
 }, space, outputDir, format string, depth int, skipContent bool) error {
@@ -151,14 +151,22 @@ func exportSpaceToDirectory(apiClient interface {
 	for _, page := range pages {
 		pageID, _ := page.ID.Int()
 		if !skipContent {
-			content, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), format)
+			// Get content format - Confluence only supports "storage" and "editor" formats
+			apiFormat := utils.GetContentFormatForAPI(format)
+			storageContent, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, err)
 			} else {
-				filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(format))
-				filePath := filepath.Join(spaceDir, filename)
-				if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
+				// Convert from storage to requested format if needed
+				content, err := utils.ConvertContentFromStorage(storageContent, format, "")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to convert content for page %d: %v\n", pageID, err)
+				} else {
+					filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(format))
+					filePath := filepath.Join(spaceDir, filename)
+					if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
+					}
 				}
 			}
 		}

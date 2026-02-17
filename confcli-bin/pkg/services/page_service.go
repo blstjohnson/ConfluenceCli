@@ -12,7 +12,7 @@ import (
 type PageServiceInterface interface {
 	GetPage(ctx context.Context, id int) (*models.Page, error)
 	GetPageByTitle(ctx context.Context, spaceKey, title string) (*models.Page, error)
-	GetPageContent(ctx context.Context, id interface{}, format string) (string, error)
+	GetPageContent(ctx context.Context, id interface{}, format string, version int) (string, error)
 	GetPageChildren(ctx context.Context, id int) ([]models.Page, error)
 	GetPageWithExpansions(ctx context.Context, id interface{}, expansions []string) (*models.Page, error)
 	GetDescendants(ctx context.Context, id int, depth int) ([]models.Page, error)
@@ -57,11 +57,11 @@ func (ps *PageService) GetPageByTitle(ctx context.Context, spaceKey, title strin
 }
 
 // GetPageContent retrieves the content of a page in the specified format with validation
-func (ps *PageService) GetPageContent(ctx context.Context, id interface{}, format string) (string, error) {
+func (ps *PageService) GetPageContent(ctx context.Context, id interface{}, format string, version int) (string, error) {
 	if format == "" {
 		return "", fmt.Errorf("format cannot be empty")
 	}
-	return ps.repository.GetPageContent(ctx, id, format)
+	return ps.repository.GetPageContent(ctx, id, format, version)
 }
 
 // GetPageChildren retrieves the children of a page with validation

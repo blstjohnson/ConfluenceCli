@@ -43,10 +43,11 @@ func (r *HTTPPageRepository) GetPageByTitle(ctx context.Context, spaceKey, title
 }
 
 // GetPageContent retrieves the content of a page in the specified format
-func (r *HTTPPageRepository) GetPageContent(ctx context.Context, id interface{}, format string) (string, error) {
+func (r *HTTPPageRepository) GetPageContent(ctx context.Context, id interface{}, format string, version int) (string, error) {
 	resp, err := r.pageExtension.FetchPageContent(ctx, &api.FetchPageContentRequest{
-		PageID: id,
-		Format: format,
+		PageID:  id,
+		Format:  format,
+		Version: version,
 	})
 	if err != nil {
 		return "", err
