@@ -128,8 +128,8 @@ func (c *client) CreatePage(ctx context.Context, spaceKey string, parentID *int,
 }
 
 // UpdatePage updates an existing page
-func (c *client) UpdatePage(ctx context.Context, id int, content string, versionComment string) (*models.Page, error) {
-	return c.pageService.UpdatePage(ctx, id, content, versionComment)
+func (c *client) UpdatePage(ctx context.Context, id int, content string, versionComment string, format string) (*models.Page, error) {
+	return c.pageService.UpdatePage(ctx, id, content, versionComment, format)
 }
 
 // DeletePage deletes a page

@@ -103,7 +103,7 @@ func newPageGetCmd() *cobra.Command {
 
 			// Apply content transformation if needed
 			transformedContent := resp.Content
-			if format != "storage" {
+			if format != "storage" && format != "edit" {
 				switch format {
 				case "markdown":
 					baseURL := viper.GetString("url")
@@ -171,7 +171,7 @@ func newPageGetCmd() *cobra.Command {
 	cmd.Flags().String("space", "", "Space key")
 	cmd.Flags().String("title", "", "Page title")
 	cmd.Flags().String("path", "", "Page path (e.g., Space/Parent/Child)")
-	cmd.Flags().StringP("format", "f", "markdown", "Content format: markdown, storage, html, plain")
+	cmd.Flags().StringP("format", "f", "markdown", "Content format: markdown, storage, html, plain, edit")
 	cmd.Flags().StringP("output", "o", "", "Save content to file")
 	cmd.Flags().String("output-dir", "", "Save full page to directory")
 	cmd.Flags().Bool("with-comments", false, "Include comments in output")
@@ -327,6 +327,7 @@ func newPageUpdateCmd() *cobra.Command {
 
 			contentFile, _ := cmd.Flags().GetString("content-file")
 			versionComment, _ := cmd.Flags().GetString("version-comment")
+			format, _ := cmd.Flags().GetString("format")
 			confirm, _ := cmd.Flags().GetBool("confirm")
 
 			if !confirm {
@@ -356,6 +357,7 @@ func newPageUpdateCmd() *cobra.Command {
 				PageID:         pageID,
 				Content:        content,
 				VersionComment: versionComment,
+				Format:         format,
 			}
 
 			resp, err := pageUseCase.UpdatePageWithVersion(ctx, req)
@@ -370,6 +372,7 @@ func newPageUpdateCmd() *cobra.Command {
 
 	cmd.Flags().String("content-file", "", "Path to content file")
 	cmd.Flags().String("version-comment", "", "Version comment")
+	cmd.Flags().StringP("format", "f", "storage", "Content format: storage, edit (editor)")
 	cmd.Flags().Bool("confirm", false, "Confirm update (required for write operations)")
 
 	return cmd

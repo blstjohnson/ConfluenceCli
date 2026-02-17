@@ -16,7 +16,7 @@ type Client interface {
 	GetDescendants(ctx context.Context, id int, depth int) ([]models.Page, error)
 	GetPageWithExpansions(ctx context.Context, id interface{}, expansions []string) (*models.Page, error)
 	CreatePage(ctx context.Context, spaceKey string, parentID *int, title string, content string, format string) (*models.Page, error)
-	UpdatePage(ctx context.Context, id int, content string, versionComment string) (*models.Page, error)
+	UpdatePage(ctx context.Context, id int, content string, versionComment string, format string) (*models.Page, error)
 	DeletePage(ctx context.Context, id int) error
 
 	// Space operations

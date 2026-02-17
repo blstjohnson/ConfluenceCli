@@ -39,6 +39,10 @@ func FormatOutputWithContent(page *models.Page, content string, contentFormat st
 			"content": content,
 		}
 		return formatYAML(data)
+	case "edit", "editor":
+		// For edit format, output just the raw editor content
+		fmt.Print(content)
+		return nil
 	default:
 		return formatPageWithContentText(page, content)
 	}

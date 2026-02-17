@@ -84,6 +84,7 @@ type UpdatePageWithVersionRequest struct {
 	PageID          int
 	Content         string
 	VersionComment  string
+	Format          string
 }
 
 // UpdatePageWithVersionResponse represents the response from updating a page
@@ -131,7 +132,7 @@ func NewPageUseCase(apiClient api.Client) PageUseCase {
 func (uc *pageUseCase) GetPageWithContent(ctx context.Context, req *GetPageWithContentRequest) (*GetPageWithContentResponse, error) {
 	// Get the page with necessary expansions for metadata
 	expansions := []string{"space", "history", "version"}
-	
+
 	var page *models.Page
 	var err error
 
@@ -149,8 +150,12 @@ func (uc *pageUseCase) GetPageWithContent(ctx context.Context, req *GetPageWithC
 		return nil, err
 	}
 
-	// Get content
-	content, err := uc.apiClient.GetPageContent(ctx, page.ID.IntOrString(), "storage")
+	// Get content - use "editor" format for "edit" request
+	contentFormat := req.Format
+	if contentFormat == "edit" {
+		contentFormat = "editor"
+	}
+	content, err := uc.apiClient.GetPageContent(ctx, page.ID.IntOrString(), contentFormat)
 	if err != nil {
 		return nil, err
 	}
@@ -229,11 +234,11 @@ func (uc *pageUseCase) CreatePageWithValidation(ctx context.Context, req *Create
 
 // UpdatePageWithVersion updates a page handling version management
 func (uc *pageUseCase) UpdatePageWithVersion(ctx context.Context, req *UpdatePageWithVersionRequest) (*UpdatePageWithVersionResponse, error) {
-	page, err := uc.apiClient.UpdatePage(ctx, req.PageID, req.Content, req.VersionComment)
+	page, err := uc.apiClient.UpdatePage(ctx, req.PageID, req.Content, req.VersionComment, req.Format)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return &UpdatePageWithVersionResponse{
 		Page: page,
 	}, nil

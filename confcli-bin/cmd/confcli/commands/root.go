@@ -42,6 +42,8 @@ It allows you to retrieve, search, and manage Confluence pages.`,
 			// Set debug mode if flag is set
 			if debug {
 				viper.Set("debug", true)
+				// Print config file location in debug mode
+				fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
 			}
 
 			// Override format if specified
@@ -113,7 +115,7 @@ func initConfig() {
 
 	// If a config file is found, read it in.
 	if err := viper.ReadInConfig(); err == nil {
-		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
+		// Config file loaded successfully - message will be printed in PersistentPreRun if debug is enabled
 	}
 }
 

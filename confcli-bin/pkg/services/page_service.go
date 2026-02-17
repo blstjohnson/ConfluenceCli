@@ -17,7 +17,7 @@ type PageServiceInterface interface {
 	GetPageWithExpansions(ctx context.Context, id interface{}, expansions []string) (*models.Page, error)
 	GetDescendants(ctx context.Context, id int, depth int) ([]models.Page, error)
 	CreatePage(ctx context.Context, spaceKey string, parentID *int, title string, content string, format string) (*models.Page, error)
-	UpdatePage(ctx context.Context, id int, content string, versionComment string) (*models.Page, error)
+	UpdatePage(ctx context.Context, id int, content string, versionComment string, format string) (*models.Page, error)
 	DeletePage(ctx context.Context, id int) error
 	GetComments(ctx context.Context, pageID int) ([]models.Comment, error)
 	GetLabels(ctx context.Context, pageID int) ([]models.Label, error)
@@ -109,14 +109,17 @@ func (ps *PageService) CreatePage(ctx context.Context, spaceKey string, parentID
 }
 
 // UpdatePage updates an existing page with validation
-func (ps *PageService) UpdatePage(ctx context.Context, id int, content string, versionComment string) (*models.Page, error) {
+func (ps *PageService) UpdatePage(ctx context.Context, id int, content string, versionComment string, format string) (*models.Page, error) {
 	if id <= 0 {
 		return nil, fmt.Errorf("invalid page ID: %d", id)
 	}
 	if content == "" {
 		return nil, fmt.Errorf("content cannot be empty")
 	}
-	return ps.repository.UpdatePage(ctx, id, content, versionComment)
+	if format == "" {
+		format = "storage" // Default format
+	}
+	return ps.repository.UpdatePage(ctx, id, content, versionComment, format)
 }
 
 // DeletePage deletes a page with validation

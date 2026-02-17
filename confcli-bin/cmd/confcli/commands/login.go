@@ -6,6 +6,7 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 // NewLoginCmd creates the login command
@@ -16,8 +17,10 @@ func NewLoginCmd() *cobra.Command {
 		Long:  `Open the Confluence login page in your default browser for manual authentication`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Get the base URL from configuration
-			baseURL := "https://your-confluence-instance.atlassian.net/wiki"
-			// TODO: Get the actual base URL from configuration
+			baseURL := viper.GetString("url")
+			if baseURL == "" {
+				return fmt.Errorf("Confluence URL is not configured. Please set it using 'confcli config set url <your_confluence_url>' or use --url flag")
+			}
 
 			fmt.Printf("Opening Confluence login page in your default browser...\n")
 			fmt.Printf("URL: %s\n", baseURL)

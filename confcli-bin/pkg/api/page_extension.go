@@ -120,7 +120,12 @@ type FetchPageContentResponse struct {
 // FetchPageContent fetches page content in the specified format
 func (e *PageExtension) FetchPageContent(ctx context.Context, req *FetchPageContentRequest) (*FetchPageContentResponse, error) {
 	idStr := pageIDToString(req.PageID)
-	expansion := fmt.Sprintf("body.%s", req.Format)
+	// Map "edit" to "editor" for Confluence API
+	format := req.Format
+	if format == "edit" {
+		format = "editor"
+	}
+	expansion := fmt.Sprintf("body.%s", format)
 	params := url.Values{}
 	params.Add("expand", expansion)
 
@@ -142,7 +147,7 @@ func (e *PageExtension) FetchPageContent(ctx context.Context, req *FetchPageCont
 	}
 
 	// Extract content in the requested format
-	content, err := extractBodyContent(page.Body, req.Format)
+	content, err := extractBodyContent(page.Body, format)
 	if err != nil {
 		return nil, err
 	}
@@ -257,6 +262,7 @@ type UpdatePageRequest struct {
 	PageID          int
 	Content         string
 	VersionComment  string
+	Format          string // Content format: storage, editor, etc.
 	Title           string // Optional: if not provided, will fetch current title
 	SkipFetchCurrent bool // If true, assumes caller provides correct title
 }
@@ -285,6 +291,14 @@ func (e *PageExtension) UpdatePage(ctx context.Context, req *UpdatePageRequest) 
 		versionNumber = currentPage.Version.Number
 	}
 
+	// Map "edit" to "editor" for Confluence API
+	format := req.Format
+	if format == "" {
+		format = "storage" // Default format
+	} else if format == "edit" {
+		format = "editor"
+	}
+
 	pageData := map[string]interface{}{
 		"id":    fmt.Sprintf("%d", req.PageID),
 		"type":  "page",
@@ -294,9 +308,9 @@ func (e *PageExtension) UpdatePage(ctx context.Context, req *UpdatePageRequest) 
 			"message": req.VersionComment,
 		},
 		"body": map[string]interface{}{
-			"storage": map[string]interface{}{
+			format: map[string]interface{}{
 				"value":          req.Content,
-				"representation": "storage",
+				"representation": format,
 			},
 		},
 	}
@@ -391,7 +405,7 @@ func extractBodyContent(body map[string]interface{}, format string) (string, err
 	bodyContent, ok := body[format]
 	if !ok {
 		// If the requested format is not available, return the first available format
-		for _, f := range []string{"storage", "view", "export_view", "styled_view"} {
+		for _, f := range []string{"storage", "view", "export_view", "styled_view", "editor"} {
 			if content, exists := body[f]; exists {
 				if contentMap, ok := content.(map[string]interface{}); ok {
 					if value, ok := contentMap["value"].(string); ok {

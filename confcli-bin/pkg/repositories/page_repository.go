@@ -162,11 +162,12 @@ func (r *HTTPPageRepository) CreatePage(ctx context.Context, spaceKey string, pa
 }
 
 // UpdatePage updates an existing page
-func (r *HTTPPageRepository) UpdatePage(ctx context.Context, id int, content string, versionComment string) (*models.Page, error) {
+func (r *HTTPPageRepository) UpdatePage(ctx context.Context, id int, content string, versionComment string, format string) (*models.Page, error) {
 	resp, err := r.pageExtension.UpdatePage(ctx, &api.UpdatePageRequest{
 		PageID:         id,
 		Content:        content,
 		VersionComment: versionComment,
+		Format:         format,
 	})
 	if err != nil {
 		return nil, err

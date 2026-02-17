@@ -53,6 +53,8 @@ func GetExtensionForFormat(format string) string {
 		return "html"
 	case "plain":
 		return "txt"
+	case "edit", "editor":
+		return "editor"
 	default:
 		return "txt"
 	}
