@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
 	"confcli/pkg/config"
 )
@@ -14,8 +13,8 @@ import (
 func NewConfigCmd() *cobra.Command {
 	configCmd := &cobra.Command{
 		Use:   "config",
-		Short: "Manage configuration profiles",
-		Long:  `Manage configuration profiles for confcli`,
+		Short: "Manage configuration",
+		Long:  `Manage configuration for confcli`,
 	}
 
 	configCmd.AddCommand(&cobra.Command{
@@ -57,7 +56,6 @@ func NewConfigCmd() *cobra.Command {
 				fmt.Printf("  %s%s:\n", name, activeMarker)
 				fmt.Printf("    URL: %s\n", profile.URL)
 				fmt.Printf("    Auth Type: %s\n", profile.AuthType)
-				fmt.Printf("    Impersonate As: %s\n", profile.ImpersonateAs)
 				fmt.Printf("    Session Cookie: %s\n", hideSessionCookie(profile.SessionCookie))
 				fmt.Printf("    SAML Auth Cookie: %s\n", hideSAMLAuthCookie(profile.SAMLAuthCookie))
 				fmt.Printf("    Read Only: %t\n", profile.ReadOnly)
@@ -99,8 +97,6 @@ func NewConfigCmd() *cobra.Command {
 				currentProfile.Username = value
 			case "auth_type":
 				currentProfile.AuthType = value
-			case "impersonate_as":
-				currentProfile.ImpersonateAs = value
 			case "read_only":
 				fmt.Sscanf(value, "%t", &currentProfile.ReadOnly)
 			case "session_cookie":
@@ -117,41 +113,6 @@ func NewConfigCmd() *cobra.Command {
 			}
 
 			fmt.Printf("Configuration %s set to %s\n", key, value)
-			return nil
-		},
-	})
-
-	configCmd.AddCommand(&cobra.Command{
-		Use:   "use-profile [profile-name]",
-		Short: "Switch to a profile",
-		Long:  `Switch to a different configuration profile`,
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			profileName := args[0]
-
-			// Load current config
-			cfg, err := config.LoadConfig()
-			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-
-			// Check if profile exists
-			if cfg.Profiles[profileName] == nil {
-				return fmt.Errorf("profile %s does not exist", profileName)
-			}
-
-			// Switch to the profile
-			cfg.CurrentProfile = profileName
-
-			// Save the updated config
-			if err := config.SaveConfig(cfg); err != nil {
-				return fmt.Errorf("failed to save config: %w", err)
-			}
-
-			// Also update viper for current session
-			viper.Set("current_profile", profileName)
-
-			fmt.Printf("Switched to profile: %s\n", profileName)
 			return nil
 		},
 	})

@@ -66,7 +66,6 @@ func NewClientFromViper() (api.Client, error) {
 		AuthType:       viper.GetString("auth_type"),
 		Token:          viper.GetString("token"),
 		Username:       viper.GetString("username"),
-		ImpersonateAs:  viper.GetString("impersonate_as"),
 		Password:       "",
 		ReadOnly:       viper.GetBool("read_only"),
 		SessionCookie:  viper.GetString(fmt.Sprintf("profiles.%s.session_cookie", currentProfile)),

@@ -48,7 +48,6 @@ type ClientOptions struct {
 	Token          string
 	Username       string
 	Password       string
-	ImpersonateAs  string
 	ReadOnly       bool
 	SessionCookie  string
 	SAMLAuthCookie string

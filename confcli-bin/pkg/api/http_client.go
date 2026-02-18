@@ -26,7 +26,6 @@ type HTTPClient struct {
 	Token          string
 	Username       string
 	Password       string
-	ImpersonateAs  string // User to impersonate
 	ReadOnly       bool
 	Logger         *logging.Logger
 	APIPrefix      string // API path prefix (e.g., "/rest/api" for Server, "/api" for Cloud)
@@ -86,7 +85,6 @@ func NewHTTPClient(options *ClientOptions) (*HTTPClient, error) {
 		AuthType:       options.AuthType,
 		Token:          options.Token,
 		Username:       options.Username,
-		ImpersonateAs:  options.ImpersonateAs,
 		Password:       options.Password,
 		ReadOnly:       options.ReadOnly,
 		Logger:         logging.NewLogger(),
@@ -196,10 +194,6 @@ func (c *HTTPClient) setAuthHeader(req *http.Request) error {
 	if strings.ToLower(c.AuthType) == "browser" {
 		// For browser-based auth, cookies are automatically handled by the HTTP client's cookie jar
 		// The cookies were pre-loaded in setCookiesFromConfig()
-		// Add impersonation header if configured
-		if c.ImpersonateAs != "" {
-			req.Header.Set("X-AsUser", c.ImpersonateAs)
-		}
 		return nil
 	}
 
@@ -211,11 +205,6 @@ func (c *HTTPClient) setAuthHeader(req *http.Request) error {
 		}
 	default:
 		return fmt.Errorf("unsupported auth type: %s", c.AuthType)
-	}
-
-	// Add impersonation header if impersonation is configured
-	if c.ImpersonateAs != "" {
-		req.Header.Set("X-AsUser", c.ImpersonateAs)
 	}
 
 	return nil
