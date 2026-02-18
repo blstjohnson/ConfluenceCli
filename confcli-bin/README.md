@@ -6,13 +6,27 @@
 
 - Retrieve Confluence pages by ID, space/title, or path
 - Export page hierarchies and descendants
-- Support for multiple output formats (text, JSON, YAML)
+- Support for multiple output formats (text, JSON, YAML, markdown, export)
 - Disk-based caching with configurable TTL
 - Cross-platform support (Linux, Windows, macOS)
 - Shell autocompletion
 - Read-only mode for safe operations
 - Machine-readable help output
 - Full CRUD operations for pages, comments, and labels
+
+### Content Formats
+
+The CLI supports multiple content formats for retrieving pages:
+
+- **markdown** (default): Converts Confluence storage format to clean Markdown using advanced HTML-to-Markdown conversion
+- **storage**: Raw Confluence storage format (XML/HTML-based) - useful for updating pages while preserving formatting
+- **edit** (editor): Confluence editor format - optimized for editing in Confluence's editor
+- **export**: Export view format converted to Markdown - cleaner HTML representation meant for exporting, with fewer Confluence-specific macros
+- **html**: Raw HTML output
+- **plain**: Plain text with all HTML tags stripped
+
+Use `--format export` when you want clean Markdown output optimized for reading and documentation.
+Use `--format storage` or `--format edit` when you plan to update the page later and want to preserve Confluence formatting.
 
 ## Installation
 
@@ -146,8 +160,11 @@ confcli config set read_only true
 ### Getting Pages
 
 ```bash
-# Get page by ID with markdown content
+# Get page by ID with markdown content (default)
 confcli page get --id 123456
+
+# Get page by ID with export format (clean markdown for reading)
+confcli page get --id 123456 --format export
 
 # Get page by space and title
 confcli page get --space DEV --title "Project Overview"
@@ -158,8 +175,11 @@ confcli page get --path "DEV/Projects/Overview"
 # Get page with specific version
 confcli page get --id 123456 --version 3
 
-# Get page content in storage format
+# Get page content in storage format (for editing later)
 confcli page get --id 123456 --format storage
+
+# Get page content in editor format (for Confluence editor)
+confcli page get --id 123456 --format edit
 
 # Get page with comments and labels
 confcli page get --id 123456 --with-comments --with-labels

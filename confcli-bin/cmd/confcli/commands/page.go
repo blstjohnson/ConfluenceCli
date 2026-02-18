@@ -106,10 +106,10 @@ func newPageGetCmd() *cobra.Command {
 			}
 
 			// Apply content transformation if needed
-			// Confluence only supports "storage" and "editor" formats natively
-			// For other formats, we fetch storage and convert
+			// Confluence supports "storage", "editor", and "export_view" formats natively
+			// For other formats, we fetch the appropriate base format and convert
 			transformedContent := resp.Content
-			if format != "storage" && format != "edit" {
+			if format != "storage" && format != "edit" && format != "export" {
 				switch format {
 				case "markdown":
 					baseURL := viper.GetString("url")
@@ -123,6 +123,13 @@ func newPageGetCmd() *cobra.Command {
 				case "html":
 					// Storage format is already HTML-based, use as-is
 					transformedContent = resp.Content
+				}
+			} else if format == "export" {
+				// export_view is already clean HTML, convert to markdown
+				baseURL := viper.GetString("url")
+				transformedContent, err = converters.ExportViewToMarkdown(resp.Content, baseURL)
+				if err != nil {
+					return fmt.Errorf("failed to convert export_view to markdown: %w", err)
 				}
 			}
 
@@ -181,7 +188,7 @@ func newPageGetCmd() *cobra.Command {
 	cmd.Flags().String("space", "", "Space key")
 	cmd.Flags().String("title", "", "Page title")
 	cmd.Flags().String("path", "", "Page path (e.g., Space/Parent/Child)")
-	cmd.Flags().StringP("format", "f", "markdown", "Content format: markdown, storage, html, plain, edit")
+	cmd.Flags().StringP("format", "f", "markdown", "Content format: markdown, storage, html, plain, edit, export")
 	cmd.Flags().Int("version", 0, "Page version number (0 for current)")
 	cmd.Flags().StringP("output", "o", "", "Save content to file")
 	cmd.Flags().String("output-dir", "", "Save full page to directory")
@@ -561,8 +568,14 @@ func newPageDiffCmd() *cobra.Command {
 
 			ctx := context.Background()
 
-			// Get old version content - Confluence only supports "storage" and "editor" formats
-			apiFormat := utils.GetContentFormatForAPI(format)
+			// Get old version content - Confluence supports "storage", "editor", and "export_view" formats
+			apiFormat := format
+			switch format {
+			case "edit":
+				apiFormat = "editor"
+			case "export":
+				apiFormat = "export_view"
+			}
 			oldStorageContent, err := apiClient.GetPageContent(ctx, pageID, apiFormat, oldVersion)
 			if err != nil {
 				return fmt.Errorf("failed to get old version content: %w", err)
@@ -598,7 +611,7 @@ func newPageDiffCmd() *cobra.Command {
 
 	cmd.Flags().Int("old-version", 0, "Old version number to compare from (required)")
 	cmd.Flags().Int("new-version", 0, "New version number to compare to (required)")
-	cmd.Flags().StringP("format", "f", "storage", "Content format: storage, edit (editor)")
+	cmd.Flags().StringP("format", "f", "storage", "Content format: storage, edit (editor), export")
 	cmd.Flags().Bool("color", true, "Use colored output")
 
 	cmd.MarkFlagRequired("old-version")

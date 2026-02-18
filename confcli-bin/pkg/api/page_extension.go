@@ -121,15 +121,18 @@ type FetchPageContentResponse struct {
 // FetchPageContent fetches page content in the specified format
 func (e *PageExtension) FetchPageContent(ctx context.Context, req *FetchPageContentRequest) (*FetchPageContentResponse, error) {
 	idStr := pageIDToString(req.PageID)
-	// Map "edit" to "editor" for Confluence API
+	// Map CLI format names to Confluence API format names
 	format := req.Format
-	if format == "edit" {
+	switch format {
+	case "edit":
 		format = "editor"
+	case "export":
+		format = "export_view"
 	}
 	expansion := fmt.Sprintf("body.%s", format)
 	params := url.Values{}
 	params.Add("expand", expansion)
-	
+
 	// Add version parameter if specified
 	if req.Version > 0 {
 		params.Add("version", fmt.Sprintf("%d", req.Version))

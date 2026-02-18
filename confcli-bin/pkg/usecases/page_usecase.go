@@ -150,11 +150,14 @@ func (uc *pageUseCase) GetPageWithContent(ctx context.Context, req *GetPageWithC
 		return nil, err
 	}
 
-	// Get content - Confluence only supports "storage" and "editor" formats natively
-	// For other formats (markdown, plain, html), fetch storage and convert later
+	// Get content - Confluence supports "storage", "editor", and "export_view" formats natively
+	// Map CLI format names to API format names
 	contentFormat := "storage"
-	if req.Format == "edit" {
+	switch req.Format {
+	case "edit":
 		contentFormat = "editor"
+	case "export":
+		contentFormat = "export_view"
 	}
 	content, err := uc.apiClient.GetPageContent(ctx, page.ID.IntOrString(), contentFormat, req.Version)
 	if err != nil {

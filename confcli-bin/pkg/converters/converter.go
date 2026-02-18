@@ -209,3 +209,12 @@ func MarkdownToStorage(markdownContent string) (string, error) {
 	// For now, we'll return the content as-is with a note
 	return fmt.Sprintf("Markdown to Storage conversion not fully implemented.\nOriginal content:\n%s", markdownContent), nil
 }
+
+// ExportViewToMarkdown converts Confluence export_view format to Markdown
+// export_view is a cleaner HTML representation meant for exporting, with fewer
+// Confluence-specific macros and more standard HTML elements
+func ExportViewToMarkdown(exportViewContent string, baseURL string) (string, error) {
+	// Use the advanced converter which handles HTML to markdown conversion
+	// with support for any remaining Confluence-specific elements
+	return StorageToMarkdownAdvanced(exportViewContent, baseURL)
+}

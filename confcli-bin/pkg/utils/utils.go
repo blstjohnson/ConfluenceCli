@@ -55,13 +55,15 @@ func GetExtensionForFormat(format string) string {
 		return "txt"
 	case "edit", "editor":
 		return "editor"
+	case "export":
+		return "export.md"
 	default:
 		return "txt"
 	}
 }
 
 // ConvertContentFromStorage converts storage format to the requested format
-// Confluence only supports "storage" and "editor" formats natively
+// Confluence supports "storage", "editor", and "export_view" formats natively
 // For other formats, we convert from storage
 func ConvertContentFromStorage(storageContent, format, baseURL string) (string, error) {
 	switch format {
@@ -71,6 +73,10 @@ func ConvertContentFromStorage(storageContent, format, baseURL string) (string, 
 	case "edit", "editor":
 		// Editor format should be fetched directly, not converted from storage
 		// This function assumes storage input, so return as-is for editor
+		return storageContent, nil
+	case "export":
+		// Export view is already HTML-based (cleaner than storage), return as-is
+		// The conversion to markdown will be done separately
 		return storageContent, nil
 	case "markdown", "md":
 		// Use advanced converter with support for Confluence macros
@@ -84,13 +90,17 @@ func ConvertContentFromStorage(storageContent, format, baseURL string) (string, 
 }
 
 // GetContentFormatForAPI returns the appropriate format to request from Confluence API
-// Confluence only supports "storage" and "editor" formats natively
+// Confluence supports "storage", "editor", and "export_view" formats natively
 func GetContentFormatForAPI(requestedFormat string) string {
-	if requestedFormat == "edit" {
+	switch requestedFormat {
+	case "edit":
 		return "editor"
+	case "export":
+		return "export_view"
+	default:
+		// For all other formats, fetch storage and convert later
+		return "storage"
 	}
-	// For all other formats, fetch storage and convert later
-	return "storage"
 }
 
 // ExportPageToFile exports a single page to a file
