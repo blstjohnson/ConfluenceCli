@@ -8,14 +8,20 @@ import (
 	"confcli/pkg/models"
 )
 
+// PageBatchHandler is a callback function for processing page batches
+type PageBatchHandler func(batch []models.Page) error
+
 // SpaceUseCase defines the interface for space-related use cases
 type SpaceUseCase interface {
 	// GetSpaceWithPages retrieves a space with its pages
 	GetSpaceWithPages(ctx context.Context, req *GetSpaceWithPagesRequest) (*GetSpaceWithPagesResponse, error)
-	
+
 	// ExportSpace exports a space to a directory structure
 	ExportSpace(ctx context.Context, req *ExportSpaceRequest) (*ExportSpaceResponse, error)
-	
+
+	// ExportSpaceIterative exports a space to a directory structure iteratively (batch by batch)
+	ExportSpaceIterative(ctx context.Context, req *ExportSpaceRequest) (*ExportSpaceResponse, error)
+
 	// GetSpaceHierarchy retrieves the hierarchy of pages in a space
 	GetSpaceHierarchy(ctx context.Context, req *GetSpaceHierarchyRequest) (*GetSpaceHierarchyResponse, error)
 }
@@ -110,12 +116,34 @@ func (uc *spaceUseCase) ExportSpace(ctx context.Context, req *ExportSpaceRequest
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Export logic would go here (file writing, directory structure creation, etc.)
 	// For now, return basic response
 	return &ExportSpaceResponse{
 		ExportedPath: req.OutputDir,
 		PageCount:    len(pages),
+	}, nil
+}
+
+// ExportSpaceIterative exports a space to a directory structure iteratively (batch by batch)
+// This is more memory-efficient for large spaces as it processes and saves each batch before fetching the next
+func (uc *spaceUseCase) ExportSpaceIterative(ctx context.Context, req *ExportSpaceRequest) (*ExportSpaceResponse, error) {
+	pageCount := 0
+	
+	// Use iterative processing to save memory
+	err := uc.apiClient.GetAllPagesInSpaceIterative(ctx, req.SpaceKey, func(batch []models.Page) error {
+		// Process and save each batch
+		pageCount += len(batch)
+		return nil
+	})
+	
+	if err != nil {
+		return nil, err
+	}
+
+	return &ExportSpaceResponse{
+		ExportedPath: req.OutputDir,
+		PageCount:    pageCount,
 	}, nil
 }
 

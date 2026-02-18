@@ -13,6 +13,7 @@ type SpaceServiceInterface interface {
 	Get(ctx context.Context, key string) (*models.Space, error)
 	GetRootPages(ctx context.Context, spaceKey string) ([]models.Page, error)
 	GetAllPages(ctx context.Context, spaceKey string) ([]models.Page, error)
+	GetAllPagesIterative(ctx context.Context, spaceKey string, handler repositories.PageBatchHandler) error
 }
 
 // SpaceService implements the SpaceServiceInterface with business logic
@@ -49,4 +50,12 @@ func (ss *SpaceService) GetAllPages(ctx context.Context, spaceKey string) ([]mod
 		return nil, fmt.Errorf("space key cannot be empty")
 	}
 	return ss.repository.GetAllPages(ctx, spaceKey)
+}
+
+// GetAllPagesIterative retrieves all pages in a space iteratively with validation
+func (ss *SpaceService) GetAllPagesIterative(ctx context.Context, spaceKey string, handler repositories.PageBatchHandler) error {
+	if spaceKey == "" {
+		return fmt.Errorf("space key cannot be empty")
+	}
+	return ss.repository.GetAllPagesIterative(ctx, spaceKey, handler)
 }

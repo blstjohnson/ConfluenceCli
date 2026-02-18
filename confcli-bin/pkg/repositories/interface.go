@@ -28,7 +28,11 @@ type SpaceRepository interface {
 	Get(ctx context.Context, key string) (*models.Space, error)
 	GetRootPages(ctx context.Context, spaceKey string) ([]models.Page, error)
 	GetAllPages(ctx context.Context, spaceKey string) ([]models.Page, error)
+	GetAllPagesIterative(ctx context.Context, spaceKey string, handler PageBatchHandler) error
 }
+
+// PageBatchHandler is a callback function for processing page batches
+type PageBatchHandler func(batch []models.Page) error
 
 // SearchRepository defines the interface for search data access operations
 type SearchRepository interface {

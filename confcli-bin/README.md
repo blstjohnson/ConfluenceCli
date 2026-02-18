@@ -18,14 +18,20 @@
 
 The CLI supports multiple content formats for retrieving pages:
 
-- **markdown** (default): Converts Confluence storage format to clean Markdown using advanced HTML-to-Markdown conversion
+- **markdown** (default): Converts Confluence storage format to clean Markdown using advanced HTML-to-Markdown conversion with support for:
+  - Tables with proper markdown formatting (including colspan/rowspan handling)
+  - Info/Warning/Note/Tip panels
+  - Status macros
+  - Expand/collapse sections
+  - Code blocks with syntax highlighting
+  - User mentions
 - **storage**: Raw Confluence storage format (XML/HTML-based) - useful for updating pages while preserving formatting
 - **edit** (editor): Confluence editor format - optimized for editing in Confluence's editor
-- **export**: Export view format converted to Markdown - cleaner HTML representation meant for exporting, with fewer Confluence-specific macros
+- **export**: Export view format converted to Markdown - cleaner HTML representation meant for exporting, with improved table formatting and fewer Confluence-specific macros
 - **html**: Raw HTML output
 - **plain**: Plain text with all HTML tags stripped
 
-Use `--format export` when you want clean Markdown output optimized for reading and documentation.
+Use `--format export` when you want clean Markdown output optimized for reading and documentation, especially for pages with complex tables.
 Use `--format storage` or `--format edit` when you plan to update the page later and want to preserve Confluence formatting.
 
 ## Installation

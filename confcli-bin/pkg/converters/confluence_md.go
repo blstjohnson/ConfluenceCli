@@ -7,6 +7,7 @@ import (
 	html2md "github.com/JohannesKaufmann/html-to-markdown/v2/converter"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/base"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
+	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/table"
 	"golang.org/x/net/html"
 )
 
@@ -314,11 +315,18 @@ func (p *ConfluencePlugin) getNodeText(n *html.Node) string {
 // - Code blocks with syntax highlighting
 // - User mentions
 // - TOC macros (skipped)
+// - Tables with proper markdown formatting (including colspan/rowspan support)
 func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, error) {
 	converter := html2md.NewConverter(
 		html2md.WithPlugins(
 			base.NewBasePlugin(),
 			commonmark.NewCommonmarkPlugin(),
+			table.NewTablePlugin(
+				// Mirror spanned cells to preserve content (instead of leaving them empty)
+				table.WithSpanCellBehavior(table.SpanBehaviorMirror),
+				// Preserve newlines in table cells instead of skipping tables
+				table.WithNewlineBehavior(table.NewlineBehaviorPreserve),
+			),
 			&ConfluencePlugin{},
 		),
 	)

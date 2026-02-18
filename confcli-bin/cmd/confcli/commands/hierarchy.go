@@ -10,7 +10,9 @@ import (
 	"github.com/spf13/viper"
 	"github.com/xlab/treeprint"
 
+	"confcli/pkg/api"
 	"confcli/pkg/clients"
+	"confcli/pkg/converters"
 	"confcli/pkg/models"
 	"confcli/pkg/formatters"
 	"confcli/pkg/utils"
@@ -88,7 +90,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 				}
 				fmt.Println(tree.String())
 			} else if outputDir != "" {
-				if err := exportSpaceToDirectory(apiClient, space, outputDir, format, depth, skipContent); err != nil {
+				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
 				fmt.Printf("Space %s exported to %s\n", space, outputDir)
@@ -116,7 +118,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 
 	cmd.Flags().String("space", "", "Space key (required)")
 	cmd.Flags().String("output-dir", "", "Export space to directory")
-	cmd.Flags().String("format", "markdown", "Format for saved pages: markdown, storage, both")
+	cmd.Flags().String("format", "markdown", "Format for saved pages: markdown, storage, html, plain, edit, export/export_view (converted to markdown)")
 	cmd.Flags().Int("depth", 0, "Recursion depth (default: unlimited)")
 	cmd.Flags().Bool("flat", false, "Output flat list instead of tree")
 	cmd.Flags().Bool("tree", false, "Display ASCII tree in console")
@@ -127,6 +129,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 }
 
 // exportSpaceToDirectory exports the space hierarchy to a directory structure
+// It supports iterative batch processing to save memory for large spaces
 func exportSpaceToDirectory(apiClient interface {
 	GetPageContent(context.Context, interface{}, string, int) (string, error)
 	GetSpace(context.Context, string) (*models.Space, error)
@@ -148,25 +151,39 @@ func exportSpaceToDirectory(apiClient interface {
 		return fmt.Errorf("failed to create space directory: %w", err)
 	}
 
+	baseURL := viper.GetString("url")
+
 	for _, page := range pages {
 		pageID, _ := page.ID.Int()
 		if !skipContent {
-			// Get content format - Confluence only supports "storage" and "editor" formats
+			// Get content format - Confluence supports "storage", "editor", and "export_view" formats
 			apiFormat := utils.GetContentFormatForAPI(format)
-			storageContent, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
+			apiContent, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, err)
 			} else {
-				// Convert from storage to requested format if needed
-				content, err := utils.ConvertContentFromStorage(storageContent, format, "")
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to convert content for page %d: %v\n", pageID, err)
-				} else {
-					filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(format))
-					filePath := filepath.Join(spaceDir, filename)
-					if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
+				var content string
+				// For export_view format, convert to markdown if requested
+				if format == "export" {
+					// export_view is clean HTML, convert to markdown
+					content, err = converters.ExportViewToMarkdown(apiContent, baseURL)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to convert export_view to markdown for page %d: %v\n", pageID, err)
+						content = apiContent
 					}
+				} else {
+					// Convert from API format to requested format
+					content, err = utils.ConvertContentFromStorage(apiContent, format, baseURL)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to convert content for page %d: %v\n", pageID, err)
+						content = apiContent
+					}
+				}
+
+				filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(format))
+				filePath := filepath.Join(spaceDir, filename)
+				if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
 				}
 			}
 		}
@@ -182,6 +199,104 @@ func exportSpaceToDirectory(apiClient interface {
 			"description": spaceInfo.Description,
 			"homepageId":  spaceInfo.HomepageID,
 			"status":      spaceInfo.Status,
+		}
+
+		metadataBytes, err := formatters.FormatOutputToString(metadata, "json")
+		if err != nil {
+			return fmt.Errorf("failed to format space metadata: %w", err)
+		}
+
+		metadataFile := filepath.Join(spaceDir, "_space_metadata.json")
+		if err := os.WriteFile(metadataFile, []byte(metadataBytes), 0644); err != nil {
+			return fmt.Errorf("failed to write space metadata: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// exportSpaceToDirectoryIterative exports the space hierarchy to a directory structure
+// using iterative batch processing to save memory for large spaces
+func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool) error {
+	ctx := context.Background()
+
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	spaceDir := filepath.Join(outputDir, space)
+	if err := os.MkdirAll(spaceDir, 0755); err != nil {
+		return fmt.Errorf("failed to create space directory: %w", err)
+	}
+
+	baseURL := viper.GetString("url")
+	pageCount := 0
+
+	// Normalize format - support both "export" and "export_view"
+	normalizedFormat := format
+	if format == "export_view" {
+		normalizedFormat = "export"
+	}
+
+	// Use iterative processing - fetch and process each batch before fetching the next
+	err := apiClient.GetAllPagesInSpaceIterative(ctx, space, func(batch []models.Page) error {
+		for _, page := range batch {
+			pageCount++
+			pageID, _ := page.ID.Int()
+
+			if !skipContent {
+				// Get content format - Confluence supports "storage", "editor", and "export_view" formats
+				apiFormat := utils.GetContentFormatForAPI(normalizedFormat)
+				apiContent, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, err)
+					continue
+				}
+
+				var content string
+				// For export/export_view format, convert to markdown
+				if normalizedFormat == "export" {
+					// export_view is clean HTML, convert to markdown
+					content, err = converters.ExportViewToMarkdown(apiContent, baseURL)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to convert export_view to markdown for page %d: %v\n", pageID, err)
+						content = apiContent
+					}
+				} else {
+					// Convert from API format to requested format
+					content, err = utils.ConvertContentFromStorage(apiContent, normalizedFormat, baseURL)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to convert content for page %d: %v\n", pageID, err)
+						content = apiContent
+					}
+				}
+
+				filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(normalizedFormat))
+				filePath := filepath.Join(spaceDir, filename)
+				if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
+				}
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to fetch pages iteratively: %w", err)
+	}
+
+	// Write space metadata at the end
+	spaceInfo, err := apiClient.GetSpace(ctx, space)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to get space info: %v\n", err)
+	} else {
+		metadata := map[string]interface{}{
+			"key":         spaceInfo.Key,
+			"name":        spaceInfo.Name,
+			"description": spaceInfo.Description,
+			"homepageId":  spaceInfo.HomepageID,
+			"status":      spaceInfo.Status,
+			"pageCount":   pageCount,
 		}
 
 		metadataBytes, err := formatters.FormatOutputToString(metadata, "json")

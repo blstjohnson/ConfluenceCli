@@ -55,8 +55,8 @@ func GetExtensionForFormat(format string) string {
 		return "txt"
 	case "edit", "editor":
 		return "editor"
-	case "export":
-		return "export.md"
+	case "export", "export_view":
+		return "md"
 	default:
 		return "txt"
 	}
@@ -74,7 +74,7 @@ func ConvertContentFromStorage(storageContent, format, baseURL string) (string, 
 		// Editor format should be fetched directly, not converted from storage
 		// This function assumes storage input, so return as-is for editor
 		return storageContent, nil
-	case "export":
+	case "export", "export_view":
 		// Export view is already HTML-based (cleaner than storage), return as-is
 		// The conversion to markdown will be done separately
 		return storageContent, nil
@@ -95,7 +95,7 @@ func GetContentFormatForAPI(requestedFormat string) string {
 	switch requestedFormat {
 	case "edit":
 		return "editor"
-	case "export":
+	case "export", "export_view":
 		return "export_view"
 	default:
 		// For all other formats, fetch storage and convert later

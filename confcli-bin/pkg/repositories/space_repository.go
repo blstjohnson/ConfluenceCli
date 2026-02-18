@@ -42,6 +42,7 @@ func (r *HTTPSpaceRepository) GetRootPages(ctx context.Context, spaceKey string)
 }
 
 // GetAllPages retrieves all pages in a space with pagination support
+// This method loads all pages into memory - use GetAllPagesIterative for large spaces
 func (r *HTTPSpaceRepository) GetAllPages(ctx context.Context, spaceKey string) ([]models.Page, error) {
 	allPages := make([]models.Page, 0)
 	start := 0
@@ -67,4 +68,38 @@ func (r *HTTPSpaceRepository) GetAllPages(ctx context.Context, spaceKey string) 
 	}
 
 	return allPages, nil
+}
+
+// GetAllPagesIterative retrieves all pages in a space with pagination support,
+// processing each batch through the provided handler before fetching the next batch.
+// This approach saves memory by not loading all pages at once.
+func (r *HTTPSpaceRepository) GetAllPagesIterative(ctx context.Context, spaceKey string, handler PageBatchHandler) error {
+	start := 0
+	limit := 100
+
+	for {
+		resp, err := r.spaceExtension.FetchAllPagesInSpace(ctx, &api.FetchAllPagesInSpaceRequest{
+			SpaceKey: spaceKey,
+			Start:    start,
+			Limit:    limit,
+		})
+		if err != nil {
+			return err
+		}
+
+		// Process this batch before fetching the next
+		if len(resp.Pages) > 0 {
+			if err := handler(resp.Pages); err != nil {
+				return err
+			}
+		}
+
+		if !resp.HasMore {
+			break
+		}
+
+		start += limit
+	}
+
+	return nil
 }

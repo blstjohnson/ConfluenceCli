@@ -72,11 +72,11 @@ type FetchAllPagesInSpaceResponse struct {
 // FetchAllPagesInSpace fetches all pages in a space with pagination
 func (e *SpaceExtension) FetchAllPagesInSpace(ctx context.Context, req *FetchAllPagesInSpaceRequest) (*FetchAllPagesInSpaceResponse, error) {
 	params := url.Values{}
-	params.Add("space", req.SpaceKey)
 	params.Add("start", fmt.Sprintf("%d", req.Start))
 	params.Add("limit", fmt.Sprintf("%d", req.Limit))
 
-	path := e.client.APIPrefix + "/content"
+	// Use the correct endpoint: /rest/api/space/{spaceKey}/content
+	path := fmt.Sprintf("%s/space/%s/content", e.client.APIPrefix, req.SpaceKey)
 	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, err

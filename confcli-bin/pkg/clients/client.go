@@ -116,6 +116,11 @@ func (c *client) GetAllPagesInSpace(ctx context.Context, spaceKey string) ([]mod
 	return c.spaceService.GetAllPages(ctx, spaceKey)
 }
 
+// GetAllPagesInSpaceIterative retrieves all pages in a space iteratively, processing each batch
+func (c *client) GetAllPagesInSpaceIterative(ctx context.Context, spaceKey string, handler func(batch []models.Page) error) error {
+	return c.spaceService.GetAllPagesIterative(ctx, spaceKey, handler)
+}
+
 // Search searches for pages using CQL
 func (c *client) Search(ctx context.Context, cql string, limit int) ([]models.SearchResult, error) {
 	return c.searchService.Search(ctx, cql, limit)
