@@ -23,7 +23,7 @@ type Client interface {
 	GetSpace(ctx context.Context, key string) (*models.Space, error)
 	GetSpaceRootPages(ctx context.Context, spaceKey string) ([]models.Page, error)
 	GetAllPagesInSpace(ctx context.Context, spaceKey string) ([]models.Page, error)
-	GetAllPagesInSpaceIterative(ctx context.Context, spaceKey string, handler func(batch []models.Page) error) error
+	GetAllPagesInSpaceIterative(ctx context.Context, spaceKey string, batchSize int, handler func(batch []models.Page) error) error
 
 	// Search operations
 	Search(ctx context.Context, cql string, limit int) ([]models.SearchResult, error)

@@ -48,11 +48,15 @@ func (r *HTTPSpaceRepository) GetAllPages(ctx context.Context, spaceKey string) 
 	start := 0
 	limit := 100
 
+	// Request export_view format which is most useful for export
+	expansions := []string{"body.export_view", "version", "ancestors", "space"}
+
 	for {
 		resp, err := r.spaceExtension.FetchAllPagesInSpace(ctx, &api.FetchAllPagesInSpaceRequest{
-			SpaceKey: spaceKey,
-			Start:    start,
-			Limit:    limit,
+			SpaceKey:   spaceKey,
+			Start:      start,
+			Limit:      limit,
+			Expansions: expansions,
 		})
 		if err != nil {
 			return nil, err
@@ -73,15 +77,19 @@ func (r *HTTPSpaceRepository) GetAllPages(ctx context.Context, spaceKey string) 
 // GetAllPagesIterative retrieves all pages in a space with pagination support,
 // processing each batch through the provided handler before fetching the next batch.
 // This approach saves memory by not loading all pages at once.
-func (r *HTTPSpaceRepository) GetAllPagesIterative(ctx context.Context, spaceKey string, handler PageBatchHandler) error {
+func (r *HTTPSpaceRepository) GetAllPagesIterative(ctx context.Context, spaceKey string, batchSize int, handler PageBatchHandler) error {
 	start := 0
-	limit := 100
+	limit := batchSize
+
+	// Request export_view format which is most useful for export
+	expansions := []string{"body.export_view", "version", "ancestors", "space"}
 
 	for {
 		resp, err := r.spaceExtension.FetchAllPagesInSpace(ctx, &api.FetchAllPagesInSpaceRequest{
-			SpaceKey: spaceKey,
-			Start:    start,
-			Limit:    limit,
+			SpaceKey:   spaceKey,
+			Start:      start,
+			Limit:      limit,
+			Expansions: expansions,
 		})
 		if err != nil {
 			return err

@@ -46,6 +46,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 			flat, _ := cmd.Flags().GetBool("flat")
 			treeView, _ := cmd.Flags().GetBool("tree")
 			skipContent, _ := cmd.Flags().GetBool("skip-content")
+			batchSize, _ := cmd.Flags().GetInt("batch-size")
 
 			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
@@ -90,7 +91,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 				}
 				fmt.Println(tree.String())
 			} else if outputDir != "" {
-				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent); err != nil {
+				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent, batchSize); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
 				fmt.Printf("Space %s exported to %s\n", space, outputDir)
@@ -123,6 +124,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 	cmd.Flags().Bool("flat", false, "Output flat list instead of tree")
 	cmd.Flags().Bool("tree", false, "Display ASCII tree in console")
 	cmd.Flags().Bool("skip-content", false, "Export only structure and metadata, no content")
+	cmd.Flags().Int("batch-size", 10, "Batch size for iterative page fetching")
 	cmd.MarkFlagRequired("space")
 
 	return cmd
@@ -158,33 +160,71 @@ func exportSpaceToDirectory(apiClient interface {
 		if !skipContent {
 			// Get content format - Confluence supports "storage", "editor", and "export_view" formats
 			apiFormat := utils.GetContentFormatForAPI(format)
-			apiContent, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, err)
-			} else {
-				var content string
-				// For export_view format, convert to markdown if requested
-				if format == "export" {
-					// export_view is clean HTML, convert to markdown
-					content, err = converters.ExportViewToMarkdown(apiContent, baseURL)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to convert export_view to markdown for page %d: %v\n", pageID, err)
-						content = apiContent
-					}
+			
+			// Try to get content from the page body first (already fetched via expansions)
+			var apiContent string
+			if page.Body != nil {
+				bodyKey := apiFormat
+				if bodyKey == "editor" {
+					bodyKey = "editor"
+				} else if bodyKey == "export_view" {
+					bodyKey = "export_view"
 				} else {
-					// Convert from API format to requested format
-					content, err = utils.ConvertContentFromStorage(apiContent, format, baseURL)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to convert content for page %d: %v\n", pageID, err)
-						content = apiContent
+					bodyKey = "storage"
+				}
+				
+				if bodyContent, ok := page.Body[bodyKey].(map[string]interface{}); ok {
+					if value, ok := bodyContent["value"].(string); ok && value != "" {
+						apiContent = value
 					}
 				}
-
-				filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(format))
-				filePath := filepath.Join(spaceDir, filename)
-				if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
+				
+				// If not found in requested format, try other formats
+				if apiContent == "" {
+					for _, key := range []string{"storage", "editor", "export_view", "view"} {
+						if bodyContent, ok := page.Body[key].(map[string]interface{}); ok {
+							if value, ok := bodyContent["value"].(string); ok && value != "" {
+								apiContent = value
+								break
+							}
+						}
+					}
 				}
+			}
+			
+			var content string
+			var err error
+			// If still no content, fetch it via API call
+			if apiContent == "" {
+				fmt.Fprintf(os.Stderr, "Warning: page %d body not available, fetching separately\n", pageID)
+				apiContent, err = apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, err)
+					continue
+				}
+			}
+			
+			// For export_view format, convert to markdown if requested
+			if format == "export" {
+				// export_view is clean HTML, convert to markdown
+				content, err = converters.ExportViewToMarkdown(apiContent, baseURL)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to convert export_view to markdown for page %d: %v\n", pageID, err)
+					content = apiContent
+				}
+			} else {
+				// Convert from API format to requested format
+				content, err = utils.ConvertContentFromStorage(apiContent, format, baseURL)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to convert content for page %d: %v\n", pageID, err)
+					content = apiContent
+				}
+			}
+
+			filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(format))
+			filePath := filepath.Join(spaceDir, filename)
+			if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
 			}
 		}
 	}
@@ -217,7 +257,7 @@ func exportSpaceToDirectory(apiClient interface {
 
 // exportSpaceToDirectoryIterative exports the space hierarchy to a directory structure
 // using iterative batch processing to save memory for large spaces
-func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool) error {
+func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool, batchSize int) error {
 	ctx := context.Background()
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -239,42 +279,110 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 	}
 
 	// Use iterative processing - fetch and process each batch before fetching the next
-	err := apiClient.GetAllPagesInSpaceIterative(ctx, space, func(batch []models.Page) error {
+	err := apiClient.GetAllPagesInSpaceIterative(ctx, space, batchSize, func(batch []models.Page) error {
+		fmt.Fprintf(os.Stderr, "Processing batch of %d pages\n", len(batch))
 		for _, page := range batch {
 			pageCount++
-			pageID, _ := page.ID.Int()
+			pageID, ok := page.ID.Int()
+			if !ok {
+				fmt.Fprintf(os.Stderr, "Warning: page ID cannot be converted to int: %v\n", page.ID)
+				continue
+			}
+
+			fmt.Fprintf(os.Stderr, "Processing page %d: %s (body=%v)\n", pageID, page.Title, page.Body != nil)
+
+			// Debug: print body type
+			if page.Body != nil {
+				fmt.Fprintf(os.Stderr, "Page %d body type: %T, len=%d\n", pageID, page.Body, len(page.Body))
+			}
+
+			// Always save page metadata file
+			if err := savePageMetadata(spaceDir, &page); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to save metadata for page %d: %v\n", pageID, err)
+			}
 
 			if !skipContent {
-				// Get content format - Confluence supports "storage", "editor", and "export_view" formats
-				apiFormat := utils.GetContentFormatForAPI(normalizedFormat)
-				apiContent, err := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, err)
-					continue
+				// Get content format - use export_view for export format
+				apiFormat := "export_view"
+				if normalizedFormat != "export" {
+					apiFormat = utils.GetContentFormatForAPI(normalizedFormat)
+				}
+
+				// Try to get content from the page body first (already fetched via expansions)
+				var apiContent string
+				if page.Body != nil {
+					fmt.Fprintf(os.Stderr, "Page %d body keys: ", pageID)
+					for k := range page.Body {
+						fmt.Fprintf(os.Stderr, "%s ", k)
+					}
+					fmt.Fprintf(os.Stderr, "\n")
+
+					// First try the requested format
+					if bodyContent, ok := page.Body[apiFormat].(map[string]interface{}); ok {
+						if value, ok := bodyContent["value"].(string); ok && value != "" {
+							apiContent = value
+							fmt.Fprintf(os.Stderr, "Found content in %s format\n", apiFormat)
+						}
+					}
+
+					// If not found, try export_view as fallback
+					if apiContent == "" && apiFormat != "export_view" {
+						if bodyContent, ok := page.Body["export_view"].(map[string]interface{}); ok {
+							if value, ok := bodyContent["value"].(string); ok && value != "" {
+								apiContent = value
+								apiFormat = "export_view"
+								fmt.Fprintf(os.Stderr, "Found content in export_view format\n")
+							}
+						}
+					}
+
+					// If still not found, try storage as final fallback
+					if apiContent == "" {
+						if bodyContent, ok := page.Body["storage"].(map[string]interface{}); ok {
+							if value, ok := bodyContent["value"].(string); ok && value != "" {
+								apiContent = value
+								apiFormat = "storage"
+								fmt.Fprintf(os.Stderr, "Found content in storage format\n")
+							}
+						}
+					}
+				}
+
+				// If still no content, fetch it via API call
+				if apiContent == "" {
+					fmt.Fprintf(os.Stderr, "Warning: page %d body not available, fetching separately\n", pageID)
+					var fetchErr error
+					apiContent, fetchErr = apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
+					if fetchErr != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, fetchErr)
+						continue
+					}
 				}
 
 				var content string
+				var convertErr error
 				// For export/export_view format, convert to markdown
 				if normalizedFormat == "export" {
 					// export_view is clean HTML, convert to markdown
-					content, err = converters.ExportViewToMarkdown(apiContent, baseURL)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to convert export_view to markdown for page %d: %v\n", pageID, err)
+					content, convertErr = converters.ExportViewToMarkdown(apiContent, baseURL)
+					if convertErr != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to convert export_view to markdown for page %d: %v\n", pageID, convertErr)
 						content = apiContent
 					}
 				} else {
 					// Convert from API format to requested format
-					content, err = utils.ConvertContentFromStorage(apiContent, normalizedFormat, baseURL)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "Warning: failed to convert content for page %d: %v\n", pageID, err)
+					content, convertErr = utils.ConvertContentFromStorage(apiContent, normalizedFormat, baseURL)
+					if convertErr != nil {
+						fmt.Fprintf(os.Stderr, "Warning: failed to convert content for page %d: %v\n", pageID, convertErr)
 						content = apiContent
 					}
 				}
 
 				filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(normalizedFormat))
 				filePath := filepath.Join(spaceDir, filename)
-				if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, err)
+				fmt.Fprintf(os.Stderr, "Writing page %d to %s\n", pageID, filePath)
+				if writeErr := os.WriteFile(filePath, []byte(content), 0644); writeErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, writeErr)
 				}
 			}
 		}
@@ -311,6 +419,44 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 	}
 
 	return nil
+}
+
+// savePageMetadata saves page metadata to a JSON file
+func savePageMetadata(spaceDir string, page *models.Page) error {
+	pageID, ok := page.ID.Int()
+	if !ok {
+		return nil
+	}
+
+	metadata := map[string]interface{}{
+		"id":        pageID,
+		"title":     page.Title,
+		"type":      page.Type,
+		"status":    page.Status,
+		"version":   page.Version.Number,
+		"createdAt": page.CreatedAt(),
+		"updatedAt": page.UpdatedAt(),
+	}
+
+	// Add ancestors if present
+	if len(page.Ancestors) > 0 {
+		ancestorIDs := make([]int, len(page.Ancestors))
+		for i, a := range page.Ancestors {
+			if id, ok := a.ID.Int(); ok {
+				ancestorIDs[i] = id
+			}
+		}
+		metadata["ancestors"] = ancestorIDs
+	}
+
+	metadataBytes, err := formatters.FormatOutputToString(metadata, "json")
+	if err != nil {
+		return err
+	}
+
+	filename := fmt.Sprintf("%d_%s.meta.json", pageID, utils.SanitizeFilename(page.Title))
+	filePath := filepath.Join(spaceDir, filename)
+	return os.WriteFile(filePath, []byte(metadataBytes), 0644)
 }
 
 // buildTree builds a tree structure from pages

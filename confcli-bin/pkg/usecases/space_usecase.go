@@ -129,14 +129,15 @@ func (uc *spaceUseCase) ExportSpace(ctx context.Context, req *ExportSpaceRequest
 // This is more memory-efficient for large spaces as it processes and saves each batch before fetching the next
 func (uc *spaceUseCase) ExportSpaceIterative(ctx context.Context, req *ExportSpaceRequest) (*ExportSpaceResponse, error) {
 	pageCount := 0
-	
+
 	// Use iterative processing to save memory
-	err := uc.apiClient.GetAllPagesInSpaceIterative(ctx, req.SpaceKey, func(batch []models.Page) error {
+	batchSize := 10 // Default batch size
+	err := uc.apiClient.GetAllPagesInSpaceIterative(ctx, req.SpaceKey, batchSize, func(batch []models.Page) error {
 		// Process and save each batch
 		pageCount += len(batch)
 		return nil
 	})
-	
+
 	if err != nil {
 		return nil, err
 	}

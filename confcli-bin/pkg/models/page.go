@@ -47,8 +47,18 @@ func (p PageID) String() string {
 }
 
 func (p PageID) Int() (int, bool) {
-	if v, ok := p.Value.(int); ok {
+	switch v := p.Value.(type) {
+	case int:
 		return v, true
+	case float64:
+		return int(v), true
+	case string:
+		var i int
+		_, err := fmt.Sscanf(v, "%d", &i)
+		if err == nil {
+			return i, true
+		}
+		return 0, false
 	}
 	return 0, false
 }

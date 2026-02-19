@@ -58,6 +58,7 @@ type FetchAllPagesInSpaceRequest struct {
 	SpaceKey string
 	Start    int
 	Limit    int
+	Expansions []string // Optional: expansions to fetch for each page (e.g., "body.storage", "version")
 }
 
 // FetchAllPagesInSpaceResponse represents the response from fetching all pages in a space
@@ -70,6 +71,7 @@ type FetchAllPagesInSpaceResponse struct {
 }
 
 // FetchAllPagesInSpace fetches all pages in a space with pagination
+// It first fetches metadata for all pages, then fetches full content for each page
 func (e *SpaceExtension) FetchAllPagesInSpace(ctx context.Context, req *FetchAllPagesInSpaceRequest) (*FetchAllPagesInSpaceResponse, error) {
 	params := url.Values{}
 	params.Add("start", fmt.Sprintf("%d", req.Start))
@@ -88,31 +90,84 @@ func (e *SpaceExtension) FetchAllPagesInSpace(ctx context.Context, req *FetchAll
 		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// The API returns: {"page":{"results":[...],"start":0,"limit":100,"size":100}}
 	var result struct {
-		Results []models.Page `json:"results"`
-		Start   int           `json:"start"`
-		Limit   int           `json:"limit"`
-		Size    int           `json:"size"`
+		Page *struct {
+			Results []struct {
+				ID    interface{} `json:"id"`
+				Type  string      `json:"type"`
+				Title string      `json:"title"`
+				Status string     `json:"status"`
+			} `json:"results"`
+			Start int `json:"start"`
+			Limit int `json:"limit"`
+			Size  int `json:"size"`
+		} `json:"page"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
 
-	hasMore := result.Size == req.Limit
+	if result.Page == nil {
+		return &FetchAllPagesInSpaceResponse{
+			Pages:   []models.Page{},
+			Start:   0,
+			Limit:   req.Limit,
+			Size:    0,
+			HasMore: false,
+		}, nil
+	}
+
+	// Fetch full page content for each page using the page extension
+	pageExtension := NewPageExtension(e.client)
+	pages := make([]models.Page, 0, len(result.Page.Results))
+
+	for _, pageMeta := range result.Page.Results {
+		// Convert ID to int if possible
+		var pageID int
+		switch id := pageMeta.ID.(type) {
+		case float64:
+			pageID = int(id)
+		case int:
+			pageID = id
+		case string:
+			// Try to parse string ID as int
+			fmt.Sscanf(id, "%d", &pageID)
+		}
+
+		if pageID == 0 {
+			continue // Skip pages with invalid IDs
+		}
+
+		// Fetch full page content using existing page function
+		fetchReq := &FetchPageRequest{
+			PageID:     pageID,
+			Expansions: req.Expansions,
+		}
+		fetchResp, err := pageExtension.FetchPage(ctx, fetchReq)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch page %d: %w", pageID, err)
+		}
+
+		pages = append(pages, *fetchResp.Page)
+	}
+
+	hasMore := result.Page.Size == req.Limit
 
 	return &FetchAllPagesInSpaceResponse{
-		Pages:   result.Results,
-		Start:   result.Start,
-		Limit:   result.Limit,
-		Size:    result.Size,
+		Pages:   pages,
+		Start:   result.Page.Start,
+		Limit:   result.Page.Limit,
+		Size:    result.Page.Size,
 		HasMore: hasMore,
 	}, nil
 }
 
 // FetchRootPagesInSpaceRequest represents a request to fetch root pages in a space
 type FetchRootPagesInSpaceRequest struct {
-	SpaceKey string
+	SpaceKey   string
+	Expansions []string // Optional: expansions to fetch for each page
 }
 
 // FetchRootPagesInSpaceResponse represents the response from fetching root pages
@@ -125,9 +180,10 @@ func (e *SpaceExtension) FetchRootPagesInSpace(ctx context.Context, req *FetchRo
 	// For now, return all pages in the space
 	// A more sophisticated implementation would filter to only root-level pages
 	allPagesResp, err := e.FetchAllPagesInSpace(ctx, &FetchAllPagesInSpaceRequest{
-		SpaceKey: req.SpaceKey,
-		Start:    0,
-		Limit:    100,
+		SpaceKey:   req.SpaceKey,
+		Start:      0,
+		Limit:      100,
+		Expansions: req.Expansions,
 	})
 	if err != nil {
 		return nil, err
