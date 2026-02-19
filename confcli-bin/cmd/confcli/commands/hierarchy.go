@@ -258,6 +258,7 @@ func exportSpaceToDirectory(apiClient interface {
 // exportSpaceToDirectoryIterative exports the space hierarchy to a directory structure
 // using iterative batch processing to save memory for large spaces
 // Creates a hierarchical folder structure: each page gets a folder named by pageId
+// Child pages are saved inside their parent page's folder
 func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool, batchSize int) error {
 	ctx := context.Background()
 
@@ -286,16 +287,13 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 
 	// Use iterative processing to fetch all pages
 	err := apiClient.GetAllPagesInSpaceIterative(ctx, space, batchSize, func(batch []models.Page) error {
-		fmt.Fprintf(os.Stderr, "Processing batch of %d pages\n", len(batch))
 		for _, page := range batch {
 			pageCount++
 			pageID, ok := page.ID.Int()
 			if !ok {
-				fmt.Fprintf(os.Stderr, "Warning: page ID cannot be converted to int: %v\n", page.ID)
 				continue
 			}
 
-			fmt.Fprintf(os.Stderr, "Processing page %d: %s (body=%v)\n", pageID, page.Title, page.Body != nil)
 			pageMap[pageID] = &page
 
 			// Build parent-child relationships
@@ -317,20 +315,40 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 		return fmt.Errorf("failed to fetch pages iteratively: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "Fetched %d pages, building hierarchy...\n", pageCount)
+	// Recursive function to save page and its children in hierarchy
+	var savePageWithChildren func(pageID int, currentDepth int) error
+	savePageWithChildren = func(pageID int, currentDepth int) error {
+		page, exists := pageMap[pageID]
+		if !exists {
+			return nil
+		}
 
-	// Second pass: create directory structure and save content
-	for pageID, page := range pageMap {
-		// Create page folder
-		pageDir := filepath.Join(spaceDir, fmt.Sprintf("%d", pageID))
+		// Determine the directory for this page
+		var pageDir string
+		if depth > 0 && currentDepth >= depth {
+			// Skip if max depth reached
+			return nil
+		}
+
+		// For root pages, use spaceDir; for children, use parent's page directory
+		if len(page.Ancestors) == 0 {
+			pageDir = filepath.Join(spaceDir, fmt.Sprintf("%d", pageID))
+		} else {
+			// Find parent's directory
+			parentID, ok := page.Ancestors[len(page.Ancestors)-1].ID.Int()
+			if !ok {
+				return nil
+			}
+			pageDir = filepath.Join(spaceDir, fmt.Sprintf("%d", parentID), fmt.Sprintf("%d", pageID))
+		}
+
 		if err := os.MkdirAll(pageDir, 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to create directory for page %d: %v\n", pageID, err)
-			continue
+			return fmt.Errorf("failed to create directory for page %d: %w", pageID, err)
 		}
 
 		// Save page metadata
 		if err := savePageMetadata(pageDir, page); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to save metadata for page %d: %v\n", pageID, err)
+			return fmt.Errorf("failed to save metadata for page %d: %w", pageID, err)
 		}
 
 		if !skipContent {
@@ -343,17 +361,10 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 			// Try to get content from the page body first (already fetched via expansions)
 			var apiContent string
 			if page.Body != nil {
-				fmt.Fprintf(os.Stderr, "Page %d body keys: ", pageID)
-				for k := range page.Body {
-					fmt.Fprintf(os.Stderr, "%s ", k)
-				}
-				fmt.Fprintf(os.Stderr, "\n")
-
 				// First try the requested format
 				if bodyContent, ok := page.Body[apiFormat].(map[string]interface{}); ok {
 					if value, ok := bodyContent["value"].(string); ok && value != "" {
 						apiContent = value
-						fmt.Fprintf(os.Stderr, "Found content in %s format\n", apiFormat)
 					}
 				}
 
@@ -363,7 +374,6 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 						if value, ok := bodyContent["value"].(string); ok && value != "" {
 							apiContent = value
 							apiFormat = "export_view"
-							fmt.Fprintf(os.Stderr, "Found content in export_view format\n")
 						}
 					}
 				}
@@ -374,7 +384,6 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 						if value, ok := bodyContent["value"].(string); ok && value != "" {
 							apiContent = value
 							apiFormat = "storage"
-							fmt.Fprintf(os.Stderr, "Found content in storage format\n")
 						}
 					}
 				}
@@ -382,12 +391,10 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 
 			// If still no content, fetch it via API call
 			if apiContent == "" {
-				fmt.Fprintf(os.Stderr, "Warning: page %d body not available, fetching separately\n", pageID)
 				var fetchErr error
 				apiContent, fetchErr = apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
 				if fetchErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to get content for page %d: %v\n", pageID, fetchErr)
-					continue
+					return fmt.Errorf("failed to get content for page %d: %w", pageID, fetchErr)
 				}
 			}
 
@@ -398,67 +405,65 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 				// export_view is clean HTML, convert to markdown
 				content, convertErr = converters.ExportViewToMarkdown(apiContent, baseURL)
 				if convertErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to convert export_view to markdown for page %d: %v\n", pageID, convertErr)
 					content = apiContent
 				}
 			} else {
 				// Convert from API format to requested format
 				content, convertErr = utils.ConvertContentFromStorage(apiContent, normalizedFormat, baseURL)
 				if convertErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to convert content for page %d: %v\n", pageID, convertErr)
 					content = apiContent
 				}
 			}
 
 			filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(normalizedFormat))
 			filePath := filepath.Join(pageDir, filename)
-			fmt.Fprintf(os.Stderr, "Writing page %d to %s\n", pageID, filePath)
 			if writeErr := os.WriteFile(filePath, []byte(content), 0644); writeErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to write page %d to file: %v\n", pageID, writeErr)
+				return fmt.Errorf("failed to write page %d to file: %w", pageID, writeErr)
 			}
 		}
 
-		// Create children folders (placeholders for hierarchy)
+		// Recursively save children
 		childIDs := childrenMap[pageID]
 		for _, childID := range childIDs {
-			childPage, exists := pageMap[childID]
-			if !exists {
-				continue
+			if err := savePageWithChildren(childID, currentDepth+1); err != nil {
+				return err
 			}
-			childDir := filepath.Join(spaceDir, fmt.Sprintf("%d", childID))
-			if err := os.MkdirAll(childDir, 0755); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to create directory for child page %d: %v\n", childID, err)
-			}
-			// Create a symlink or marker file to indicate parent-child relationship
-			// For now, the folder structure itself shows the relationship
-			_ = childPage // Use childPage variable to avoid unused warning
+		}
+
+		return nil
+	}
+
+	// Save all root pages (and their children recursively)
+	for _, rootPageID := range rootPageIDs {
+		if err := savePageWithChildren(rootPageID, 0); err != nil {
+			return err
 		}
 	}
 
 	// Write space metadata at the end
 	spaceInfo, err := apiClient.GetSpace(ctx, space)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to get space info: %v\n", err)
-	} else {
-		metadata := map[string]interface{}{
-			"key":         spaceInfo.Key,
-			"name":        spaceInfo.Name,
-			"description": spaceInfo.Description,
-			"homepageId":  spaceInfo.HomepageID,
-			"status":      spaceInfo.Status,
-			"pageCount":   pageCount,
-			"rootPages":   rootPageIDs,
-		}
+		return fmt.Errorf("failed to get space info: %w", err)
+	}
 
-		metadataBytes, err := formatters.FormatOutputToString(metadata, "json")
-		if err != nil {
-			return fmt.Errorf("failed to format space metadata: %w", err)
-		}
+	metadata := map[string]interface{}{
+		"key":         spaceInfo.Key,
+		"name":        spaceInfo.Name,
+		"description": spaceInfo.Description,
+		"homepageId":  spaceInfo.HomepageID,
+		"status":      spaceInfo.Status,
+		"pageCount":   pageCount,
+		"rootPages":   rootPageIDs,
+	}
 
-		metadataFile := filepath.Join(spaceDir, "_space_metadata.json")
-		if err := os.WriteFile(metadataFile, []byte(metadataBytes), 0644); err != nil {
-			return fmt.Errorf("failed to write space metadata: %w", err)
-		}
+	metadataBytes, err := formatters.FormatOutputToString(metadata, "json")
+	if err != nil {
+		return fmt.Errorf("failed to format space metadata: %w", err)
+	}
+
+	metadataFile := filepath.Join(spaceDir, "_space_metadata.json")
+	if err := os.WriteFile(metadataFile, []byte(metadataBytes), 0644); err != nil {
+		return fmt.Errorf("failed to write space metadata: %w", err)
 	}
 
 	return nil

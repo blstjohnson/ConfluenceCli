@@ -40,7 +40,6 @@ func (e *PageExtension) FetchPage(ctx context.Context, req *FetchPageRequest) (*
 	if len(req.Expansions) > 0 {
 		params = url.Values{}
 		params.Add("expand", strings.Join(req.Expansions, ","))
-		fmt.Printf("[DEBUG] FetchPage %d with expansions: %s\n", req.PageID, params.Get("expand"))
 	}
 
 	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
