@@ -573,7 +573,9 @@ func newPageDiffCmd() *cobra.Command {
 			switch format {
 			case "edit":
 				apiFormat = "editor"
-			case "export":
+			case "export", "export_view":
+				apiFormat = "export_view"
+			case "markdown", "md":
 				apiFormat = "export_view"
 			}
 			oldStorageContent, err := apiClient.GetPageContent(ctx, pageID, apiFormat, oldVersion)

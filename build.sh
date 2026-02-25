@@ -47,7 +47,12 @@ if [[ ! -f "$DOCKERFILE" ]]; then
 fi
 
 # Create dist directory
-mkdir -p "$BINARIES_DIR"
+mkdir -p "$BINARIES_DIR/linux/amd64"
+mkdir -p "$BINARIES_DIR/linux/arm64"
+mkdir -p "$BINARIES_DIR/windows/amd64"
+mkdir -p "$BINARIES_DIR/windows/arm64"
+mkdir -p "$BINARIES_DIR/darwin/amd64"
+mkdir -p "$BINARIES_DIR/darwin/arm64"
 
 print_status "Building confcli binaries for multiple platforms..."
 
@@ -61,12 +66,12 @@ docker create --name "$CONTAINER_NAME" "$IMAGE_NAME" > /dev/null
 
 # Extract binaries from the container
 print_status "Extracting binaries..."
-docker cp "$CONTAINER_NAME:/dist/confcli-linux-amd64" "$BINARIES_DIR/"
-docker cp "$CONTAINER_NAME:/dist/confcli-linux-arm64" "$BINARIES_DIR/"
-docker cp "$CONTAINER_NAME:/dist/confcli-windows-amd64.exe" "$BINARIES_DIR/"
-docker cp "$CONTAINER_NAME:/dist/confcli-windows-arm64.exe" "$BINARIES_DIR/"
-docker cp "$CONTAINER_NAME:/dist/confcli-darwin-amd64" "$BINARIES_DIR/"
-docker cp "$CONTAINER_NAME:/dist/confcli-darwin-arm64" "$BINARIES_DIR/"
+docker cp "$CONTAINER_NAME:/dist/linux/amd64/confcli" "$BINARIES_DIR/linux/amd64/"
+docker cp "$CONTAINER_NAME:/dist/linux/arm64/confcli" "$BINARIES_DIR/linux/arm64/"
+docker cp "$CONTAINER_NAME:/dist/windows/amd64/confcli.exe" "$BINARIES_DIR/windows/amd64/"
+docker cp "$CONTAINER_NAME:/dist/windows/arm64/confcli.exe" "$BINARIES_DIR/windows/arm64/"
+docker cp "$CONTAINER_NAME:/dist/darwin/amd64/confcli" "$BINARIES_DIR/darwin/amd64/"
+docker cp "$CONTAINER_NAME:/dist/darwin/arm64/confcli" "$BINARIES_DIR/darwin/arm64/"
 
 # Clean up the temporary container
 docker rm -f "$CONTAINER_NAME" > /dev/null
@@ -75,20 +80,25 @@ print_status "Binaries successfully extracted to $BINARIES_DIR/"
 
 # Create release directory with organized structure
 RELEASE_DIR="$DIST_DIR/releases"
-mkdir -p "$RELEASE_DIR"
+mkdir -p "$RELEASE_DIR/linux/amd64"
+mkdir -p "$RELEASE_DIR/linux/arm64"
+mkdir -p "$RELEASE_DIR/windows/amd64"
+mkdir -p "$RELEASE_DIR/windows/arm64"
+mkdir -p "$RELEASE_DIR/darwin/amd64"
+mkdir -p "$RELEASE_DIR/darwin/arm64"
 
 print_status "Creating release packages..."
-cp "$BINARIES_DIR/confcli-linux-amd64" "$RELEASE_DIR/"
-cp "$BINARIES_DIR/confcli-linux-arm64" "$RELEASE_DIR/"
-cp "$BINARIES_DIR/confcli-windows-amd64.exe" "$RELEASE_DIR/"
-cp "$BINARIES_DIR/confcli-windows-arm64.exe" "$RELEASE_DIR/"
-cp "$BINARIES_DIR/confcli-darwin-amd64" "$RELEASE_DIR/"
-cp "$BINARIES_DIR/confcli-darwin-arm64" "$RELEASE_DIR/"
+cp "$BINARIES_DIR/linux/amd64/confcli" "$RELEASE_DIR/linux/amd64/"
+cp "$BINARIES_DIR/linux/arm64/confcli" "$RELEASE_DIR/linux/arm64/"
+cp "$BINARIES_DIR/windows/amd64/confcli.exe" "$RELEASE_DIR/windows/amd64/"
+cp "$BINARIES_DIR/windows/arm64/confcli.exe" "$RELEASE_DIR/windows/arm64/"
+cp "$BINARIES_DIR/darwin/amd64/confcli" "$RELEASE_DIR/darwin/amd64/"
+cp "$BINARIES_DIR/darwin/arm64/confcli" "$RELEASE_DIR/darwin/arm64/"
 
 print_status "Release binaries are available in $RELEASE_DIR/"
 
 # List the created binaries
 print_status "Created binaries:"
-ls -la "$RELEASE_DIR/"
+find "$RELEASE_DIR" -type f -name "confcli*" | sort
 
 print_status "Build process completed successfully!"

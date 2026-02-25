@@ -80,6 +80,7 @@ func ConvertContentFromStorage(storageContent, format, baseURL string) (string, 
 		return storageContent, nil
 	case "markdown", "md":
 		// Use advanced converter with support for Confluence macros
+		// Content may come from export_view or storage, both work with the converter
 		return converters.StorageToMarkdownAdvanced(storageContent, baseURL)
 	case "plain":
 		return StripHTMLTags(storageContent), nil
