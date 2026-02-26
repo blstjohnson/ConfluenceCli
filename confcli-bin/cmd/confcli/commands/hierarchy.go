@@ -12,11 +12,12 @@ import (
 
 	"confcli/pkg/api"
 	"confcli/pkg/clients"
+	"confcli/pkg/config"
 	"confcli/pkg/converters"
-	"confcli/pkg/models"
 	"confcli/pkg/formatters"
-	"confcli/pkg/utils"
+	"confcli/pkg/models"
 	"confcli/pkg/usecases"
+	"confcli/pkg/utils"
 )
 
 // NewHierarchyCmd creates the hierarchy command
@@ -47,6 +48,11 @@ func newHierarchySpaceCmd() *cobra.Command {
 			treeView, _ := cmd.Flags().GetBool("tree")
 			skipContent, _ := cmd.Flags().GetBool("skip-content")
 			batchSize, _ := cmd.Flags().GetInt("batch-size")
+			namedFolders, _ := cmd.Flags().GetBool("named-folders")
+			rewriteLinks, _ := cmd.Flags().GetBool("rewrite-links")
+			rewriteTFSLinks, _ := cmd.Flags().GetBool("rewrite-tfs-links")
+			tfsBaseURL, _ := cmd.Flags().GetString("tfs-base-url")
+			localRepoPath, _ := cmd.Flags().GetString("local-repo-path")
 
 			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
@@ -91,7 +97,28 @@ func newHierarchySpaceCmd() *cobra.Command {
 				}
 				fmt.Println(tree.String())
 			} else if outputDir != "" {
-				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent, batchSize); err != nil {
+				// Load TFS config from profile if not overridden by flags
+				if rewriteTFSLinks && tfsBaseURL == "" {
+					if cfg, err := config.LoadConfig(); err == nil {
+						profile := cfg.Profiles[cfg.CurrentProfile]
+						if profile != nil {
+							if tfsBaseURL == "" {
+								tfsBaseURL = profile.TFSBaseURL
+							}
+							if localRepoPath == "" {
+								localRepoPath = profile.LocalRepoPath
+							}
+						}
+					}
+				}
+
+				linkCfg := &converters.LinkRewriteConfig{
+					ConfBaseURL:   viper.GetString("url"),
+					TFSBaseURL:    tfsBaseURL,
+					LocalRepoPath: localRepoPath,
+				}
+
+				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, linkCfg); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
 				fmt.Printf("Space %s exported to %s\n", space, outputDir)
@@ -125,6 +152,11 @@ func newHierarchySpaceCmd() *cobra.Command {
 	cmd.Flags().Bool("tree", false, "Display ASCII tree in console")
 	cmd.Flags().Bool("skip-content", false, "Export only structure and metadata, no content")
 	cmd.Flags().Int("batch-size", 10, "Batch size for iterative page fetching")
+	cmd.Flags().Bool("rewrite-links", true, "Rewrite Confluence internal links to relative file paths during export")
+	cmd.Flags().Bool("rewrite-tfs-links", false, "Rewrite TFS/Git repository links to local paths")
+	cmd.Flags().String("tfs-base-url", "", "TFS base URL for link rewriting (overrides config)")
+	cmd.Flags().String("local-repo-path", "", "Local repo path prefix for TFS link rewriting (overrides config)")
+	cmd.Flags().Bool("named-folders", false, "Use transliterated page names for folder names instead of page IDs")
 	cmd.MarkFlagRequired("space")
 
 	return cmd
@@ -259,7 +291,7 @@ func exportSpaceToDirectory(apiClient interface {
 // using iterative batch processing to save memory for large spaces
 // Creates a hierarchical folder structure: each page gets a folder named by pageId
 // Child pages are saved inside their parent page's folder
-func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool, batchSize int) error {
+func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, linkCfg *converters.LinkRewriteConfig) error {
 	ctx := context.Background()
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -315,32 +347,95 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 		return fmt.Errorf("failed to fetch pages iteratively: %w", err)
 	}
 
+	// Build folder name map for named-folders mode (transliterated page names with dedup)
+	folderNameMap := make(map[int]string) // pageID -> folder name
+	if namedFolders {
+		// Detect duplicate names among siblings and append page ID suffix
+		siblingNames := make(map[int]map[string][]int) // parentID -> name -> list of pageIDs
+		// Group root pages under parentID=0
+		for _, rootID := range rootPageIDs {
+			if page, ok := pageMap[rootID]; ok {
+				name := utils.SanitizeFilename(page.Title)
+				if siblingNames[0] == nil {
+					siblingNames[0] = make(map[string][]int)
+				}
+				siblingNames[0][name] = append(siblingNames[0][name], rootID)
+			}
+		}
+		for parentID, children := range childrenMap {
+			if siblingNames[parentID] == nil {
+				siblingNames[parentID] = make(map[string][]int)
+			}
+			for _, childID := range children {
+				if page, ok := pageMap[childID]; ok {
+					name := utils.SanitizeFilename(page.Title)
+					siblingNames[parentID][name] = append(siblingNames[parentID][name], childID)
+				}
+			}
+		}
+		// Assign folder names, appending page ID for duplicates
+		for _, nameMap := range siblingNames {
+			for name, ids := range nameMap {
+				if len(ids) == 1 {
+					folderNameMap[ids[0]] = name
+				} else {
+					for _, id := range ids {
+						folderNameMap[id] = fmt.Sprintf("%s-%d", name, id)
+					}
+				}
+			}
+		}
+	}
+
+	// getFolderName returns the folder name for a page
+	getFolderName := func(pageID int) string {
+		if namedFolders {
+			if name, ok := folderNameMap[pageID]; ok {
+				return name
+			}
+		}
+		return fmt.Sprintf("%d", pageID)
+	}
+
+	// Build page ID -> file path map for link rewriting
+	// This maps each page ID to its content file path relative to spaceDir
+	pageFileMap := make(map[int]string)
+	if rewriteLinks {
+		var buildFileMap func(pageID int, parentDir string)
+		buildFileMap = func(pageID int, parentDir string) {
+			page, exists := pageMap[pageID]
+			if !exists {
+				return
+			}
+			pageDir := filepath.Join(parentDir, getFolderName(pageID))
+			filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(normalizedFormat))
+			pageFileMap[pageID] = filepath.ToSlash(filepath.Join(pageDir, filename))
+
+			for _, childID := range childrenMap[pageID] {
+				buildFileMap(childID, pageDir)
+			}
+		}
+		for _, rootID := range rootPageIDs {
+			buildFileMap(rootID, "")
+		}
+		linkCfg.PageMap = pageFileMap
+	}
+
 	// Recursive function to save page and its children in hierarchy
-	var savePageWithChildren func(pageID int, currentDepth int) error
-	savePageWithChildren = func(pageID int, currentDepth int) error {
+	// parentDir is the absolute directory of the parent page (or spaceDir for root pages)
+	var savePageWithChildren func(pageID int, parentDir string, currentDepth int) error
+	savePageWithChildren = func(pageID int, parentDir string, currentDepth int) error {
 		page, exists := pageMap[pageID]
 		if !exists {
 			return nil
 		}
 
-		// Determine the directory for this page
-		var pageDir string
 		if depth > 0 && currentDepth >= depth {
 			// Skip if max depth reached
 			return nil
 		}
 
-		// For root pages, use spaceDir; for children, use parent's page directory
-		if len(page.Ancestors) == 0 {
-			pageDir = filepath.Join(spaceDir, fmt.Sprintf("%d", pageID))
-		} else {
-			// Find parent's directory
-			parentID, ok := page.Ancestors[len(page.Ancestors)-1].ID.Int()
-			if !ok {
-				return nil
-			}
-			pageDir = filepath.Join(spaceDir, fmt.Sprintf("%d", parentID), fmt.Sprintf("%d", pageID))
-		}
+		pageDir := filepath.Join(parentDir, getFolderName(pageID))
 
 		if err := os.MkdirAll(pageDir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory for page %d: %w", pageID, err)
@@ -416,8 +511,31 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 			}
 
 			filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(normalizedFormat))
-			filePath := filepath.Join(pageDir, filename)
-			if writeErr := os.WriteFile(filePath, []byte(content), 0644); writeErr != nil {
+			absFilePath := filepath.Join(pageDir, filename)
+
+			// Apply link rewriting if enabled
+			if rewriteLinks || rewriteTFSLinks {
+				// Compute current page's directory relative to spaceDir for relative path resolution
+				currentRelDir := ""
+				if relPath, ok := pageFileMap[pageID]; ok {
+					currentRelDir = filepath.ToSlash(filepath.Dir(relPath))
+				}
+				rewriteCfg := &converters.LinkRewriteConfig{
+					TFSBaseURL:      linkCfg.TFSBaseURL,
+					LocalRepoPath:   linkCfg.LocalRepoPath,
+					CurrentPageDir:  currentRelDir,
+					CurrentFilePath: absFilePath,
+				}
+				if rewriteLinks && linkCfg.PageMap != nil {
+					rewriteCfg.PageMap = linkCfg.PageMap
+					rewriteCfg.ConfBaseURL = linkCfg.ConfBaseURL
+				}
+				if rewriteTFSLinks && linkCfg.TFSBaseURL != "" {
+					rewriteCfg.TFSBaseURL = linkCfg.TFSBaseURL
+				}
+				content = converters.RewriteLinks(content, rewriteCfg)
+			}
+			if writeErr := os.WriteFile(absFilePath, []byte(content), 0644); writeErr != nil {
 				return fmt.Errorf("failed to write page %d to file: %w", pageID, writeErr)
 			}
 		}
@@ -425,7 +543,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 		// Recursively save children
 		childIDs := childrenMap[pageID]
 		for _, childID := range childIDs {
-			if err := savePageWithChildren(childID, currentDepth+1); err != nil {
+			if err := savePageWithChildren(childID, pageDir, currentDepth+1); err != nil {
 				return err
 			}
 		}
@@ -435,7 +553,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 
 	// Save all root pages (and their children recursively)
 	for _, rootPageID := range rootPageIDs {
-		if err := savePageWithChildren(rootPageID, 0); err != nil {
+		if err := savePageWithChildren(rootPageID, spaceDir, 0); err != nil {
 			return err
 		}
 	}

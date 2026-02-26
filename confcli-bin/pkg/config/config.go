@@ -17,6 +17,8 @@ type Profile struct {
 	SessionCookie  string `mapstructure:"session_cookie"`  // Session cookie for browser-based auth
 	SAMLAuthCookie string `mapstructure:"saml_auth_cookie"` // SAML auth cookie for identity provider
 	ReadOnly       bool   `mapstructure:"read_only"`
+	TFSBaseURL     string `mapstructure:"tfs_base_url"`     // TFS/Git base URL for link rewriting (e.g., "ssh://tfs.ekassir.com/eKassirProjectCollection/ADRP/_git/ADRP")
+	LocalRepoPath  string `mapstructure:"local_repo_path"`  // Local path prefix for rewritten TFS repo links
 }
 
 // Config represents the main configuration

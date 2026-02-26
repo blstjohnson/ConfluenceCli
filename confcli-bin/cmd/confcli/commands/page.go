@@ -13,10 +13,11 @@ import (
 	"github.com/spf13/viper"
 
 	"confcli/pkg/clients"
-	"confcli/pkg/formatters"
+	"confcli/pkg/config"
 	"confcli/pkg/converters"
-	"confcli/pkg/utils"
+	"confcli/pkg/formatters"
 	"confcli/pkg/usecases"
+	"confcli/pkg/utils"
 )
 
 // NewPageCmd creates the page command
@@ -58,6 +59,7 @@ func newPageGetCmd() *cobra.Command {
 			outputDir, _ := cmd.Flags().GetString("output-dir")
 			withComments, _ := cmd.Flags().GetBool("with-comments")
 			withLabels, _ := cmd.Flags().GetBool("with-labels")
+			rewriteTFSLinks, _ := cmd.Flags().GetBool("rewrite-tfs-links")
 
 			// Validate inputs
 			if id == 0 && title == "" && path == "" {
@@ -133,6 +135,33 @@ func newPageGetCmd() *cobra.Command {
 				}
 			}
 
+			// Apply TFS link rewriting if enabled
+			if rewriteTFSLinks {
+				tfsBaseURL := ""
+				localRepoPath := ""
+				if cfg, cfgErr := config.LoadConfig(); cfgErr == nil {
+					profile := cfg.Profiles[cfg.CurrentProfile]
+					if profile != nil {
+						tfsBaseURL = profile.TFSBaseURL
+						localRepoPath = profile.LocalRepoPath
+					}
+				}
+				if tfsBaseURL != "" {
+					// Determine output file path for relative path computation
+					currentFilePath := ""
+					if output != "" {
+						if abs, absErr := filepath.Abs(output); absErr == nil {
+							currentFilePath = abs
+						}
+					}
+					transformedContent = converters.RewriteLinks(transformedContent, &converters.LinkRewriteConfig{
+						TFSBaseURL:      tfsBaseURL,
+						LocalRepoPath:   localRepoPath,
+						CurrentFilePath: currentFilePath,
+					})
+				}
+			}
+
 			// Handle output
 			outputFormat := viper.GetString("output_format")
 			
@@ -194,6 +223,7 @@ func newPageGetCmd() *cobra.Command {
 	cmd.Flags().String("output-dir", "", "Save full page to directory")
 	cmd.Flags().Bool("with-comments", false, "Include comments in output")
 	cmd.Flags().Bool("with-labels", false, "Include labels in output")
+	cmd.Flags().Bool("rewrite-tfs-links", false, "Rewrite TFS/Git repository links to local paths using config")
 
 	return cmd
 }

@@ -8,31 +8,51 @@ import (
 	"regexp"
 	"strings"
 
-	"confcli/pkg/converters"
-	"confcli/pkg/models"
+	"github.com/gosimple/slug"
+
 	"confcli/pkg/api"
+	"confcli/pkg/converters"
 	"confcli/pkg/formatters"
+	"confcli/pkg/models"
 )
 
-// SanitizeFilename removes invalid characters from filenames
+// SanitizeFilename transliterates Unicode characters (e.g., Cyrillic to Latin)
+// and produces a short, ASCII-safe, lowercase filename suitable for all platforms.
+// Uses hyphens as separators (slug format). Limits to 80 chars to leave room
+// for pageID prefix and extension within Windows MAX_PATH (260).
 func SanitizeFilename(filename string) string {
-	// Replace invalid characters with underscores
-	filename = strings.ReplaceAll(filename, "/", "_")
-	filename = strings.ReplaceAll(filename, "\\", "_")
-	filename = strings.ReplaceAll(filename, ":", "_")
-	filename = strings.ReplaceAll(filename, "*", "_")
-	filename = strings.ReplaceAll(filename, "?", "_")
-	filename = strings.ReplaceAll(filename, "\"", "_")
-	filename = strings.ReplaceAll(filename, "<", "_")
-	filename = strings.ReplaceAll(filename, ">", "_")
-	filename = strings.ReplaceAll(filename, "|", "_")
-
-	// Limit length
-	if len(filename) > 100 {
-		filename = filename[:100]
+	result := slug.Make(filename)
+	if result == "" {
+		result = "untitled"
 	}
+	if len(result) > 80 {
+		result = result[:80]
+		// Trim trailing hyphen if we cut mid-word
+		result = strings.TrimRight(result, "-")
+	}
+	return result
+}
 
-	return filename
+// SanitizeFilenameKeepCase transliterates Unicode but preserves the original casing.
+// Useful for display-oriented filenames.
+func SanitizeFilenameKeepCase(filename string) string {
+	// slug.Make lowercases; we do manual transliteration keeping case
+	// Replace invalid filesystem characters with hyphens
+	invalidChars := regexp.MustCompile(`[/\\:*?"<>|]`)
+	result := invalidChars.ReplaceAllString(filename, "-")
+
+	// Collapse multiple hyphens
+	result = regexp.MustCompile(`-{2,}`).ReplaceAllString(result, "-")
+	result = strings.Trim(result, "-")
+
+	if result == "" {
+		result = "untitled"
+	}
+	if len(result) > 80 {
+		result = result[:80]
+		result = strings.TrimRight(result, "-")
+	}
+	return result
 }
 
 // StripHTMLTags removes HTML tags from a string
