@@ -725,11 +725,18 @@ func headingToAnchor(text string) string {
 // flattenListsInTableCells converts <ul>/<ol> lists inside <td> cells to
 // <br/>-separated items. The table plugin can't handle block-level list elements
 // inside cells, but it handles <br/> fine with NewlineBehaviorPreserve.
+// flattenListsInTableCells converts lists inside table cells to <br/>-separated items
+// and collapses multiple consecutive <br/> tags
+// flattenListsInTableCells converts lists inside table cells to <br/>-separated items
+// and collapses multiple consecutive <br/> tags (handles all br variants)
+// flattenListsInTableCells converts HTML lists inside table cells to flat text with <br/> separators
 func flattenListsInTableCells(htmlContent string) string {
 	tdRe := regexp.MustCompile(`(?is)(<td\b[^>]*>)(.*?)(</td>)`)
 	ulCheckRe := regexp.MustCompile(`(?i)<[uo]l\b`)
 	listTagRe := regexp.MustCompile(`(?i)</?[uo]l\b[^>]*>`)
 	liOpenRe := regexp.MustCompile(`(?i)<li\b[^>]*>`)
+	brTagRe := regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`)
+	multipleBrRe := regexp.MustCompile(`(?:<\s*br\s*/?\s*>\s*){2,}`)
 
 	return tdRe.ReplaceAllStringFunc(htmlContent, func(match string) string {
 		sub := tdRe.FindStringSubmatch(match)
@@ -737,19 +744,113 @@ func flattenListsInTableCells(htmlContent string) string {
 			return match
 		}
 		content := sub[2]
+		
 		if !ulCheckRe.MatchString(content) {
-			return match // no lists in this cell
+			content = brTagRe.ReplaceAllString(content, "<br/>")
+			content = multipleBrRe.ReplaceAllString(content, "<br/>")
+			return sub[1] + content + sub[3]
 		}
 
-		// Remove <ul>, </ul>, <ol>, </ol> tags
+		// Remove list tags
 		content = listTagRe.ReplaceAllString(content, "")
-		// Replace <li> with nothing (content follows)
 		content = liOpenRe.ReplaceAllString(content, "")
-		// Replace </li> with <br/> to separate items
 		content = strings.ReplaceAll(content, "</li>", "<br/>")
+		
+		// Normalize <br/> tags
+		content = brTagRe.ReplaceAllString(content, "<br/>")
+		
+		// *** IMPORTANT: Remove duplicate <br/> tags ***
+		// Pattern: <br/><br/> at the beginning or anywhere
+		content = multipleBrRe.ReplaceAllString(content, "<br/>")
+		
+		// Remove leading <br/> if present
+		content = strings.TrimPrefix(content, "<br/>")
+		
+		// Remove trailing <br/> if present
+		content = strings.TrimSuffix(content, "<br/>")
+		
+		// Remove whitespace around <br/>
+		content = regexp.MustCompile(`\s*<br/>\s*`).ReplaceAllString(content, "<br/>")
 
 		return sub[1] + content + sub[3]
 	})
+}
+
+// fixTableLineBreaks fixes multiple <br/> tags in Markdown tables
+// and removes extra <br/> tags before bulleted lists
+func fixTableLineBreaks(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	var result []string
+	inTable := false
+	
+	// Compile regexes once for performance
+	reMultipleBr := regexp.MustCompile(`(?:<br\s*/?>\s*){2,}`)
+	reBrBeforeList := regexp.MustCompile(`<br\s*/?>\s*-\s`) // <br/>- text
+	reBrBeforeCheckbox := regexp.MustCompile(`<br\s*/?>\s*-\s+\[[ x]\]`) // <br/>- [x] or <br/>- [ ]
+	
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		
+		// Determine if we're inside a table
+		if strings.HasPrefix(trimmed, "|") {
+			inTable = true
+			
+			// 1. First handle checkbox case (priority)
+			if strings.Contains(line, "- [") {
+				// Remove <br/> before checkboxes
+				line = reBrBeforeCheckbox.ReplaceAllString(line, "- [")
+			}
+			
+			// 2. Handle regular list case
+			if strings.Contains(line, "- ") {
+				// Remove <br/> before list markers
+				line = reBrBeforeList.ReplaceAllString(line, "- ")
+			}
+			
+			// 3. Replace multiple <br/> tags with a single one
+			line = reMultipleBr.ReplaceAllString(line, "<br/>")
+			
+			// 4. Remove <br/> at the beginning of a cell (right after |)
+			parts := strings.Split(line, "|")
+			for i := 1; i < len(parts)-1; i++ { // skip first and last empty parts
+				// Remove <br/> at the beginning of cell content
+				parts[i] = strings.TrimPrefix(parts[i], "<br/>")
+				parts[i] = strings.TrimPrefix(parts[i], " <br/>")
+				parts[i] = strings.TrimPrefix(parts[i], "  <br/>")
+			}
+			line = strings.Join(parts, "|")
+			
+			// 5. Final cleanup of multiple <br/> tags (just in case)
+			line = reMultipleBr.ReplaceAllString(line, "<br/>")
+			
+			result = append(result, line)
+		} else {
+			if inTable && trimmed == "" {
+				// Empty line after table - ok
+				inTable = false
+			} else {
+				inTable = false
+			}
+			result = append(result, line)
+		}
+	}
+	
+	return strings.Join(result, "\n")
+}
+
+// fixTableUnderscores removes escaping of underscores in Markdown tables
+func fixTableUnderscores(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	
+	for i, line := range lines {
+		// Check if the line is part of a table
+		if strings.HasPrefix(strings.TrimSpace(line), "|") {
+			// Remove underscore escaping in tables
+			lines[i] = strings.ReplaceAll(line, `\_`, `_`)
+		}
+	}
+	
+	return strings.Join(result, "\n")
 }
 
 // expandTableSpans normalizes HTML tables by expanding colspan and rowspan attributes
@@ -1083,6 +1184,10 @@ func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, e
 	markdown = fixAdjacentEmphasis(markdown)
 	markdown = decodeHTMLEntities(markdown)
 	markdown = regenerateTOC(markdown)
-
+	// Новая функция для исправления <br/> в таблицах
+	markdown = fixTableLineBreaks(markdown)
+	// Добавляем исправление подчеркиваний в таблицах
+	markdown = fixTableUnderscores(markdown)
+	
 	return markdown, nil
 }
