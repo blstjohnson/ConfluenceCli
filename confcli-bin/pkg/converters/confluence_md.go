@@ -1444,6 +1444,60 @@ func decodeHTMLEntities(markdown string) string {
 	return markdown
 }
 
+// DisableTOC controls whether the Confluence table-of-contents block is stripped
+// from the converted markdown (true) or regenerated as a clean list (false, default).
+// Set this field before calling StorageToMarkdownAdvanced / ExportViewToMarkdown.
+var DisableTOC bool
+
+// stripTOC detects and removes the Confluence TOC block from a markdown document,
+// leaving the rest of the content intact.
+func stripTOC(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+
+	tocStart := -1
+	tocEnd := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue // blank lines don't interrupt TOC detection
+		}
+		if confluenceTOCLinkRe.MatchString(line) {
+			if tocStart == -1 {
+				tocStart = i
+			}
+			tocEnd = i + 1
+		} else {
+			if tocStart != -1 {
+				break
+			}
+			break
+		}
+	}
+
+	if tocStart == -1 || tocEnd <= tocStart {
+		return markdown // no TOC found
+	}
+
+	// Skip trailing blank lines after TOC block
+	afterTOC := tocEnd
+	for afterTOC < len(lines) && strings.TrimSpace(lines[afterTOC]) == "" {
+		afterTOC++
+	}
+
+	var result strings.Builder
+	for i := 0; i < tocStart; i++ {
+		result.WriteString(lines[i])
+		result.WriteString("\n")
+	}
+	for i := afterTOC; i < len(lines); i++ {
+		result.WriteString(lines[i])
+		if i < len(lines)-1 {
+			result.WriteString("\n")
+		}
+	}
+	return result.String()
+}
+
 // StorageToMarkdownAdvanced converts Confluence storage format to Markdown
 // using the html-to-markdown library with Confluence-specific plugin support
 func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, error) {
@@ -1472,7 +1526,11 @@ func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, e
 	markdown = cleanUnderscoreEscaping(markdown)
 	markdown = fixAdjacentEmphasis(markdown)
 	markdown = decodeHTMLEntities(markdown)
-	markdown = regenerateTOC(markdown)
+	if DisableTOC {
+		markdown = stripTOC(markdown)
+	} else {
+		markdown = regenerateTOC(markdown)
+	}
 	markdown = fixTableLineBreaks(markdown)
 	// 1. fixEscapedBackslashes: \\ → \ (code-block-aware)
 	// 2. RemoveMarkdownEscaping: \+ → +, \- → -, \_ → _, \* → * … (code-block-aware)

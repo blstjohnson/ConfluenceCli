@@ -53,6 +53,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 			noLengthLimit, _ := cmd.Flags().GetBool("no-length-limit")
 			saveMetadata, _ := cmd.Flags().GetBool("save-metadata")
 			flatLeaves, _ := cmd.Flags().GetBool("flat-leaves")
+			noTOC, _ := cmd.Flags().GetBool("no-toc")
 			rewriteLinks, _ := cmd.Flags().GetBool("rewrite-links")
 			rewriteTFSLinks, _ := cmd.Flags().GetBool("rewrite-tfs-links")
 			tfsBaseURL, _ := cmd.Flags().GetString("tfs-base-url")
@@ -122,6 +123,9 @@ func newHierarchySpaceCmd() *cobra.Command {
 					LocalRepoPath: localRepoPath,
 				}
 
+				// Apply package-level conversion settings (safe for CLI: single-threaded)
+				converters.DisableTOC = noTOC
+
 				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, linkCfg); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
@@ -165,6 +169,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 	cmd.Flags().Bool("no-length-limit", false, "Remove the 80-character limit on folder and file names")
 	cmd.Flags().Bool("save-metadata", false, "Save per-page .meta.json and space _space_metadata.json files alongside content (disabled by default)")
 	cmd.Flags().Bool("flat-leaves", false, "Do not create a subdirectory for pages that have no children; save their content file directly in the parent folder")
+	cmd.Flags().Bool("no-toc", false, "Strip the table of contents from exported markdown (instead of regenerating it as a clean list)")
 	cmd.MarkFlagRequired("space")
 
 	return cmd
