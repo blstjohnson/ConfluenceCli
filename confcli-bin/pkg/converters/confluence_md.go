@@ -139,16 +139,130 @@ func (p *ConfluencePlugin) handleDiv(ctx html2md.Context, w html2md.Writer, n *h
 			return p.handleExpandDiv(ctx, w, n)
 		}
 		if attr.Key == "class" {
-			if strings.Contains(attr.Val, "git-plugin-container") {
+			cls := attr.Val
+			if strings.Contains(cls, "git-plugin-container") {
 				return p.handleGitPluginContainer(ctx, w, n)
 			}
-			if strings.Contains(attr.Val, "aui-inline-dialog") {
+			if strings.Contains(cls, "aui-inline-dialog") {
 				// Strip AUI inline dialogs (duplicate metadata)
 				return html2md.RenderSuccess
+			}
+			// export_view HTML: info/warning/note/tip macros become
+			// <div class="confluence-information-macro confluence-information-macro-{type}">
+			if strings.Contains(cls, "confluence-information-macro") &&
+				!strings.Contains(cls, "confluence-information-macro-body") &&
+				!strings.Contains(cls, "confluence-information-macro-icon") {
+				return p.handleConfluencePanelDiv(ctx, w, n, cls)
+			}
+			// Standard Confluence panels: <div class="panel"> with panelHeader/panelContent
+			if cls == "panel" || strings.HasPrefix(cls, "panel ") || strings.HasSuffix(cls, " panel") ||
+				strings.Contains(cls, " panel ") {
+				return p.handleGenericPanelDiv(ctx, w, n)
 			}
 		}
 	}
 	return html2md.RenderTryNext
+}
+
+// handleConfluencePanelDiv handles export_view HTML panel macros:
+//
+//	<div class="confluence-information-macro confluence-information-macro-note">
+//	  <p class="title">Optional title</p>
+//	  <div class="confluence-information-macro-body">...</div>
+//	</div>
+func (p *ConfluencePlugin) handleConfluencePanelDiv(ctx html2md.Context, w html2md.Writer, n *html.Node, cls string) html2md.RenderStatus {
+	emoji := "ℹ️"
+	label := "Info"
+	switch {
+	case strings.Contains(cls, "confluence-information-macro-warning"):
+		emoji = "⚠️"
+		label = "Warning"
+	case strings.Contains(cls, "confluence-information-macro-note"):
+		emoji = "📝"
+		label = "Note"
+	case strings.Contains(cls, "confluence-information-macro-tip"):
+		emoji = "💡"
+		label = "Tip"
+	case strings.Contains(cls, "confluence-information-macro-information"):
+		emoji = "ℹ️"
+		label = "Info"
+	}
+
+	var title string
+	var content string
+
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		childCls := getAttr(child, "class")
+		// Skip icon elements
+		if strings.Contains(childCls, "icon") {
+			continue
+		}
+		// Body content
+		if strings.Contains(childCls, "confluence-information-macro-body") {
+			content = strings.TrimSpace(p.renderChildren(ctx, child))
+			continue
+		}
+		// Title: <p class="title"> or <span class="title">
+		if strings.Contains(childCls, "title") {
+			t := strings.TrimSpace(p.getNodeText(child))
+			if t != "" {
+				title = t
+			}
+			continue
+		}
+	}
+
+	if title != "" {
+		label = title
+	}
+
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	for i, line := range lines {
+		lines[i] = "> " + line
+	}
+	w.WriteString(fmt.Sprintf("> %s **%s:**\n%s\n\n", emoji, label, strings.Join(lines, "\n")))
+	return html2md.RenderSuccess
+}
+
+// handleGenericPanelDiv handles standard Confluence panels:
+//
+//	<div class="panel"><div class="panelHeader">Title</div><div class="panelContent">...</div></div>
+func (p *ConfluencePlugin) handleGenericPanelDiv(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
+	var header string
+	var content string
+
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		childCls := getAttr(child, "class")
+		if strings.Contains(childCls, "panelHeader") {
+			header = strings.TrimSpace(p.getNodeText(child))
+		} else if strings.Contains(childCls, "panelContent") || strings.Contains(childCls, "panelBody") {
+			content = strings.TrimSpace(p.renderChildren(ctx, child))
+		}
+	}
+
+	if header == "" && content == "" {
+		return html2md.RenderTryNext
+	}
+
+	var sb strings.Builder
+	if header != "" {
+		sb.WriteString(fmt.Sprintf("> 📌 **%s:**\n", header))
+	} else {
+		sb.WriteString("> 📌\n")
+	}
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	for _, line := range lines {
+		sb.WriteString("> " + line + "\n")
+	}
+	sb.WriteString("\n")
+	w.WriteString(sb.String())
+	return html2md.RenderSuccess
 }
 
 // handleMacro handles ac:structured-macro elements
