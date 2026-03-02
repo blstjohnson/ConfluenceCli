@@ -29,8 +29,9 @@ type LinkRewriteConfig struct {
 // markdownLinkRe matches markdown links: [text](url)
 var markdownLinkRe = regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
 
-// confluencePageIDRe matches Confluence page URLs containing pageId parameter
-var confluencePageIDRe = regexp.MustCompile(`/pages/viewpage\.action\?pageId=(\d+)`)
+// confluencePageIDRe matches Confluence page URLs containing pageId query parameter.
+// Uses [^#]* to skip any other query parameters that may precede pageId (e.g. &pageId=).
+var confluencePageIDRe = regexp.MustCompile(`/pages/viewpage\.action[^#]*[?&]pageId=(\d+)`)
 
 // confluenceSpacesPageIDRe matches /spaces/~pageID or /spaces/~pageID/... patterns
 var confluenceSpacesPageIDRe = regexp.MustCompile(`/spaces/~(\d+)`)
@@ -83,9 +84,13 @@ func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (str
 		return "", false
 	}
 
-	// Strip anchor/fragment before matching patterns
+	// Strip anchor/fragment before matching patterns.
+	// Handle both the literal '#' form and the percent-encoded '%23' form.
 	cleanURL := linkURL
 	if idx := strings.Index(cleanURL, "#"); idx != -1 {
+		cleanURL = cleanURL[:idx]
+	}
+	if idx := strings.Index(cleanURL, "%23"); idx != -1 {
 		cleanURL = cleanURL[:idx]
 	}
 

@@ -838,19 +838,21 @@ func fixTableLineBreaks(markdown string) string {
 	return strings.Join(result, "\n")
 }
 
-// fixTableUnderscores removes escaping of underscores in Markdown tables
+// fixTableUnderscores removes backslash-escaping of underscores everywhere in the markdown,
+// not just inside table rows. The markdown converter over-escapes underscores in many
+// contexts (headings, bold text, plain paragraphs), so we strip them globally.
 func fixTableUnderscores(markdown string) string {
-	lines := strings.Split(markdown, "\n")
+	return strings.ReplaceAll(markdown, `\_`, `_`)
+}
 
-	for i, line := range lines {
-		// Check if the line is part of a table
-		if strings.HasPrefix(strings.TrimSpace(line), "|") {
-			// Remove underscore escaping in tables
-			lines[i] = strings.ReplaceAll(line, `\_`, `_`)
-		}
-	}
+// markdownEscapeRe matches a backslash followed by any standard markdown special character.
+var markdownEscapeRe = regexp.MustCompile(`\\([\\*_\[\]()+\-.!{}|~` + "`" + `])`)
 
-	return strings.Join(lines, "\n")
+// RemoveMarkdownEscaping removes backslash escaping of special markdown characters
+// throughout the document. For example: \* → *, \_ → _, \[ → [, \# → # etc.
+// This is useful after html-to-markdown conversion which tends to over-escape content.
+func RemoveMarkdownEscaping(markdown string) string {
+	return markdownEscapeRe.ReplaceAllString(markdown, "$1")
 }
 
 // expandTableSpans normalizes HTML tables by expanding colspan and rowspan attributes

@@ -51,6 +51,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 			namedFolders, _ := cmd.Flags().GetBool("named-folders")
 			cleanNames, _ := cmd.Flags().GetBool("clean-names")
 			noLengthLimit, _ := cmd.Flags().GetBool("no-length-limit")
+			saveMetadata, _ := cmd.Flags().GetBool("save-metadata")
 			rewriteLinks, _ := cmd.Flags().GetBool("rewrite-links")
 			rewriteTFSLinks, _ := cmd.Flags().GetBool("rewrite-tfs-links")
 			tfsBaseURL, _ := cmd.Flags().GetString("tfs-base-url")
@@ -120,7 +121,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 					LocalRepoPath: localRepoPath,
 				}
 
-				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, linkCfg); err != nil {
+				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, linkCfg); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
 				fmt.Printf("Space %s exported to %s\n", space, outputDir)
@@ -161,6 +162,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 	cmd.Flags().Bool("named-folders", false, "Use transliterated page names for folder names instead of page IDs")
 	cmd.Flags().Bool("clean-names", false, "Use page titles as folder/file names: remove forbidden chars, replace dots and spaces with '_', no transliteration, no page ID prefix")
 	cmd.Flags().Bool("no-length-limit", false, "Remove the 80-character limit on folder and file names")
+	cmd.Flags().Bool("save-metadata", false, "Save per-page .meta.json and space _space_metadata.json files alongside content (disabled by default)")
 	cmd.MarkFlagRequired("space")
 
 	return cmd
@@ -295,7 +297,7 @@ func exportSpaceToDirectory(apiClient interface {
 // using iterative batch processing to save memory for large spaces
 // Creates a hierarchical folder structure: each page gets a folder named by pageId
 // Child pages are saved inside their parent page's folder
-func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, linkCfg *converters.LinkRewriteConfig) error {
+func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, linkCfg *converters.LinkRewriteConfig) error {
 	ctx := context.Background()
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -479,9 +481,11 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 			return fmt.Errorf("failed to create directory for page %d: %w", pageID, err)
 		}
 
-		// Save page metadata
-		if err := savePageMetadata(pageDir, page, sanitize, cleanNames); err != nil {
-			return fmt.Errorf("failed to save metadata for page %d: %w", pageID, err)
+		// Save page metadata (only when --save-metadata is set)
+		if saveMetadata {
+			if err := savePageMetadata(pageDir, page, sanitize, cleanNames); err != nil {
+				return fmt.Errorf("failed to save metadata for page %d: %w", pageID, err)
+			}
 		}
 
 		if !skipContent {
@@ -601,30 +605,32 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 		}
 	}
 
-	// Write space metadata at the end
-	spaceInfo, err := apiClient.GetSpace(ctx, space)
-	if err != nil {
-		return fmt.Errorf("failed to get space info: %w", err)
-	}
+	// Write space metadata only when --save-metadata is set
+	if saveMetadata {
+		spaceInfo, err := apiClient.GetSpace(ctx, space)
+		if err != nil {
+			return fmt.Errorf("failed to get space info: %w", err)
+		}
 
-	metadata := map[string]interface{}{
-		"key":         spaceInfo.Key,
-		"name":        spaceInfo.Name,
-		"description": spaceInfo.Description,
-		"homepageId":  spaceInfo.HomepageID,
-		"status":      spaceInfo.Status,
-		"pageCount":   pageCount,
-		"rootPages":   rootPageIDs,
-	}
+		metadata := map[string]interface{}{
+			"key":         spaceInfo.Key,
+			"name":        spaceInfo.Name,
+			"description": spaceInfo.Description,
+			"homepageId":  spaceInfo.HomepageID,
+			"status":      spaceInfo.Status,
+			"pageCount":   pageCount,
+			"rootPages":   rootPageIDs,
+		}
 
-	metadataBytes, err := formatters.FormatOutputToString(metadata, "json")
-	if err != nil {
-		return fmt.Errorf("failed to format space metadata: %w", err)
-	}
+		metadataBytes, err := formatters.FormatOutputToString(metadata, "json")
+		if err != nil {
+			return fmt.Errorf("failed to format space metadata: %w", err)
+		}
 
-	metadataFile := filepath.Join(spaceDir, "_space_metadata.json")
-	if err := os.WriteFile(metadataFile, []byte(metadataBytes), 0644); err != nil {
-		return fmt.Errorf("failed to write space metadata: %w", err)
+		metadataFile := filepath.Join(spaceDir, "_space_metadata.json")
+		if err := os.WriteFile(metadataFile, []byte(metadataBytes), 0644); err != nil {
+			return fmt.Errorf("failed to write space metadata: %w", err)
+		}
 	}
 
 	return nil
