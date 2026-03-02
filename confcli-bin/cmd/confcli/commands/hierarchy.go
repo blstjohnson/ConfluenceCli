@@ -49,6 +49,8 @@ func newHierarchySpaceCmd() *cobra.Command {
 			skipContent, _ := cmd.Flags().GetBool("skip-content")
 			batchSize, _ := cmd.Flags().GetInt("batch-size")
 			namedFolders, _ := cmd.Flags().GetBool("named-folders")
+			cleanNames, _ := cmd.Flags().GetBool("clean-names")
+			noLengthLimit, _ := cmd.Flags().GetBool("no-length-limit")
 			rewriteLinks, _ := cmd.Flags().GetBool("rewrite-links")
 			rewriteTFSLinks, _ := cmd.Flags().GetBool("rewrite-tfs-links")
 			tfsBaseURL, _ := cmd.Flags().GetString("tfs-base-url")
@@ -118,7 +120,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 					LocalRepoPath: localRepoPath,
 				}
 
-				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, linkCfg); err != nil {
+				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, linkCfg); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
 				fmt.Printf("Space %s exported to %s\n", space, outputDir)
@@ -157,6 +159,8 @@ func newHierarchySpaceCmd() *cobra.Command {
 	cmd.Flags().String("tfs-base-url", "", "TFS base URL for link rewriting (overrides config)")
 	cmd.Flags().String("local-repo-path", "", "Local repo path prefix for TFS link rewriting (overrides config)")
 	cmd.Flags().Bool("named-folders", false, "Use transliterated page names for folder names instead of page IDs")
+	cmd.Flags().Bool("clean-names", false, "Use page titles as folder/file names: remove forbidden chars, replace dots and spaces with '_', no transliteration, no page ID prefix")
+	cmd.Flags().Bool("no-length-limit", false, "Remove the 80-character limit on folder and file names")
 	cmd.MarkFlagRequired("space")
 
 	return cmd
@@ -192,7 +196,7 @@ func exportSpaceToDirectory(apiClient interface {
 		if !skipContent {
 			// Get content format - Confluence supports "storage", "editor", and "export_view" formats
 			apiFormat := utils.GetContentFormatForAPI(format)
-			
+
 			// Try to get content from the page body first (already fetched via expansions)
 			var apiContent string
 			if page.Body != nil {
@@ -204,13 +208,13 @@ func exportSpaceToDirectory(apiClient interface {
 				} else {
 					bodyKey = "storage"
 				}
-				
+
 				if bodyContent, ok := page.Body[bodyKey].(map[string]interface{}); ok {
 					if value, ok := bodyContent["value"].(string); ok && value != "" {
 						apiContent = value
 					}
 				}
-				
+
 				// If not found in requested format, try other formats
 				if apiContent == "" {
 					for _, key := range []string{"storage", "editor", "export_view", "view"} {
@@ -223,7 +227,7 @@ func exportSpaceToDirectory(apiClient interface {
 					}
 				}
 			}
-			
+
 			var content string
 			var err error
 			// If still no content, fetch it via API call
@@ -235,7 +239,7 @@ func exportSpaceToDirectory(apiClient interface {
 					continue
 				}
 			}
-			
+
 			// For export_view format, convert to markdown if requested
 			if format == "export" {
 				// export_view is clean HTML, convert to markdown
@@ -291,7 +295,7 @@ func exportSpaceToDirectory(apiClient interface {
 // using iterative batch processing to save memory for large spaces
 // Creates a hierarchical folder structure: each page gets a folder named by pageId
 // Child pages are saved inside their parent page's folder
-func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, linkCfg *converters.LinkRewriteConfig) error {
+func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, linkCfg *converters.LinkRewriteConfig) error {
 	ctx := context.Background()
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -305,6 +309,20 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 
 	baseURL := viper.GetString("url")
 	pageCount := 0
+
+	// Choose the sanitizer function based on flags.
+	// cleanNames takes priority over namedFolders for the sanitization strategy.
+	var sanitize func(string) string
+	switch {
+	case cleanNames && noLengthLimit:
+		sanitize = utils.SanitizeFilenameSimpleNoLimit
+	case cleanNames:
+		sanitize = utils.SanitizeFilenameSimple
+	case noLengthLimit:
+		sanitize = utils.SanitizeFilenameNoLimit
+	default:
+		sanitize = utils.SanitizeFilename
+	}
 
 	// Normalize format - support both "export" and "export_view"
 	normalizedFormat := format
@@ -347,40 +365,55 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 		return fmt.Errorf("failed to fetch pages iteratively: %w", err)
 	}
 
-	// Build folder name map for named-folders mode (transliterated page names with dedup)
+	// Build folder name map for named-folders / clean-names mode.
 	folderNameMap := make(map[int]string) // pageID -> folder name
-	if namedFolders {
-		// Detect duplicate names among siblings and append page ID suffix
-		siblingNames := make(map[int]map[string][]int) // parentID -> name -> list of pageIDs
-		// Group root pages under parentID=0
-		for _, rootID := range rootPageIDs {
-			if page, ok := pageMap[rootID]; ok {
-				name := utils.SanitizeFilename(page.Title)
-				if siblingNames[0] == nil {
-					siblingNames[0] = make(map[string][]int)
-				}
-				siblingNames[0][name] = append(siblingNames[0][name], rootID)
-			}
-		}
-		for parentID, children := range childrenMap {
-			if siblingNames[parentID] == nil {
-				siblingNames[parentID] = make(map[string][]int)
-			}
-			for _, childID := range children {
-				if page, ok := pageMap[childID]; ok {
-					name := utils.SanitizeFilename(page.Title)
-					siblingNames[parentID][name] = append(siblingNames[parentID][name], childID)
+	if namedFolders || cleanNames {
+		if cleanNames {
+			// clean-names: use simple sanitizer, never append page ID (even for duplicates)
+			for _, rootID := range rootPageIDs {
+				if page, ok := pageMap[rootID]; ok {
+					folderNameMap[rootID] = sanitize(page.Title)
 				}
 			}
-		}
-		// Assign folder names, appending page ID for duplicates
-		for _, nameMap := range siblingNames {
-			for name, ids := range nameMap {
-				if len(ids) == 1 {
-					folderNameMap[ids[0]] = name
-				} else {
-					for _, id := range ids {
-						folderNameMap[id] = fmt.Sprintf("%s-%d", name, id)
+			for _, children := range childrenMap {
+				for _, childID := range children {
+					if page, ok := pageMap[childID]; ok {
+						folderNameMap[childID] = sanitize(page.Title)
+					}
+				}
+			}
+		} else {
+			// named-folders: transliterated names, page ID appended for duplicates
+			siblingNames := make(map[int]map[string][]int) // parentID -> name -> list of pageIDs
+			for _, rootID := range rootPageIDs {
+				if page, ok := pageMap[rootID]; ok {
+					name := sanitize(page.Title)
+					if siblingNames[0] == nil {
+						siblingNames[0] = make(map[string][]int)
+					}
+					siblingNames[0][name] = append(siblingNames[0][name], rootID)
+				}
+			}
+			for parentID, children := range childrenMap {
+				if siblingNames[parentID] == nil {
+					siblingNames[parentID] = make(map[string][]int)
+				}
+				for _, childID := range children {
+					if page, ok := pageMap[childID]; ok {
+						name := sanitize(page.Title)
+						siblingNames[parentID][name] = append(siblingNames[parentID][name], childID)
+					}
+				}
+			}
+			// Assign folder names, appending page ID for duplicates
+			for _, nameMap := range siblingNames {
+				for name, ids := range nameMap {
+					if len(ids) == 1 {
+						folderNameMap[ids[0]] = name
+					} else {
+						for _, id := range ids {
+							folderNameMap[id] = fmt.Sprintf("%s-%d", name, id)
+						}
 					}
 				}
 			}
@@ -389,7 +422,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 
 	// getFolderName returns the folder name for a page
 	getFolderName := func(pageID int) string {
-		if namedFolders {
+		if namedFolders || cleanNames {
 			if name, ok := folderNameMap[pageID]; ok {
 				return name
 			}
@@ -408,7 +441,12 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 				return
 			}
 			pageDir := filepath.Join(parentDir, getFolderName(pageID))
-			filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(normalizedFormat))
+			var filename string
+			if cleanNames {
+				filename = fmt.Sprintf("%s.%s", sanitize(page.Title), utils.GetExtensionForFormat(normalizedFormat))
+			} else {
+				filename = fmt.Sprintf("%d_%s.%s", pageID, sanitize(page.Title), utils.GetExtensionForFormat(normalizedFormat))
+			}
 			pageFileMap[pageID] = filepath.ToSlash(filepath.Join(pageDir, filename))
 
 			for _, childID := range childrenMap[pageID] {
@@ -442,7 +480,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 		}
 
 		// Save page metadata
-		if err := savePageMetadata(pageDir, page); err != nil {
+		if err := savePageMetadata(pageDir, page, sanitize, cleanNames); err != nil {
 			return fmt.Errorf("failed to save metadata for page %d: %w", pageID, err)
 		}
 
@@ -510,7 +548,12 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 				}
 			}
 
-			filename := fmt.Sprintf("%d_%s.%s", pageID, utils.SanitizeFilename(page.Title), utils.GetExtensionForFormat(normalizedFormat))
+			var filename string
+			if cleanNames {
+				filename = fmt.Sprintf("%s.%s", sanitize(page.Title), utils.GetExtensionForFormat(normalizedFormat))
+			} else {
+				filename = fmt.Sprintf("%d_%s.%s", pageID, sanitize(page.Title), utils.GetExtensionForFormat(normalizedFormat))
+			}
 			absFilePath := filepath.Join(pageDir, filename)
 
 			// Apply link rewriting if enabled
@@ -587,8 +630,10 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 	return nil
 }
 
-// savePageMetadata saves page metadata to a JSON file
-func savePageMetadata(spaceDir string, page *models.Page) error {
+// savePageMetadata saves page metadata to a JSON file.
+// sanitize is the active filename sanitizer; cleanNames controls whether to
+// omit the numeric page-ID prefix from the metadata filename.
+func savePageMetadata(spaceDir string, page *models.Page, sanitize func(string) string, cleanNames bool) error {
 	pageID, ok := page.ID.Int()
 	if !ok {
 		return nil
@@ -620,7 +665,12 @@ func savePageMetadata(spaceDir string, page *models.Page) error {
 		return err
 	}
 
-	filename := fmt.Sprintf("%d_%s.meta.json", pageID, utils.SanitizeFilename(page.Title))
+	var filename string
+	if cleanNames {
+		filename = fmt.Sprintf("%s.meta.json", sanitize(page.Title))
+	} else {
+		filename = fmt.Sprintf("%d_%s.meta.json", pageID, sanitize(page.Title))
+	}
 	filePath := filepath.Join(spaceDir, filename)
 	return os.WriteFile(filePath, []byte(metadataBytes), 0644)
 }
