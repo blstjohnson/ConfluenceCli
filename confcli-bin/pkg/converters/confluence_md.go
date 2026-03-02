@@ -365,7 +365,8 @@ func (p *ConfluencePlugin) handleGitPluginContainer(ctx html2md.Context, w html2
 	var parts []string
 	if fileName != "" {
 		if sourceLink != "" {
-			parts = append(parts, fmt.Sprintf("**%s** ([source](%s))", fileName, sourceLink))
+			// Render as a bold hyperlink: **[filename](url)**
+			parts = append(parts, fmt.Sprintf("**[%s](%s)**", fileName, sourceLink))
 		} else {
 			parts = append(parts, fmt.Sprintf("**%s**", fileName))
 		}
@@ -866,6 +867,21 @@ func fixTableUnderscores(markdown string) string {
 	return strings.ReplaceAll(markdown, `\_`, `_`)
 }
 
+// markdownImageRe matches markdown image references: ![alt](url)
+// Uses the same balanced-parentheses URL pattern as markdownLinkRe.
+var markdownImageRe = regexp.MustCompile(`!\[[^\]]*\]\([^()\s]*(?:\([^()]*\)[^()\s]*)*\)`)
+
+// stripMarkdownImages removes all inline markdown image references from the document.
+// Confluece exports routinely embed emoticon SVGs, attachment previews, and
+// git-plugin export URLs as images — none of which are useful in plain markdown.
+// After removal, runs of 3+ consecutive newlines are collapsed to 2.
+func stripMarkdownImages(markdown string) string {
+	result := markdownImageRe.ReplaceAllString(markdown, "")
+	// Collapse large gaps left by removed images
+	result = regexp.MustCompile(`\n{3,}`).ReplaceAllString(result, "\n\n")
+	return result
+}
+
 // markdownEscapeRe matches a backslash followed by any standard markdown special character.
 var markdownEscapeRe = regexp.MustCompile(`\\([\\*_\[\]()+\-.!{}|~` + "`" + `])`)
 
@@ -1211,6 +1227,7 @@ func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, e
 	// Un-escape over-escaped backslashes BEFORE stripping \_ so that \\_ → \_ → _
 	markdown = fixEscapedBackslashes(markdown)
 	markdown = fixTableUnderscores(markdown)
+	markdown = stripMarkdownImages(markdown)
 
 	return markdown, nil
 }

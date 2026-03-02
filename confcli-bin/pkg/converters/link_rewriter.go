@@ -68,6 +68,12 @@ func RewriteLinks(markdown string, config *LinkRewriteConfig) string {
 			if rewritten, ok := rewriteConfluenceLink(linkURL, text, config); ok {
 				return rewritten
 			}
+			// URL belongs to our Confluence instance but could not be resolved to a
+			// local file (page not in export, wrong space, unrecognised URL format, …).
+			// Remove the link entirely and keep only the visible link text.
+			if strings.Contains(linkURL, config.ConfBaseURL) {
+				return text
+			}
 		}
 
 		// Try TFS link rewriting
