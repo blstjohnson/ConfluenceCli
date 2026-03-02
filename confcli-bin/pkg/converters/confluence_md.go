@@ -1000,10 +1000,22 @@ func stripMarkdownImages(markdown string) string {
 var markdownEscapeRe = regexp.MustCompile(`\\([\\*_\[\]()+\-.!{}|~` + "`" + `])`)
 
 // RemoveMarkdownEscaping removes backslash escaping of special markdown characters
-// throughout the document. For example: \* → *, \_ → _, \[ → [, \# → # etc.
-// This is useful after html-to-markdown conversion which tends to over-escape content.
+// throughout the document. For example: \* → *, \_ → _, \+ → +, \- → -, \[ → [ etc.
+// Fenced code blocks (``` … ```) are preserved unchanged so code is not corrupted.
 func RemoveMarkdownEscaping(markdown string) string {
-	return markdownEscapeRe.ReplaceAllString(markdown, "$1")
+	lines := strings.Split(markdown, "\n")
+	inCodeBlock := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+			continue
+		}
+		if !inCodeBlock {
+			lines[i] = markdownEscapeRe.ReplaceAllString(line, "$1")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // expandTableSpans normalizes HTML tables by expanding colspan and rowspan attributes
@@ -1338,9 +1350,11 @@ func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, e
 	markdown = decodeHTMLEntities(markdown)
 	markdown = regenerateTOC(markdown)
 	markdown = fixTableLineBreaks(markdown)
-	// Un-escape over-escaped backslashes BEFORE stripping \_ so that \\_ → \_ → _
+	// 1. fixEscapedBackslashes: \\ → \ (code-block-aware)
+	// 2. RemoveMarkdownEscaping: \+ → +, \- → -, \_ → _, \* → * … (code-block-aware)
+	//    Running them in this order handles \\+ correctly: \\+ → \+ → +
 	markdown = fixEscapedBackslashes(markdown)
-	markdown = fixTableUnderscores(markdown)
+	markdown = RemoveMarkdownEscaping(markdown)
 	markdown = stripMarkdownImages(markdown)
 
 	return markdown, nil
