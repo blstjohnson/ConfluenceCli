@@ -27,7 +27,11 @@ type LinkRewriteConfig struct {
 }
 
 // markdownLinkRe matches markdown links: [text](url)
-var markdownLinkRe = regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
+// Supports URLs that contain balanced (but not nested) parentheses — common in
+// Confluence anchor links such as #heading(term)rest(term2).
+// Pattern for URL group: zero-or-more non-paren chars, optionally followed by
+// one or more (inner-paren-content) segments also separated by non-paren chars.
+var markdownLinkRe = regexp.MustCompile(`\[([^\]]*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)`)
 
 // confluencePageIDRe matches Confluence page URLs containing pageId query parameter.
 // Uses [^#]* to skip any other query parameters that may precede pageId (e.g. &pageId=).

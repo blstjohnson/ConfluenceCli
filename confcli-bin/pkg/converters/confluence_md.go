@@ -838,6 +838,27 @@ func fixTableLineBreaks(markdown string) string {
 	return strings.Join(result, "\n")
 }
 
+// fixEscapedBackslashes replaces over-escaped backslashes (\\) with a single backslash.
+// The html-to-markdown converter escapes every '\' in prose text, but for Confluence
+// content '\' is routinely used as a literal character (e.g. "запрос\ответ").
+// Fenced code blocks (``` ... ```) are skipped intentionally.
+func fixEscapedBackslashes(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	inCodeBlock := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			// Toggle fenced-code-block state; don't process the fence line itself.
+			inCodeBlock = !inCodeBlock
+			continue
+		}
+		if !inCodeBlock {
+			lines[i] = strings.ReplaceAll(line, `\\`, `\`)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // fixTableUnderscores removes backslash-escaping of underscores everywhere in the markdown,
 // not just inside table rows. The markdown converter over-escapes underscores in many
 // contexts (headings, bold text, plain paragraphs), so we strip them globally.
@@ -1186,9 +1207,9 @@ func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, e
 	markdown = fixAdjacentEmphasis(markdown)
 	markdown = decodeHTMLEntities(markdown)
 	markdown = regenerateTOC(markdown)
-	// Новая функция для исправления <br/> в таблицах
 	markdown = fixTableLineBreaks(markdown)
-	// Добавляем исправление подчеркиваний в таблицах
+	// Un-escape over-escaped backslashes BEFORE stripping \_ so that \\_ → \_ → _
+	markdown = fixEscapedBackslashes(markdown)
 	markdown = fixTableUnderscores(markdown)
 
 	return markdown, nil
