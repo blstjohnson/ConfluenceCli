@@ -121,12 +121,22 @@ func (p *ConfluencePlugin) handleAnchor(ctx html2md.Context, w html2md.Writer, n
 	return html2md.RenderSuccess
 }
 
-// handleSpan handles span elements — dispatches to user mention or passes through
+// handleSpan handles span elements — dispatches to user mention, status lozenge, or passes through
 func (p *ConfluencePlugin) handleSpan(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
-	// Check if this is a user mention
 	for _, attr := range n.Attr {
 		if attr.Key == "data-account-id" || attr.Key == "data-user-key" {
 			return p.handleUserMention(ctx, w, n)
+		}
+		if attr.Key == "class" {
+			cls := attr.Val
+			// export_view Status macro: <span class="status-macro ...">
+			if strings.Contains(cls, "status-macro") {
+				return p.handleStatusMacroSpan(ctx, w, n)
+			}
+			// export_view Status lozenge rendered directly: <span class="aui-lozenge ...">
+			if strings.Contains(cls, "aui-lozenge") {
+				return p.handleStatusLozenge(ctx, w, n, cls)
+			}
 		}
 	}
 	return html2md.RenderTryNext
@@ -146,6 +156,10 @@ func (p *ConfluencePlugin) handleDiv(ctx html2md.Context, w html2md.Writer, n *h
 			if strings.Contains(cls, "aui-inline-dialog") {
 				// Strip AUI inline dialogs (duplicate metadata)
 				return html2md.RenderSuccess
+			}
+			// export_view HTML: expand macro → <div class="expand-container">
+			if strings.Contains(cls, "expand-container") {
+				return p.handleExpandContainerDiv(ctx, w, n)
 			}
 			// export_view HTML: info/warning/note/tip macros become
 			// <div class="confluence-information-macro confluence-information-macro-{type}">
@@ -424,6 +438,115 @@ func (p *ConfluencePlugin) handleExpandDiv(ctx html2md.Context, w html2md.Writer
 	return html2md.RenderSuccess
 }
 
+// handleExpandContainerDiv handles the export_view HTML form of the Expand macro:
+//
+//	<div class="expand-container">
+//	  <div class="expand-control"><span class="expand-icon ..."/><b>Summary</b></div>
+//	  <div class="expand-content expand-hidden">Content</div>
+//	</div>
+func (p *ConfluencePlugin) handleExpandContainerDiv(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
+	summary := "Click to expand"
+	var content string
+
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		childCls := getAttr(child, "class")
+		if strings.Contains(childCls, "expand-control") {
+			// Extract summary text, skipping icon children
+			t := p.extractExpandSummaryText(child)
+			if t != "" {
+				summary = t
+			}
+		} else if strings.Contains(childCls, "expand-content") {
+			content = strings.TrimSpace(p.renderChildren(ctx, child))
+		}
+	}
+
+	w.WriteString(fmt.Sprintf("<details>\n<summary>%s</summary>\n\n%s\n\n</details>\n", summary, content))
+	return html2md.RenderSuccess
+}
+
+// extractExpandSummaryText walks the expand-control element and returns the first
+// non-empty text node that isn't part of an icon element.
+func (p *ConfluencePlugin) extractExpandSummaryText(n *html.Node) string {
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.TextNode {
+			t := strings.TrimSpace(child.Data)
+			if t != "" {
+				return t
+			}
+		}
+		if child.Type == html.ElementNode {
+			childCls := getAttr(child, "class")
+			if strings.Contains(childCls, "icon") || child.Data == "img" {
+				continue
+			}
+			t := strings.TrimSpace(p.getNodeText(child))
+			if t != "" {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+// handleStatusMacroSpan handles <span class="status-macro ..."> wrappers in export_view.
+// It looks for a nested aui-lozenge span and delegates to handleStatusLozenge.
+func (p *ConfluencePlugin) handleStatusMacroSpan(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.ElementNode && child.Data == "span" {
+			childCls := getAttr(child, "class")
+			if strings.Contains(childCls, "aui-lozenge") {
+				return p.handleStatusLozenge(ctx, w, child, childCls)
+			}
+		}
+	}
+	// Fallback: plain text wrapped in bold brackets
+	text := strings.TrimSpace(p.getNodeText(n))
+	if text != "" {
+		w.WriteString(fmt.Sprintf("**[%s]**", text))
+		return html2md.RenderSuccess
+	}
+	return html2md.RenderTryNext
+}
+
+// handleStatusLozenge handles <span class="aui-lozenge ..."> status badges.
+// The lozenge class determines the colour emoji prepended to the badge text.
+func (p *ConfluencePlugin) handleStatusLozenge(ctx html2md.Context, w html2md.Writer, n *html.Node, cls string) html2md.RenderStatus {
+	text := strings.TrimSpace(p.getNodeText(n))
+	if text == "" {
+		return html2md.RenderTryNext
+	}
+	emoji := lozengeEmoji(cls)
+	if emoji != "" {
+		w.WriteString(fmt.Sprintf("%s **%s**", emoji, text))
+	} else {
+		w.WriteString(fmt.Sprintf("**[%s]**", text))
+	}
+	return html2md.RenderSuccess
+}
+
+// lozengeEmoji maps AUI lozenge colour variants to emoji indicators.
+func lozengeEmoji(cls string) string {
+	switch {
+	case strings.Contains(cls, "aui-lozenge-success"):
+		return "🟢"
+	case strings.Contains(cls, "aui-lozenge-error"):
+		return "🔴"
+	case strings.Contains(cls, "aui-lozenge-warning"):
+		return "🟡"
+	case strings.Contains(cls, "aui-lozenge-current"):
+		return "🔵"
+	case strings.Contains(cls, "aui-lozenge-complete"),
+		strings.Contains(cls, "aui-lozenge-moved"):
+		return "⚪"
+	default:
+		return ""
+	}
+}
+
 // handleGitPluginContainer handles Git-for-Confluence plugin containers
 // Extracts the file name and TFS link, producing clean markdown
 func (p *ConfluencePlugin) handleGitPluginContainer(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
@@ -698,9 +821,10 @@ func cleanUnderscoreEscaping(markdown string) string {
 	return result
 }
 
-// confluenceTOCLinkRe matches a TOC line: `- [Text](#PagePrefix-EncodedAnchor)` or with indentation
-// Confluence TOC anchors contain a PageName prefix followed by URL-encoded text
-var confluenceTOCLinkRe = regexp.MustCompile(`^(\s*)-\s+\[([^\]]+)\]\(#[A-Za-z0-9]+-[^\)]*%[0-9A-Fa-f]{2}[^\)]*\)\s*$`)
+// confluenceTOCLinkRe matches a TOC line: `- [Text](#...%XX...)` or with indentation.
+// The only requirement is that the anchor contains at least one percent-encoded sequence
+// (%XX) — clean GitHub-style anchors never have percent-encoding.
+var confluenceTOCLinkRe = regexp.MustCompile(`^(\s*)-\s+\[([^\]]+)\]\(#[^\)]*%[0-9A-Fa-f]{2}[^\)]*\)\s*$`)
 
 // headingRe matches markdown headings: # Heading, ## Heading, etc.
 var headingRe = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)

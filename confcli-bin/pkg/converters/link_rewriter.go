@@ -138,7 +138,10 @@ func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (str
 	// Look up the page in our map
 	targetPath, exists := config.PageMap[pageID]
 	if !exists {
-		return "", false
+		// Page not in this export (different space or excluded by depth limit).
+		// Return the anchor-stripped URL as a fallback external link so the reader
+		// can still navigate to the Confluence page.
+		return fmt.Sprintf("[%s](%s)", text, cleanURL), true
 	}
 
 	// Compute relative path from current page directory to target
