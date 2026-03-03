@@ -17,6 +17,13 @@ type LinkRewriteConfig struct {
 	PageMap     map[int]string // pageID -> file path relative to space root dir
 	ConfBaseURL string         // Confluence base URL to match against
 
+	// PageExistsChecker is an optional callback invoked for Confluence page IDs
+	// that are NOT present in PageMap (i.e. links to external Confluence pages).
+	// When provided it is called to verify that the target page is accessible
+	// (not deleted, not missing). If the callback returns false the link is
+	// stripped and only the visible link text is preserved.
+	PageExistsChecker func(pageID int) bool
+
 	// TFS/Git link rewriting
 	TFSBaseURL    string // TFS base URL pattern to match (e.g., "tfs.ekassir.com")
 	LocalRepoPath string // Local path prefix for repo files (can be absolute)
@@ -139,6 +146,11 @@ func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (str
 	targetPath, exists := config.PageMap[pageID]
 	if !exists {
 		// Page not in this export (different space or excluded by depth limit).
+		// If a page-existence checker is provided, verify the target page is still
+		// accessible. If it is deleted or missing, strip the link entirely.
+		if config.PageExistsChecker != nil && !config.PageExistsChecker(pageID) {
+			return text, true
+		}
 		// Return the anchor-stripped URL as a fallback external link so the reader
 		// can still navigate to the Confluence page.
 		return fmt.Sprintf("[%s](%s)", text, cleanURL), true

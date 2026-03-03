@@ -86,10 +86,27 @@ func newHierarchySpaceCmd() *cobra.Command {
 					}
 				}
 
+				// Build a cached page-existence checker.
+				// For every Confluence link that points outside the current export
+				// we call the API once to verify the target page still exists and is
+				// not trashed. Results are memoised to avoid redundant API requests.
+				pageExistsCache := make(map[int]bool)
+				pageExistsChecker := func(pageID int) bool {
+					if exists, ok := pageExistsCache[pageID]; ok {
+						return exists
+					}
+					page, err := apiClient.GetPage(ctx, pageID)
+					exists := err == nil && page != nil &&
+						page.Status != "trashed" && page.Status != "deleted"
+					pageExistsCache[pageID] = exists
+					return exists
+				}
+
 				linkCfg := &converters.LinkRewriteConfig{
-					ConfBaseURL:   viper.GetString("url"),
-					TFSBaseURL:    tfsBaseURL,
-					LocalRepoPath: localRepoPath,
+					ConfBaseURL:       viper.GetString("url"),
+					TFSBaseURL:        tfsBaseURL,
+					LocalRepoPath:     localRepoPath,
+					PageExistsChecker: pageExistsChecker,
 				}
 
 				// Apply package-level conversion settings (safe for CLI: single-threaded)
@@ -670,6 +687,11 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				}
 				if rewriteTFSLinks && linkCfg.TFSBaseURL != "" {
 					rewriteCfg.TFSBaseURL = linkCfg.TFSBaseURL
+				}
+				// Propagate the page-existence checker so that Confluence links
+				// pointing to deleted or missing pages are stripped during export.
+				if rewriteLinks && linkCfg.PageExistsChecker != nil {
+					rewriteCfg.PageExistsChecker = linkCfg.PageExistsChecker
 				}
 				content = converters.RewriteLinks(content, rewriteCfg)
 			}
