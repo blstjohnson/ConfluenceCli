@@ -41,6 +41,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 		Long:  "Retrieve and export the hierarchy of pages in a Confluence space",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			space, _ := cmd.Flags().GetString("space")
+			pageID, _ := cmd.Flags().GetInt("page-id")
 			outputDir, _ := cmd.Flags().GetString("output-dir")
 			format, _ := cmd.Flags().GetString("format")
 			depth, _ := cmd.Flags().GetInt("depth")
@@ -65,43 +66,10 @@ func newHierarchySpaceCmd() *cobra.Command {
 			}
 
 			ctx := context.Background()
-			spaceUseCase := usecases.NewSpaceUseCase(apiClient)
 
-			req := &usecases.GetSpaceHierarchyRequest{
-				SpaceKey: space,
-				Depth:    depth,
-				Flat:     flat,
-			}
-
-			resp, err := spaceUseCase.GetSpaceHierarchy(ctx, req)
-			if err != nil {
-				return fmt.Errorf("failed to get space hierarchy: %w", err)
-			}
-
-			outputFormat := viper.GetString("output_format")
-
-			if flat {
-				if outputFormat == "json" {
-					flatPages := make([]map[string]interface{}, len(resp.AllPages))
-					for i, page := range resp.AllPages {
-						flatPages[i] = map[string]interface{}{
-							"id":    page.ID,
-							"title": page.Title,
-							"depth": 0,
-						}
-					}
-					return formatters.FormatOutput(flatPages, "json")
-				} else {
-					return formatters.FormatOutput(resp.AllPages, "text")
-				}
-			} else if treeView {
-				tree := treeprint.New()
-				for _, page := range resp.RootPages {
-					pageID, _ := page.ID.Int()
-					tree.AddBranch(fmt.Sprintf("%d: %s", pageID, page.Title))
-				}
-				fmt.Println(tree.String())
-			} else if outputDir != "" {
+			// When exporting to a directory, skip the space hierarchy request entirely —
+			// exportSpaceToDirectoryIterative fetches pages itself (iteratively or by pageID).
+			if outputDir != "" {
 				// Load TFS config from profile if not overridden by flags
 				if rewriteTFSLinks && tfsBaseURL == "" {
 					if cfg, err := config.LoadConfig(); err == nil {
@@ -126,10 +94,50 @@ func newHierarchySpaceCmd() *cobra.Command {
 				// Apply package-level conversion settings (safe for CLI: single-threaded)
 				converters.DisableTOC = noTOC
 
-				if err := exportSpaceToDirectoryIterative(apiClient, space, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, linkCfg); err != nil {
+				if err := exportSpaceToDirectoryIterative(apiClient, space, pageID, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, linkCfg); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
-				fmt.Printf("Space %s exported to %s\n", space, outputDir)
+				if pageID > 0 {
+					fmt.Printf("Page %d and descendants from space %s exported to %s\n", pageID, space, outputDir)
+				} else {
+					fmt.Printf("Space %s exported to %s\n", space, outputDir)
+				}
+				return nil
+			}
+
+			// For non-export commands (flat list, tree view) we need the space hierarchy.
+			spaceUseCase := usecases.NewSpaceUseCase(apiClient)
+			resp, err := spaceUseCase.GetSpaceHierarchy(ctx, &usecases.GetSpaceHierarchyRequest{
+				SpaceKey: space,
+				Depth:    depth,
+				Flat:     flat,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to get space hierarchy: %w", err)
+			}
+
+			outputFormat := viper.GetString("output_format")
+
+			if flat {
+				if outputFormat == "json" {
+					flatPages := make([]map[string]interface{}, len(resp.AllPages))
+					for i, page := range resp.AllPages {
+						flatPages[i] = map[string]interface{}{
+							"id":    page.ID,
+							"title": page.Title,
+							"depth": 0,
+						}
+					}
+					return formatters.FormatOutput(flatPages, "json")
+				}
+				return formatters.FormatOutput(resp.AllPages, "text")
+			} else if treeView {
+				tree := treeprint.New()
+				for _, page := range resp.RootPages {
+					pID, _ := page.ID.Int()
+					tree.AddBranch(fmt.Sprintf("%d: %s", pID, page.Title))
+				}
+				fmt.Println(tree.String())
 			} else {
 				tree := treeprint.New()
 				pageMap := make(map[int]*models.Page)
@@ -137,13 +145,13 @@ func newHierarchySpaceCmd() *cobra.Command {
 
 				for i := range resp.AllPages {
 					page := &resp.AllPages[i]
-					pageID, ok := page.ID.Int()
+					pID, ok := page.ID.Int()
 					if ok {
-						pageMap[pageID] = page
+						pageMap[pID] = page
 						childrenMap[0] = append(childrenMap[0], page)
 					}
 				}
-
+				_ = pageMap // used via childrenMap
 				buildTree(tree, childrenMap[0], childrenMap, depth, 0)
 				fmt.Println(tree.String())
 			}
@@ -153,6 +161,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 	}
 
 	cmd.Flags().String("space", "", "Space key (required)")
+	cmd.Flags().Int("page-id", 0, "Root page ID to export (optional, if set, only this page and its descendants will be exported)")
 	cmd.Flags().String("output-dir", "", "Export space to directory")
 	cmd.Flags().String("format", "markdown", "Format for saved pages: markdown, storage, html, plain, edit, export/export_view (converted to markdown)")
 	cmd.Flags().Int("depth", 0, "Recursion depth (default: unlimited)")
@@ -193,7 +202,7 @@ func exportSpaceToDirectory(apiClient interface {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	spaceDir := filepath.Join(outputDir, space)
+	spaceDir := outputDir
 	if err := os.MkdirAll(spaceDir, 0755); err != nil {
 		return fmt.Errorf("failed to create space directory: %w", err)
 	}
@@ -304,14 +313,14 @@ func exportSpaceToDirectory(apiClient interface {
 // using iterative batch processing to save memory for large spaces
 // Creates a hierarchical folder structure: each page gets a folder named by pageId
 // Child pages are saved inside their parent page's folder
-func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, flatLeaves bool, linkCfg *converters.LinkRewriteConfig) error {
+func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPageID int, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, flatLeaves bool, linkCfg *converters.LinkRewriteConfig) error {
 	ctx := context.Background()
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
 	}
 
-	spaceDir := filepath.Join(outputDir, space)
+	spaceDir := outputDir
 	if err := os.MkdirAll(spaceDir, 0755); err != nil {
 		return fmt.Errorf("failed to create space directory: %w", err)
 	}
@@ -345,8 +354,28 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 	var rootPageIDs []int
 
 	// Use iterative processing to fetch all pages
-	err := apiClient.GetAllPagesInSpaceIterative(ctx, space, batchSize, func(batch []models.Page) error {
-		for _, page := range batch {
+	var err error
+	if rootPageID > 0 {
+		// Fetch specific page and its descendants
+		// 1. Fetch the root page
+		rootPage, err := apiClient.GetPage(ctx, rootPageID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch root page %d: %w", rootPageID, err)
+		}
+
+		// 2. Fetch descendants
+		// Note: GetDescendants might return a lot of pages, but for a single branch it should be manageable.
+		// If it's too large, we might need a paginated GetDescendants in the client.
+		// For now, we assume it fits in memory or the client handles pagination internally.
+		descendants, err := apiClient.GetDescendants(ctx, rootPageID, depth)
+		if err != nil {
+			return fmt.Errorf("failed to fetch descendants for page %d: %w", rootPageID, err)
+		}
+
+		// Process root page
+		allPages := append([]models.Page{*rootPage}, descendants...)
+
+		for _, page := range allPages {
 			pageCount++
 			pageID, ok := page.ID.Int()
 			if !ok {
@@ -356,22 +385,53 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space, outputDir, for
 			pageMap[pageID] = &page
 
 			// Build parent-child relationships
-			if len(page.Ancestors) > 0 {
-				// Get immediate parent (last ancestor)
-				parentID, ok := page.Ancestors[len(page.Ancestors)-1].ID.Int()
-				if ok {
-					childrenMap[parentID] = append(childrenMap[parentID], pageID)
-				}
-			} else {
-				// No ancestors = root page
+			// For the root page of our export, we treat it as a root (no parent in our context)
+			if pageID == rootPageID {
 				rootPageIDs = append(rootPageIDs, pageID)
+			} else {
+				// For descendants, find their parent
+				if len(page.Ancestors) > 0 {
+					// Get immediate parent (last ancestor)
+					parentID, ok := page.Ancestors[len(page.Ancestors)-1].ID.Int()
+					if ok {
+						// Only add to childrenMap if parent is also in our export set
+						// (which it should be, unless the tree is broken)
+						// For partial export, we only care if the parent is in our map or is the root
+						childrenMap[parentID] = append(childrenMap[parentID], pageID)
+					}
+				}
 			}
 		}
-		return nil
-	})
+
+	} else {
+		err = apiClient.GetAllPagesInSpaceIterative(ctx, space, batchSize, func(batch []models.Page) error {
+			for _, page := range batch {
+				pageCount++
+				pageID, ok := page.ID.Int()
+				if !ok {
+					continue
+				}
+
+				pageMap[pageID] = &page
+
+				// Build parent-child relationships
+				if len(page.Ancestors) > 0 {
+					// Get immediate parent (last ancestor)
+					parentID, ok := page.Ancestors[len(page.Ancestors)-1].ID.Int()
+					if ok {
+						childrenMap[parentID] = append(childrenMap[parentID], pageID)
+					}
+				} else {
+					// No ancestors = root page
+					rootPageIDs = append(rootPageIDs, pageID)
+				}
+			}
+			return nil
+		})
+	}
 
 	if err != nil {
-		return fmt.Errorf("failed to fetch pages iteratively: %w", err)
+		return fmt.Errorf("failed to fetch pages: %w", err)
 	}
 
 	// Build folder name map for named-folders / clean-names mode.
