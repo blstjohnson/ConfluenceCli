@@ -55,6 +55,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 			saveMetadata, _ := cmd.Flags().GetBool("save-metadata")
 			flatLeaves, _ := cmd.Flags().GetBool("flat-leaves")
 			noTOC, _ := cmd.Flags().GetBool("no-toc")
+			skipRoot, _ := cmd.Flags().GetBool("skip-root")
 			rewriteLinks, _ := cmd.Flags().GetBool("rewrite-links")
 			rewriteTFSLinks, _ := cmd.Flags().GetBool("rewrite-tfs-links")
 			tfsBaseURL, _ := cmd.Flags().GetString("tfs-base-url")
@@ -94,7 +95,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 				// Apply package-level conversion settings (safe for CLI: single-threaded)
 				converters.DisableTOC = noTOC
 
-				if err := exportSpaceToDirectoryIterative(apiClient, space, pageID, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, linkCfg); err != nil {
+				if err := exportSpaceToDirectoryIterative(apiClient, space, pageID, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, skipRoot, linkCfg); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
 				if pageID > 0 {
@@ -179,6 +180,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 	cmd.Flags().Bool("save-metadata", false, "Save per-page .meta.json and space _space_metadata.json files alongside content (disabled by default)")
 	cmd.Flags().Bool("flat-leaves", false, "Do not create a subdirectory for pages that have no children; save their content file directly in the parent folder")
 	cmd.Flags().Bool("no-toc", false, "Strip the table of contents from exported markdown (instead of regenerating it as a clean list)")
+	cmd.Flags().Bool("skip-root", false, "Skip creating folder/file for root page(s); their children are exported directly into the output directory")
 	cmd.MarkFlagRequired("space")
 
 	return cmd
@@ -313,7 +315,7 @@ func exportSpaceToDirectory(apiClient interface {
 // using iterative batch processing to save memory for large spaces
 // Creates a hierarchical folder structure: each page gets a folder named by pageId
 // Child pages are saved inside their parent page's folder
-func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPageID int, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, flatLeaves bool, linkCfg *converters.LinkRewriteConfig) error {
+func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPageID int, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, flatLeaves bool, skipRoot bool, linkCfg *converters.LinkRewriteConfig) error {
 	ctx := context.Background()
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -530,7 +532,14 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			}
 		}
 		for _, rootID := range rootPageIDs {
-			buildFileMap(rootID, "")
+			if skipRoot {
+				// Root page is transparent: its children start at parentDir=""
+				for _, childID := range childrenMap[rootID] {
+					buildFileMap(childID, "")
+				}
+			} else {
+				buildFileMap(rootID, "")
+			}
 		}
 		linkCfg.PageMap = pageFileMap
 	}
@@ -680,10 +689,19 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 		return nil
 	}
 
-	// Save all root pages (and their children recursively)
-	for _, rootPageID := range rootPageIDs {
-		if err := savePageWithChildren(rootPageID, spaceDir, 0); err != nil {
-			return err
+	// Save all root pages (and their children recursively).
+	// When --skip-root: the root page itself is not written; its children start at spaceDir.
+	for _, rID := range rootPageIDs {
+		if skipRoot {
+			for _, childID := range childrenMap[rID] {
+				if err := savePageWithChildren(childID, spaceDir, 0); err != nil {
+					return err
+				}
+			}
+		} else {
+			if err := savePageWithChildren(rID, spaceDir, 0); err != nil {
+				return err
+			}
 		}
 	}
 
