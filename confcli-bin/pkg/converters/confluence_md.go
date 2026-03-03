@@ -800,6 +800,126 @@ func getAttr(n *html.Node, key string) string {
 	return ""
 }
 
+// listItemIndentRe matches a markdown list item (unordered or ordered) at any
+// indentation level. Capture group 1 is the leading whitespace.
+var listItemIndentRe = regexp.MustCompile(`^(\s*)(?:[-*+]|\d+\.)\s`)
+
+// doubleDashListRe matches an unordered list item where the item body itself
+// starts with another list marker — the signature of an empty outer <li> that
+// wraps an inner <ul> with no text of its own:  "  - - actual text"
+// Capture group 1 is the leading whitespace of the outer item.
+var doubleDashListRe = regexp.MustCompile(`^(\s*)- - `)
+
+// indentedItemRe matches a list item (unordered or ordered) that has at least
+// one space of indentation (i.e. not a top-level list item).
+var indentedItemRe = regexp.MustCompile(`^ +(?:[-*+]|\d+\.) `)
+
+// fixEmptyListWrappers handles two related artefacts produced by the html-to-markdown
+// library when it encounters an HTML structure such as <li><ul><li>text</li></ul></li>
+// (an outer list item with no text content of its own):
+//
+//  1. The empty outer <li> and the first inner <li> are collapsed onto the same
+//     line, producing "- - text" (or "  - - text" for nested cases). This is
+//     replaced by the correctly-indented "  - text" (outer dash → two spaces).
+//
+//  2. After the above fix, the blank line that the converter inserts between the
+//     preceding paragraph/text and the orphaned indented list item is removed, so
+//     the list reads as a direct continuation of the text.
+func fixEmptyListWrappers(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+
+	// Pass 1: "  - - text" → "    - text"  (collapse empty outer wrapper)
+	for i, line := range lines {
+		if m := doubleDashListRe.FindStringSubmatch(line); m != nil {
+			// Replace the "- - " prefix with "  - " so the item is indented one
+			// level deeper instead of having a phantom outer bullet.
+			lines[i] = m[1] + "  - " + line[len(m[0]):]
+		}
+	}
+
+	// Pass 2: remove blank lines that now sit between a non-list-item text line
+	// and an immediately following indented list item (indent ≥ 1 space).
+	// This keeps the list visually attached to the heading/paragraph that
+	// introduced it, eliminating the spurious blank gap.
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		result = append(result, line)
+		i++
+
+		// Only trigger on non-empty, non-list-item, non-heading lines.
+		// Headings deliberately keep their surrounding blank lines.
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || listItemIndentRe.MatchString(line) || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		// Collect consecutive blank / whitespace-only lines.
+		j := i
+		for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
+			j++
+		}
+
+		// If the next non-blank line is a list item at any indentation level,
+		// drop the interleaved blank lines. This removes the spurious gap that
+		// the converter inserts between a bold/text lead-in and its list.
+		if j > i && j < len(lines) && listItemIndentRe.MatchString(lines[j]) {
+			i = j // skip blanks; loop will emit lines[j] next
+		}
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// fixNestedListSpacing removes spurious blank lines that the html-to-markdown
+// converter inserts between consecutive list items (sibling or parent→child).
+// The commonmark plugin marks lists as "loose" whenever they contain block-level
+// content, causing a blank line to appear after every list item in the group.
+// We strip those inter-item blank lines so lists render compactly.
+//
+// Before (broken):
+//
+//   - A4XX:
+//     (blank line)
+//     1. Step one
+//     2. Step two
+//
+// After (fixed):
+//
+//   - A4XX:
+//     1. Step one
+//     2. Step two
+func fixNestedListSpacing(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		result = append(result, line)
+		i++
+
+		// Only act when the current line is a list item.
+		if !listItemIndentRe.MatchString(line) {
+			continue
+		}
+
+		// Peek ahead: collect consecutive blank / whitespace-only lines.
+		j := i
+		for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
+			j++
+		}
+
+		// If the next non-blank line is also a list item (at any indentation),
+		// drop the interleaved blank lines. This collapses both sibling-level
+		// and parent→child blank gaps produced by the loose-list rendering.
+		if j > i && j < len(lines) && listItemIndentRe.MatchString(lines[j]) {
+			i = j // skip blank lines; loop will emit lines[j] next
+		}
+	}
+	return strings.Join(result, "\n")
+}
+
 // underscoreEscapeRe matches backslash-escaped underscores in markdown link text and code
 var underscoreEscapeRe = regexp.MustCompile(`\\(_)`)
 
@@ -1532,6 +1652,13 @@ func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, e
 		markdown = regenerateTOC(markdown)
 	}
 	markdown = fixTableLineBreaks(markdown)
+	// Remove blank lines between a parent list item and a more-indented child
+	// item; the html-to-markdown library emits "loose" list items that add an
+	// unwanted blank line before each nested sub-list.
+	markdown = fixNestedListSpacing(markdown)
+	// Collapse empty outer list-item wrappers ("- - text" → "  - text") and
+	// remove the blank line that precedes the resulting orphaned indented list.
+	markdown = fixEmptyListWrappers(markdown)
 	// 1. fixEscapedBackslashes: \\ → \ (code-block-aware)
 	// 2. RemoveMarkdownEscaping: \+ → +, \- → -, \_ → _, \* → * … (code-block-aware)
 	//    Running them in this order handles \\+ correctly: \\+ → \+ → +
