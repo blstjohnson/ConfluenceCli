@@ -89,11 +89,6 @@ func RewriteLinks(markdown string, config *LinkRewriteConfig) string {
 
 // rewriteConfluenceLink tries to rewrite a Confluence page URL to a relative file path
 func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (string, bool) {
-	// Only process links that point to the configured Confluence instance
-	if !strings.Contains(linkURL, config.ConfBaseURL) {
-		return "", false
-	}
-
 	// Strip anchor/fragment before matching patterns.
 	// Handle both the literal '#' form and the percent-encoded '%23' form.
 	cleanURL := linkURL
@@ -102,6 +97,11 @@ func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (str
 	}
 	if idx := strings.Index(cleanURL, "%23"); idx != -1 {
 		cleanURL = cleanURL[:idx]
+	}
+
+	// Only process links that point to the configured Confluence instance
+	if !strings.Contains(cleanURL, config.ConfBaseURL) {
+		return "", false
 	}
 
 	var pageID int

@@ -92,6 +92,9 @@ func sanitizeSimpleCore(filename string, noLimit bool) string {
 	// Replace spaces with underscores
 	result = strings.ReplaceAll(result, " ", "_")
 
+	// Replace hyphens with underscores
+	result = strings.ReplaceAll(result, "-", "_")
+
 	// Collapse consecutive underscores into a single one
 	result = regexp.MustCompile(`_{2,}`).ReplaceAllString(result, "_")
 
