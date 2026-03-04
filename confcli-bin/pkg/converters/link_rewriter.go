@@ -17,6 +17,13 @@ type LinkRewriteConfig struct {
 	PageMap     map[int]string // pageID -> file path relative to space root dir
 	ConfBaseURL string         // Confluence base URL to match against
 
+	// PageExistsChecker is an optional callback invoked for Confluence page IDs
+	// that are NOT present in PageMap (i.e. links to external Confluence pages).
+	// When provided it is called to verify that the target page is accessible
+	// (not deleted, not missing). If the callback returns false the link is
+	// stripped and only the visible link text is preserved.
+	PageExistsChecker func(pageID int) bool
+
 	// TFS/Git link rewriting
 	TFSBaseURL    string // TFS base URL pattern to match (e.g., "tfs.ekassir.com")
 	LocalRepoPath string // Local path prefix for repo files (can be absolute)
@@ -27,10 +34,15 @@ type LinkRewriteConfig struct {
 }
 
 // markdownLinkRe matches markdown links: [text](url)
-var markdownLinkRe = regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
+// Supports URLs that contain balanced (but not nested) parentheses — common in
+// Confluence anchor links such as #heading(term)rest(term2).
+// Pattern for URL group: zero-or-more non-paren chars, optionally followed by
+// one or more (inner-paren-content) segments also separated by non-paren chars.
+var markdownLinkRe = regexp.MustCompile(`\[([^\]]*)\]\(([^()\s]*(?:\([^()]*\)[^()\s]*)*)\)`)
 
-// confluencePageIDRe matches Confluence page URLs containing pageId parameter
-var confluencePageIDRe = regexp.MustCompile(`/pages/viewpage\.action\?pageId=(\d+)`)
+// confluencePageIDRe matches Confluence page URLs containing pageId query parameter.
+// Uses [^#]* to skip any other query parameters that may precede pageId (e.g. &pageId=).
+var confluencePageIDRe = regexp.MustCompile(`/pages/viewpage\.action[^#]*[?&]pageId=(\d+)`)
 
 // confluenceSpacesPageIDRe matches /spaces/~pageID or /spaces/~pageID/... patterns
 var confluenceSpacesPageIDRe = regexp.MustCompile(`/spaces/~(\d+)`)
@@ -63,6 +75,12 @@ func RewriteLinks(markdown string, config *LinkRewriteConfig) string {
 			if rewritten, ok := rewriteConfluenceLink(linkURL, text, config); ok {
 				return rewritten
 			}
+			// URL belongs to our Confluence instance but could not be resolved to a
+			// local file (page not in export, wrong space, unrecognised URL format, …).
+			// Remove the link entirely and keep only the visible link text.
+			if strings.Contains(linkURL, config.ConfBaseURL) {
+				return text
+			}
 		}
 
 		// Try TFS link rewriting
@@ -78,15 +96,19 @@ func RewriteLinks(markdown string, config *LinkRewriteConfig) string {
 
 // rewriteConfluenceLink tries to rewrite a Confluence page URL to a relative file path
 func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (string, bool) {
-	// Only process links that point to the configured Confluence instance
-	if !strings.Contains(linkURL, config.ConfBaseURL) {
-		return "", false
-	}
-
-	// Strip anchor/fragment before matching patterns
+	// Strip anchor/fragment before matching patterns.
+	// Handle both the literal '#' form and the percent-encoded '%23' form.
 	cleanURL := linkURL
 	if idx := strings.Index(cleanURL, "#"); idx != -1 {
 		cleanURL = cleanURL[:idx]
+	}
+	if idx := strings.Index(cleanURL, "%23"); idx != -1 {
+		cleanURL = cleanURL[:idx]
+	}
+
+	// Only process links that point to the configured Confluence instance
+	if !strings.Contains(cleanURL, config.ConfBaseURL) {
+		return "", false
 	}
 
 	var pageID int
@@ -123,7 +145,15 @@ func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (str
 	// Look up the page in our map
 	targetPath, exists := config.PageMap[pageID]
 	if !exists {
-		return "", false
+		// Page not in this export (different space or excluded by depth limit).
+		// If a page-existence checker is provided, verify the target page is still
+		// accessible. If it is deleted or missing, strip the link entirely.
+		if config.PageExistsChecker != nil && !config.PageExistsChecker(pageID) {
+			return text, true
+		}
+		// Return the anchor-stripped URL as a fallback external link so the reader
+		// can still navigate to the Confluence page.
+		return fmt.Sprintf("[%s](%s)", text, cleanURL), true
 	}
 
 	// Compute relative path from current page directory to target

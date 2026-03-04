@@ -180,7 +180,9 @@ type FetchPageChildrenResponse struct {
 // FetchPageChildren fetches children of a page
 func (e *PageExtension) FetchPageChildren(ctx context.Context, req *FetchPageChildrenRequest) (*FetchPageChildrenResponse, error) {
 	path := fmt.Sprintf("%s/content/%d/child/page", e.client.APIPrefix, req.PageID)
-	resp, err := e.client.MakeRequest(ctx, "GET", path, nil, nil)
+	params := url.Values{}
+	params.Add("expand", "ancestors")
+	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -268,12 +270,12 @@ func (e *PageExtension) CreatePage(ctx context.Context, req *CreatePageRequest) 
 
 // UpdatePageRequest represents a request to update a page
 type UpdatePageRequest struct {
-	PageID          int
-	Content         string
-	VersionComment  string
-	Format          string // Content format: storage, editor, etc.
-	Title           string // Optional: if not provided, will fetch current title
-	SkipFetchCurrent bool // If true, assumes caller provides correct title
+	PageID           int
+	Content          string
+	VersionComment   string
+	Format           string // Content format: storage, editor, etc.
+	Title            string // Optional: if not provided, will fetch current title
+	SkipFetchCurrent bool   // If true, assumes caller provides correct title
 }
 
 // UpdatePageResponse represents the response from updating a page

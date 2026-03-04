@@ -33,6 +33,15 @@ func SanitizeFilename(filename string) string {
 	return result
 }
 
+// SanitizeFilenameNoLimit is like SanitizeFilename but does not truncate the result.
+func SanitizeFilenameNoLimit(filename string) string {
+	result := slug.Make(filename)
+	if result == "" {
+		result = "untitled"
+	}
+	return result
+}
+
 // SanitizeFilenameKeepCase transliterates Unicode but preserves the original casing.
 // Useful for display-oriented filenames.
 func SanitizeFilenameKeepCase(filename string) string {
@@ -51,6 +60,53 @@ func SanitizeFilenameKeepCase(filename string) string {
 	if len(result) > 80 {
 		result = result[:80]
 		result = strings.TrimRight(result, "-")
+	}
+	return result
+}
+
+// SanitizeFilenameSimple sanitizes a filename without any transliteration.
+// It removes all forbidden filesystem characters (\ / : * ? " < > |),
+// replaces dots (.) with underscores (_) — since the title part carries no
+// file extension — replaces spaces with underscores, and collapses runs of
+// multiple underscores into a single one.
+// The result is limited to 80 characters to stay within Windows MAX_PATH.
+func SanitizeFilenameSimple(filename string) string {
+	return sanitizeSimpleCore(filename, false)
+}
+
+// SanitizeFilenameSimpleNoLimit is like SanitizeFilenameSimple but does not
+// truncate the result to 80 characters.
+func SanitizeFilenameSimpleNoLimit(filename string) string {
+	return sanitizeSimpleCore(filename, true)
+}
+
+// sanitizeSimpleCore is the shared implementation for the Simple sanitizers.
+func sanitizeSimpleCore(filename string, noLimit bool) string {
+	// Remove forbidden characters on Windows (and generally unsafe on all OSes)
+	forbidden := regexp.MustCompile(`[\\/:*?"<>|]`)
+	result := forbidden.ReplaceAllString(filename, "")
+
+	// Replace dots with underscores (no file extension inside title)
+	result = strings.ReplaceAll(result, ".", "_")
+
+	// Replace spaces with underscores
+	result = strings.ReplaceAll(result, " ", "_")
+
+	// Replace hyphens with underscores
+	result = strings.ReplaceAll(result, "-", "_")
+
+	// Collapse consecutive underscores into a single one
+	result = regexp.MustCompile(`_{2,}`).ReplaceAllString(result, "_")
+
+	// Trim leading / trailing underscores
+	result = strings.Trim(result, "_")
+
+	if result == "" {
+		result = "untitled"
+	}
+	if !noLimit && len(result) > 80 {
+		result = result[:80]
+		result = strings.TrimRight(result, "_")
 	}
 	return result
 }
@@ -168,7 +224,7 @@ func ExportPageToFile(apiClient api.Client, page models.Page, baseDir, format st
 			if err != nil {
 				return fmt.Errorf("failed to get page content: %w", err)
 			}
-			
+
 			// Convert from storage to requested format if needed
 			content, err := ConvertContentFromStorage(storageContent, format, baseURL)
 			if err != nil {

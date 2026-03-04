@@ -121,12 +121,22 @@ func (p *ConfluencePlugin) handleAnchor(ctx html2md.Context, w html2md.Writer, n
 	return html2md.RenderSuccess
 }
 
-// handleSpan handles span elements — dispatches to user mention or passes through
+// handleSpan handles span elements — dispatches to user mention, status lozenge, or passes through
 func (p *ConfluencePlugin) handleSpan(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
-	// Check if this is a user mention
 	for _, attr := range n.Attr {
 		if attr.Key == "data-account-id" || attr.Key == "data-user-key" {
 			return p.handleUserMention(ctx, w, n)
+		}
+		if attr.Key == "class" {
+			cls := attr.Val
+			// export_view Status macro: <span class="status-macro ...">
+			if strings.Contains(cls, "status-macro") {
+				return p.handleStatusMacroSpan(ctx, w, n)
+			}
+			// export_view Status lozenge rendered directly: <span class="aui-lozenge ...">
+			if strings.Contains(cls, "aui-lozenge") {
+				return p.handleStatusLozenge(ctx, w, n, cls)
+			}
 		}
 	}
 	return html2md.RenderTryNext
@@ -139,16 +149,134 @@ func (p *ConfluencePlugin) handleDiv(ctx html2md.Context, w html2md.Writer, n *h
 			return p.handleExpandDiv(ctx, w, n)
 		}
 		if attr.Key == "class" {
-			if strings.Contains(attr.Val, "git-plugin-container") {
+			cls := attr.Val
+			if strings.Contains(cls, "git-plugin-container") {
 				return p.handleGitPluginContainer(ctx, w, n)
 			}
-			if strings.Contains(attr.Val, "aui-inline-dialog") {
+			if strings.Contains(cls, "aui-inline-dialog") {
 				// Strip AUI inline dialogs (duplicate metadata)
 				return html2md.RenderSuccess
+			}
+			// export_view HTML: expand macro → <div class="expand-container">
+			if strings.Contains(cls, "expand-container") {
+				return p.handleExpandContainerDiv(ctx, w, n)
+			}
+			// export_view HTML: info/warning/note/tip macros become
+			// <div class="confluence-information-macro confluence-information-macro-{type}">
+			if strings.Contains(cls, "confluence-information-macro") &&
+				!strings.Contains(cls, "confluence-information-macro-body") &&
+				!strings.Contains(cls, "confluence-information-macro-icon") {
+				return p.handleConfluencePanelDiv(ctx, w, n, cls)
+			}
+			// Standard Confluence panels: <div class="panel"> with panelHeader/panelContent
+			if cls == "panel" || strings.HasPrefix(cls, "panel ") || strings.HasSuffix(cls, " panel") ||
+				strings.Contains(cls, " panel ") {
+				return p.handleGenericPanelDiv(ctx, w, n)
 			}
 		}
 	}
 	return html2md.RenderTryNext
+}
+
+// handleConfluencePanelDiv handles export_view HTML panel macros:
+//
+//	<div class="confluence-information-macro confluence-information-macro-note">
+//	  <p class="title">Optional title</p>
+//	  <div class="confluence-information-macro-body">...</div>
+//	</div>
+func (p *ConfluencePlugin) handleConfluencePanelDiv(ctx html2md.Context, w html2md.Writer, n *html.Node, cls string) html2md.RenderStatus {
+	emoji := "ℹ️"
+	label := "Info"
+	switch {
+	case strings.Contains(cls, "confluence-information-macro-warning"):
+		emoji = "⚠️"
+		label = "Warning"
+	case strings.Contains(cls, "confluence-information-macro-note"):
+		emoji = "📝"
+		label = "Note"
+	case strings.Contains(cls, "confluence-information-macro-tip"):
+		emoji = "💡"
+		label = "Tip"
+	case strings.Contains(cls, "confluence-information-macro-information"):
+		emoji = "ℹ️"
+		label = "Info"
+	}
+
+	var title string
+	var content string
+
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		childCls := getAttr(child, "class")
+		// Skip icon elements
+		if strings.Contains(childCls, "icon") {
+			continue
+		}
+		// Body content
+		if strings.Contains(childCls, "confluence-information-macro-body") {
+			content = strings.TrimSpace(p.renderChildren(ctx, child))
+			continue
+		}
+		// Title: <p class="title"> or <span class="title">
+		if strings.Contains(childCls, "title") {
+			t := strings.TrimSpace(p.getNodeText(child))
+			if t != "" {
+				title = t
+			}
+			continue
+		}
+	}
+
+	if title != "" {
+		label = title
+	}
+
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	for i, line := range lines {
+		lines[i] = "> " + line
+	}
+	w.WriteString(fmt.Sprintf("> %s **%s:**\n%s\n\n", emoji, label, strings.Join(lines, "\n")))
+	return html2md.RenderSuccess
+}
+
+// handleGenericPanelDiv handles standard Confluence panels:
+//
+//	<div class="panel"><div class="panelHeader">Title</div><div class="panelContent">...</div></div>
+func (p *ConfluencePlugin) handleGenericPanelDiv(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
+	var header string
+	var content string
+
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		childCls := getAttr(child, "class")
+		if strings.Contains(childCls, "panelHeader") {
+			header = strings.TrimSpace(p.getNodeText(child))
+		} else if strings.Contains(childCls, "panelContent") || strings.Contains(childCls, "panelBody") {
+			content = strings.TrimSpace(p.renderChildren(ctx, child))
+		}
+	}
+
+	if header == "" && content == "" {
+		return html2md.RenderTryNext
+	}
+
+	var sb strings.Builder
+	if header != "" {
+		sb.WriteString(fmt.Sprintf("> 📌 **%s:**\n", header))
+	} else {
+		sb.WriteString("> 📌\n")
+	}
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	for _, line := range lines {
+		sb.WriteString("> " + line + "\n")
+	}
+	sb.WriteString("\n")
+	w.WriteString(sb.String())
+	return html2md.RenderSuccess
 }
 
 // handleMacro handles ac:structured-macro elements
@@ -310,6 +438,115 @@ func (p *ConfluencePlugin) handleExpandDiv(ctx html2md.Context, w html2md.Writer
 	return html2md.RenderSuccess
 }
 
+// handleExpandContainerDiv handles the export_view HTML form of the Expand macro:
+//
+//	<div class="expand-container">
+//	  <div class="expand-control"><span class="expand-icon ..."/><b>Summary</b></div>
+//	  <div class="expand-content expand-hidden">Content</div>
+//	</div>
+func (p *ConfluencePlugin) handleExpandContainerDiv(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
+	summary := "Click to expand"
+	var content string
+
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		childCls := getAttr(child, "class")
+		if strings.Contains(childCls, "expand-control") {
+			// Extract summary text, skipping icon children
+			t := p.extractExpandSummaryText(child)
+			if t != "" {
+				summary = t
+			}
+		} else if strings.Contains(childCls, "expand-content") {
+			content = strings.TrimSpace(p.renderChildren(ctx, child))
+		}
+	}
+
+	w.WriteString(fmt.Sprintf("<details>\n<summary>%s</summary>\n\n%s\n\n</details>\n", summary, content))
+	return html2md.RenderSuccess
+}
+
+// extractExpandSummaryText walks the expand-control element and returns the first
+// non-empty text node that isn't part of an icon element.
+func (p *ConfluencePlugin) extractExpandSummaryText(n *html.Node) string {
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.TextNode {
+			t := strings.TrimSpace(child.Data)
+			if t != "" {
+				return t
+			}
+		}
+		if child.Type == html.ElementNode {
+			childCls := getAttr(child, "class")
+			if strings.Contains(childCls, "icon") || child.Data == "img" {
+				continue
+			}
+			t := strings.TrimSpace(p.getNodeText(child))
+			if t != "" {
+				return t
+			}
+		}
+	}
+	return ""
+}
+
+// handleStatusMacroSpan handles <span class="status-macro ..."> wrappers in export_view.
+// It looks for a nested aui-lozenge span and delegates to handleStatusLozenge.
+func (p *ConfluencePlugin) handleStatusMacroSpan(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.ElementNode && child.Data == "span" {
+			childCls := getAttr(child, "class")
+			if strings.Contains(childCls, "aui-lozenge") {
+				return p.handleStatusLozenge(ctx, w, child, childCls)
+			}
+		}
+	}
+	// Fallback: plain text wrapped in bold brackets
+	text := strings.TrimSpace(p.getNodeText(n))
+	if text != "" {
+		w.WriteString(fmt.Sprintf("**[%s]**", text))
+		return html2md.RenderSuccess
+	}
+	return html2md.RenderTryNext
+}
+
+// handleStatusLozenge handles <span class="aui-lozenge ..."> status badges.
+// The lozenge class determines the colour emoji prepended to the badge text.
+func (p *ConfluencePlugin) handleStatusLozenge(ctx html2md.Context, w html2md.Writer, n *html.Node, cls string) html2md.RenderStatus {
+	text := strings.TrimSpace(p.getNodeText(n))
+	if text == "" {
+		return html2md.RenderTryNext
+	}
+	emoji := lozengeEmoji(cls)
+	if emoji != "" {
+		w.WriteString(fmt.Sprintf("%s **%s**", emoji, text))
+	} else {
+		w.WriteString(fmt.Sprintf("**[%s]**", text))
+	}
+	return html2md.RenderSuccess
+}
+
+// lozengeEmoji maps AUI lozenge colour variants to emoji indicators.
+func lozengeEmoji(cls string) string {
+	switch {
+	case strings.Contains(cls, "aui-lozenge-success"):
+		return "🟢"
+	case strings.Contains(cls, "aui-lozenge-error"):
+		return "🔴"
+	case strings.Contains(cls, "aui-lozenge-warning"):
+		return "🟡"
+	case strings.Contains(cls, "aui-lozenge-current"):
+		return "🔵"
+	case strings.Contains(cls, "aui-lozenge-complete"),
+		strings.Contains(cls, "aui-lozenge-moved"):
+		return "⚪"
+	default:
+		return ""
+	}
+}
+
 // handleGitPluginContainer handles Git-for-Confluence plugin containers
 // Extracts the file name and TFS link, producing clean markdown
 func (p *ConfluencePlugin) handleGitPluginContainer(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
@@ -365,7 +602,8 @@ func (p *ConfluencePlugin) handleGitPluginContainer(ctx html2md.Context, w html2
 	var parts []string
 	if fileName != "" {
 		if sourceLink != "" {
-			parts = append(parts, fmt.Sprintf("**%s** ([source](%s))", fileName, sourceLink))
+			// Render as a bold hyperlink: **[filename](url)**
+			parts = append(parts, fmt.Sprintf("**[%s](%s)**", fileName, sourceLink))
 		} else {
 			parts = append(parts, fmt.Sprintf("**%s**", fileName))
 		}
@@ -562,6 +800,126 @@ func getAttr(n *html.Node, key string) string {
 	return ""
 }
 
+// listItemIndentRe matches a markdown list item (unordered or ordered) at any
+// indentation level. Capture group 1 is the leading whitespace.
+var listItemIndentRe = regexp.MustCompile(`^(\s*)(?:[-*+]|\d+\.)\s`)
+
+// doubleDashListRe matches an unordered list item where the item body itself
+// starts with another list marker — the signature of an empty outer <li> that
+// wraps an inner <ul> with no text of its own:  "  - - actual text"
+// Capture group 1 is the leading whitespace of the outer item.
+var doubleDashListRe = regexp.MustCompile(`^(\s*)- - `)
+
+// indentedItemRe matches a list item (unordered or ordered) that has at least
+// one space of indentation (i.e. not a top-level list item).
+var indentedItemRe = regexp.MustCompile(`^ +(?:[-*+]|\d+\.) `)
+
+// fixEmptyListWrappers handles two related artefacts produced by the html-to-markdown
+// library when it encounters an HTML structure such as <li><ul><li>text</li></ul></li>
+// (an outer list item with no text content of its own):
+//
+//  1. The empty outer <li> and the first inner <li> are collapsed onto the same
+//     line, producing "- - text" (or "  - - text" for nested cases). This is
+//     replaced by the correctly-indented "  - text" (outer dash → two spaces).
+//
+//  2. After the above fix, the blank line that the converter inserts between the
+//     preceding paragraph/text and the orphaned indented list item is removed, so
+//     the list reads as a direct continuation of the text.
+func fixEmptyListWrappers(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+
+	// Pass 1: "  - - text" → "    - text"  (collapse empty outer wrapper)
+	for i, line := range lines {
+		if m := doubleDashListRe.FindStringSubmatch(line); m != nil {
+			// Replace the "- - " prefix with "  - " so the item is indented one
+			// level deeper instead of having a phantom outer bullet.
+			lines[i] = m[1] + "  - " + line[len(m[0]):]
+		}
+	}
+
+	// Pass 2: remove blank lines that now sit between a non-list-item text line
+	// and an immediately following indented list item (indent ≥ 1 space).
+	// This keeps the list visually attached to the heading/paragraph that
+	// introduced it, eliminating the spurious blank gap.
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		result = append(result, line)
+		i++
+
+		// Only trigger on non-empty, non-list-item, non-heading lines.
+		// Headings deliberately keep their surrounding blank lines.
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || listItemIndentRe.MatchString(line) || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+
+		// Collect consecutive blank / whitespace-only lines.
+		j := i
+		for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
+			j++
+		}
+
+		// If the next non-blank line is a list item at any indentation level,
+		// drop the interleaved blank lines. This removes the spurious gap that
+		// the converter inserts between a bold/text lead-in and its list.
+		if j > i && j < len(lines) && listItemIndentRe.MatchString(lines[j]) {
+			i = j // skip blanks; loop will emit lines[j] next
+		}
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// fixNestedListSpacing removes spurious blank lines that the html-to-markdown
+// converter inserts between consecutive list items (sibling or parent→child).
+// The commonmark plugin marks lists as "loose" whenever they contain block-level
+// content, causing a blank line to appear after every list item in the group.
+// We strip those inter-item blank lines so lists render compactly.
+//
+// Before (broken):
+//
+//   - A4XX:
+//     (blank line)
+//     1. Step one
+//     2. Step two
+//
+// After (fixed):
+//
+//   - A4XX:
+//     1. Step one
+//     2. Step two
+func fixNestedListSpacing(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	result := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		result = append(result, line)
+		i++
+
+		// Only act when the current line is a list item.
+		if !listItemIndentRe.MatchString(line) {
+			continue
+		}
+
+		// Peek ahead: collect consecutive blank / whitespace-only lines.
+		j := i
+		for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
+			j++
+		}
+
+		// If the next non-blank line is also a list item (at any indentation),
+		// drop the interleaved blank lines. This collapses both sibling-level
+		// and parent→child blank gaps produced by the loose-list rendering.
+		if j > i && j < len(lines) && listItemIndentRe.MatchString(lines[j]) {
+			i = j // skip blank lines; loop will emit lines[j] next
+		}
+	}
+	return strings.Join(result, "\n")
+}
+
 // underscoreEscapeRe matches backslash-escaped underscores in markdown link text and code
 var underscoreEscapeRe = regexp.MustCompile(`\\(_)`)
 
@@ -583,9 +941,10 @@ func cleanUnderscoreEscaping(markdown string) string {
 	return result
 }
 
-// confluenceTOCLinkRe matches a TOC line: `- [Text](#PagePrefix-EncodedAnchor)` or with indentation
-// Confluence TOC anchors contain a PageName prefix followed by URL-encoded text
-var confluenceTOCLinkRe = regexp.MustCompile(`^(\s*)-\s+\[([^\]]+)\]\(#[A-Za-z0-9]+-[^\)]*%[0-9A-Fa-f]{2}[^\)]*\)\s*$`)
+// confluenceTOCLinkRe matches a TOC line: `- [Text](#...%XX...)` or with indentation.
+// The only requirement is that the anchor contains at least one percent-encoded sequence
+// (%XX) — clean GitHub-style anchors never have percent-encoding.
+var confluenceTOCLinkRe = regexp.MustCompile(`^(\s*)-\s+\[([^\]]+)\]\(#[^\)]*%[0-9A-Fa-f]{2}[^\)]*\)\s*$`)
 
 // headingRe matches markdown headings: # Heading, ## Heading, etc.
 var headingRe = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
@@ -744,7 +1103,7 @@ func flattenListsInTableCells(htmlContent string) string {
 			return match
 		}
 		content := sub[2]
-		
+
 		if !ulCheckRe.MatchString(content) {
 			content = brTagRe.ReplaceAllString(content, "<br/>")
 			content = multipleBrRe.ReplaceAllString(content, "<br/>")
@@ -755,20 +1114,20 @@ func flattenListsInTableCells(htmlContent string) string {
 		content = listTagRe.ReplaceAllString(content, "")
 		content = liOpenRe.ReplaceAllString(content, "")
 		content = strings.ReplaceAll(content, "</li>", "<br/>")
-		
+
 		// Normalize <br/> tags
 		content = brTagRe.ReplaceAllString(content, "<br/>")
-		
+
 		// *** IMPORTANT: Remove duplicate <br/> tags ***
 		// Pattern: <br/><br/> at the beginning or anywhere
 		content = multipleBrRe.ReplaceAllString(content, "<br/>")
-		
+
 		// Remove leading <br/> if present
 		content = strings.TrimPrefix(content, "<br/>")
-		
+
 		// Remove trailing <br/> if present
 		content = strings.TrimSuffix(content, "<br/>")
-		
+
 		// Remove whitespace around <br/>
 		content = regexp.MustCompile(`\s*<br/>\s*`).ReplaceAllString(content, "<br/>")
 
@@ -782,34 +1141,34 @@ func fixTableLineBreaks(markdown string) string {
 	lines := strings.Split(markdown, "\n")
 	var result []string
 	inTable := false
-	
+
 	// Compile regexes once for performance
 	reMultipleBr := regexp.MustCompile(`(?:<br\s*/?>\s*){2,}`)
-	reBrBeforeList := regexp.MustCompile(`<br\s*/?>\s*-\s`) // <br/>- text
+	reBrBeforeList := regexp.MustCompile(`<br\s*/?>\s*-\s`)              // <br/>- text
 	reBrBeforeCheckbox := regexp.MustCompile(`<br\s*/?>\s*-\s+\[[ x]\]`) // <br/>- [x] or <br/>- [ ]
-	
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		
+
 		// Determine if we're inside a table
 		if strings.HasPrefix(trimmed, "|") {
 			inTable = true
-			
+
 			// 1. First handle checkbox case (priority)
 			if strings.Contains(line, "- [") {
 				// Remove <br/> before checkboxes
 				line = reBrBeforeCheckbox.ReplaceAllString(line, "- [")
 			}
-			
+
 			// 2. Handle regular list case
 			if strings.Contains(line, "- ") {
 				// Remove <br/> before list markers
 				line = reBrBeforeList.ReplaceAllString(line, "- ")
 			}
-			
+
 			// 3. Replace multiple <br/> tags with a single one
 			line = reMultipleBr.ReplaceAllString(line, "<br/>")
-			
+
 			// 4. Remove <br/> at the beginning of a cell (right after |)
 			parts := strings.Split(line, "|")
 			for i := 1; i < len(parts)-1; i++ { // skip first and last empty parts
@@ -819,10 +1178,10 @@ func fixTableLineBreaks(markdown string) string {
 				parts[i] = strings.TrimPrefix(parts[i], "  <br/>")
 			}
 			line = strings.Join(parts, "|")
-			
+
 			// 5. Final cleanup of multiple <br/> tags (just in case)
 			line = reMultipleBr.ReplaceAllString(line, "<br/>")
-			
+
 			result = append(result, line)
 		} else {
 			if inTable && trimmed == "" {
@@ -834,23 +1193,73 @@ func fixTableLineBreaks(markdown string) string {
 			result = append(result, line)
 		}
 	}
-	
+
 	return strings.Join(result, "\n")
 }
 
-// fixTableUnderscores removes escaping of underscores in Markdown tables
-func fixTableUnderscores(markdown string) string {
+// fixEscapedBackslashes replaces over-escaped backslashes (\\) with a single backslash.
+// The html-to-markdown converter escapes every '\' in prose text, but for Confluence
+// content '\' is routinely used as a literal character (e.g. "запрос\ответ").
+// Fenced code blocks (``` ... ```) are skipped intentionally.
+func fixEscapedBackslashes(markdown string) string {
 	lines := strings.Split(markdown, "\n")
-	
+	inCodeBlock := false
 	for i, line := range lines {
-		// Check if the line is part of a table
-		if strings.HasPrefix(strings.TrimSpace(line), "|") {
-			// Remove underscore escaping in tables
-			lines[i] = strings.ReplaceAll(line, `\_`, `_`)
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			// Toggle fenced-code-block state; don't process the fence line itself.
+			inCodeBlock = !inCodeBlock
+			continue
+		}
+		if !inCodeBlock {
+			lines[i] = strings.ReplaceAll(line, `\\`, `\`)
 		}
 	}
-	
-	return strings.Join(result, "\n")
+	return strings.Join(lines, "\n")
+}
+
+// fixTableUnderscores removes backslash-escaping of underscores everywhere in the markdown,
+// not just inside table rows. The markdown converter over-escapes underscores in many
+// contexts (headings, bold text, plain paragraphs), so we strip them globally.
+func fixTableUnderscores(markdown string) string {
+	return strings.ReplaceAll(markdown, `\_`, `_`)
+}
+
+// markdownImageRe matches markdown image references: ![alt](url)
+// Uses the same balanced-parentheses URL pattern as markdownLinkRe.
+var markdownImageRe = regexp.MustCompile(`!\[[^\]]*\]\([^()\s]*(?:\([^()]*\)[^()\s]*)*\)`)
+
+// stripMarkdownImages removes all inline markdown image references from the document.
+// Confluece exports routinely embed emoticon SVGs, attachment previews, and
+// git-plugin export URLs as images — none of which are useful in plain markdown.
+// After removal, runs of 3+ consecutive newlines are collapsed to 2.
+func stripMarkdownImages(markdown string) string {
+	result := markdownImageRe.ReplaceAllString(markdown, "")
+	// Collapse large gaps left by removed images
+	result = regexp.MustCompile(`\n{3,}`).ReplaceAllString(result, "\n\n")
+	return result
+}
+
+// markdownEscapeRe matches a backslash followed by any standard markdown special character.
+var markdownEscapeRe = regexp.MustCompile(`\\([\\*_\[\]()+\-.!{}|~` + "`" + `])`)
+
+// RemoveMarkdownEscaping removes backslash escaping of special markdown characters
+// throughout the document. For example: \* → *, \_ → _, \+ → +, \- → -, \[ → [ etc.
+// Fenced code blocks (``` … ```) are preserved unchanged so code is not corrupted.
+func RemoveMarkdownEscaping(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	inCodeBlock := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+			continue
+		}
+		if !inCodeBlock {
+			lines[i] = markdownEscapeRe.ReplaceAllString(line, "$1")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // expandTableSpans normalizes HTML tables by expanding colspan and rowspan attributes
@@ -1155,6 +1564,60 @@ func decodeHTMLEntities(markdown string) string {
 	return markdown
 }
 
+// DisableTOC controls whether the Confluence table-of-contents block is stripped
+// from the converted markdown (true) or regenerated as a clean list (false, default).
+// Set this field before calling StorageToMarkdownAdvanced / ExportViewToMarkdown.
+var DisableTOC bool
+
+// stripTOC detects and removes the Confluence TOC block from a markdown document,
+// leaving the rest of the content intact.
+func stripTOC(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+
+	tocStart := -1
+	tocEnd := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue // blank lines don't interrupt TOC detection
+		}
+		if confluenceTOCLinkRe.MatchString(line) {
+			if tocStart == -1 {
+				tocStart = i
+			}
+			tocEnd = i + 1
+		} else {
+			if tocStart != -1 {
+				break
+			}
+			break
+		}
+	}
+
+	if tocStart == -1 || tocEnd <= tocStart {
+		return markdown // no TOC found
+	}
+
+	// Skip trailing blank lines after TOC block
+	afterTOC := tocEnd
+	for afterTOC < len(lines) && strings.TrimSpace(lines[afterTOC]) == "" {
+		afterTOC++
+	}
+
+	var result strings.Builder
+	for i := 0; i < tocStart; i++ {
+		result.WriteString(lines[i])
+		result.WriteString("\n")
+	}
+	for i := afterTOC; i < len(lines); i++ {
+		result.WriteString(lines[i])
+		if i < len(lines)-1 {
+			result.WriteString("\n")
+		}
+	}
+	return result.String()
+}
+
 // StorageToMarkdownAdvanced converts Confluence storage format to Markdown
 // using the html-to-markdown library with Confluence-specific plugin support
 func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, error) {
@@ -1183,11 +1646,25 @@ func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, e
 	markdown = cleanUnderscoreEscaping(markdown)
 	markdown = fixAdjacentEmphasis(markdown)
 	markdown = decodeHTMLEntities(markdown)
-	markdown = regenerateTOC(markdown)
-	// Новая функция для исправления <br/> в таблицах
+	if DisableTOC {
+		markdown = stripTOC(markdown)
+	} else {
+		markdown = regenerateTOC(markdown)
+	}
 	markdown = fixTableLineBreaks(markdown)
-	// Добавляем исправление подчеркиваний в таблицах
-	markdown = fixTableUnderscores(markdown)
-	
+	// Remove blank lines between a parent list item and a more-indented child
+	// item; the html-to-markdown library emits "loose" list items that add an
+	// unwanted blank line before each nested sub-list.
+	markdown = fixNestedListSpacing(markdown)
+	// Collapse empty outer list-item wrappers ("- - text" → "  - text") and
+	// remove the blank line that precedes the resulting orphaned indented list.
+	markdown = fixEmptyListWrappers(markdown)
+	// 1. fixEscapedBackslashes: \\ → \ (code-block-aware)
+	// 2. RemoveMarkdownEscaping: \+ → +, \- → -, \_ → _, \* → * … (code-block-aware)
+	//    Running them in this order handles \\+ correctly: \\+ → \+ → +
+	markdown = fixEscapedBackslashes(markdown)
+	markdown = RemoveMarkdownEscaping(markdown)
+	markdown = stripMarkdownImages(markdown)
+
 	return markdown, nil
 }
