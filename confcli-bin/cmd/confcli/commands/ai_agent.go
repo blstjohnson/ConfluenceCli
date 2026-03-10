@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,8 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
 
 	"confcli/pkg/clients"
@@ -63,14 +66,14 @@ func newSkillCmd() *cobra.Command {
 func newInitCmd() *cobra.Command {
 	var agent string
 	var outputDir string
-	
+	var mcpOutput string
+
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize AI agent configuration",
-		Long:  "Initialize AI agent configuration and create skill/slash command files",
+		Long:  "Initialize AI agent configuration and create skill/slash command files by walking the cobra command tree",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if outputDir == "" {
-				// Default to user's home directory for AI agent config
 				home, err := os.UserHomeDir()
 				if err != nil {
 					return fmt.Errorf("failed to get home directory: %w", err)
@@ -82,47 +85,52 @@ func newInitCmd() *cobra.Command {
 				return fmt.Errorf("failed to create output directory: %w", err)
 			}
 
-			// Generate configuration files based on agent type
-			switch agent {
-			case "qwen", "qwen-code":
-				if err := generateQwenConfig(outputDir); err != nil {
-					return fmt.Errorf("failed to generate Qwen config: %w", err)
+			// Find the ai-agent command to walk its subtrees
+			aiAgentCmd := cmd.Parent()
+
+			if err := generateAgentConfig(aiAgentCmd, outputDir, agent); err != nil {
+				return fmt.Errorf("failed to generate agent config: %w", err)
+			}
+
+			// Generate MCP tool definitions if requested
+			if mcpOutput != "" {
+				if err := generateMCPTools(aiAgentCmd, mcpOutput); err != nil {
+					return fmt.Errorf("failed to generate MCP tools: %w", err)
 				}
-			case "claude", "claude-code":
-				if err := generateClaudeConfig(outputDir); err != nil {
-					return fmt.Errorf("failed to generate Claude config: %w", err)
-				}
-			case "all":
-				if err := generateQwenConfig(outputDir); err != nil {
-					return fmt.Errorf("failed to generate Qwen config: %w", err)
-				}
-				if err := generateClaudeConfig(outputDir); err != nil {
-					return fmt.Errorf("failed to generate Claude config: %w", err)
-				}
-			default:
-				// Generate for all supported agents
-				if err := generateQwenConfig(outputDir); err != nil {
-					return fmt.Errorf("failed to generate Qwen config: %w", err)
-				}
-				if err := generateClaudeConfig(outputDir); err != nil {
-					return fmt.Errorf("failed to generate Claude config: %w", err)
-				}
+				fmt.Printf("MCP tool definitions written to %s\n", mcpOutput)
 			}
 
 			fmt.Printf("AI agent configuration initialized in %s\n", outputDir)
-			fmt.Println("\nAvailable slash commands:")
-			fmt.Println("  /get-page <id>           - Get page by ID in export view (supports --with-descendants)")
-			fmt.Println("  /get-page-diff <id> <v1> <v2> - Get diff between page versions")
-			fmt.Println("\nAvailable skills:")
-			fmt.Println("  edit-page <id> <changes> - Edit page with AI assistance")
+
+			// List generated commands dynamically
+			slashCmd, _, _ := aiAgentCmd.Find([]string{"slash"})
+			skillCmd, _, _ := aiAgentCmd.Find([]string{"skill"})
+
+			if slashCmd != nil {
+				fmt.Println("\nAvailable slash commands:")
+				for _, sub := range slashCmd.Commands() {
+					if !sub.Hidden {
+						fmt.Printf("  /%s - %s\n", sub.Name(), sub.Short)
+					}
+				}
+			}
+			if skillCmd != nil {
+				fmt.Println("\nAvailable skills:")
+				for _, sub := range skillCmd.Commands() {
+					if !sub.Hidden {
+						fmt.Printf("  %s - %s\n", sub.Name(), sub.Short)
+					}
+				}
+			}
 
 			return nil
 		},
 	}
-	
+
 	cmd.Flags().StringVar(&agent, "agent", "all", "AI agent type: qwen, claude, or all")
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "Output directory for configuration files")
-	
+	cmd.Flags().StringVar(&mcpOutput, "mcp", "", "Generate MCP tool definitions to file")
+
 	return cmd
 }
 
@@ -517,400 +525,369 @@ This skill:
 	return cmd
 }
 
-// generateQwenConfig generates configuration files for Qwen Code
-func generateQwenConfig(outputDir string) error {
-	// Create skills directory
+// commandMeta holds extracted metadata from a cobra.Command for template rendering.
+type commandMeta struct {
+	Name        string
+	Description string
+	LongDesc    string
+	Use         string
+	UseLine     string
+	Category    string // "slash" or "skill"
+	FullPath    string // e.g. "confcli ai-agent slash get-page"
+	Flags       []flagMeta
+	Siblings    []siblingMeta
+}
+
+// flagMeta holds extracted metadata for a single flag.
+type flagMeta struct {
+	Name      string
+	Shorthand string
+	Usage     string
+	Default   string
+	Type      string
+	Required  bool
+	Hidden    bool
+	Enum      []string
+}
+
+// siblingMeta holds minimal info about related commands.
+type siblingMeta struct {
+	Name        string
+	Description string
+}
+
+// extractCommandMeta extracts metadata from a cobra.Command.
+func extractCommandMeta(cmd *cobra.Command, category string, siblings []*cobra.Command) commandMeta {
+	meta := commandMeta{
+		Name:        cmd.Name(),
+		Description: cmd.Short,
+		LongDesc:    cmd.Long,
+		Use:         cmd.Use,
+		UseLine:     cmd.UseLine(),
+		Category:    category,
+		FullPath:    cmd.CommandPath(),
+	}
+
+	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
+		if flag.Hidden {
+			return
+		}
+		// Strip trailing "(default: ...)" and "(required)" from usage to avoid
+		// duplication with the template's own annotations.
+		usage := flag.Usage
+		if idx := strings.Index(usage, "(default:"); idx > 0 {
+			usage = strings.TrimSpace(usage[:idx])
+		}
+		if idx := strings.Index(usage, "(required)"); idx > 0 {
+			usage = strings.TrimSpace(usage[:idx])
+		}
+		fm := flagMeta{
+			Name:      flag.Name,
+			Shorthand: flag.Shorthand,
+			Usage:     usage,
+			Default:   flag.DefValue,
+			Type:      flag.Value.Type(),
+			Required:  isFlagRequired(flag),
+			Hidden:    flag.Hidden,
+			Enum:      parseEnumValues(flag.Usage),
+		}
+		meta.Flags = append(meta.Flags, fm)
+	})
+
+	for _, sib := range siblings {
+		if sib.Name() != cmd.Name() && !sib.Hidden {
+			meta.Siblings = append(meta.Siblings, siblingMeta{
+				Name:        sib.Name(),
+				Description: sib.Short,
+			})
+		}
+	}
+
+	return meta
+}
+
+// buildArgumentHint generates a usage hint from command metadata.
+func buildArgumentHint(meta commandMeta) string {
+	var parts []string
+	// Use the args portion of the Use field
+	if idx := strings.IndexByte(meta.Use, ' '); idx >= 0 {
+		parts = append(parts, meta.Use[idx+1:])
+	}
+	for _, f := range meta.Flags {
+		if f.Required {
+			parts = append(parts, fmt.Sprintf("--%s <%s>", f.Name, f.Type))
+		}
+	}
+	var optional []string
+	for _, f := range meta.Flags {
+		if !f.Required {
+			if f.Type == "bool" {
+				optional = append(optional, fmt.Sprintf("[--%s]", f.Name))
+			} else {
+				optional = append(optional, fmt.Sprintf("[--%s <%s>]", f.Name, f.Type))
+			}
+		}
+	}
+	parts = append(parts, optional...)
+	return strings.Join(parts, " ")
+}
+
+// templateFuncs provides helper functions for templates.
+var templateFuncs = template.FuncMap{
+	"joinEnum": func(vals []string) string { return strings.Join(vals, ", ") },
+}
+
+// Skill markdown template with YAML front matter.
+var skillTemplate = template.Must(template.New("skill").Funcs(templateFuncs).Parse(`---
+name: {{ .Name }}
+description: {{ .Description }}
+argument-hint: {{ .ArgumentHint }}
+---
+
+## Purpose
+
+{{ .LongDesc }}
+
+## Command
+
+` + "```" + `bash
+{{ .FullPath }}{{ range .Flags }}{{ if .Required }} --{{ .Name }} <{{ .Type }}>{{ end }}{{ end }} [flags]
+` + "```" + `
+
+## Flags
+{{ range .Flags }}
+- ` + "`" + `--{{ .Name }}{{ if .Shorthand }}, -{{ .Shorthand }}{{ end }} <{{ .Type }}>` + "`" + ` — {{ .Usage }}{{ if .Required }} **(required)**{{ end }}{{ if ne .Default "" }}{{ if ne .Default "false" }}{{ if ne .Default "0" }} (default: {{ .Default }}){{ end }}{{ end }}{{ end }}{{ if .Enum }} (values: {{ joinEnum .Enum }}){{ end }}
+{{- end }}
+
+## Examples
+
+` + "```" + `bash
+# Basic usage
+{{ .FullPath }}{{ range .Flags }}{{ if .Required }} --{{ .Name }} <{{ .Type }}>{{ end }}{{ end }}
+{{ if .HasOptionalFlags }}
+# With optional flags
+{{ .FullPath }}{{ range .Flags }}{{ if .Required }} --{{ .Name }} <{{ .Type }}>{{ end }}{{ end }}{{ range .Flags }}{{ if not .Required }}{{ if eq .Type "bool" }} --{{ .Name }}{{ end }}{{ end }}{{ end }}
+{{ end }}` + "```" + `
+{{ if .Siblings }}
+## Related
+
+{{ range .Siblings }}- {{ .Name }} — {{ .Description }}
+{{ end }}{{ end }}`))
+
+// Command markdown template (simpler, for slash commands).
+var commandTemplate = template.Must(template.New("command").Funcs(templateFuncs).Parse(`---
+description: {{ .Description }}
+argument-hint: {{ .ArgumentHint }}
+---
+
+## Command
+
+` + "```" + `bash
+{{ .FullPath }}{{ range .Flags }}{{ if .Required }} --{{ .Name }} <{{ .Type }}>{{ end }}{{ end }} [flags]
+` + "```" + `
+
+## Flags
+{{ range .Flags }}
+- ` + "`" + `--{{ .Name }}{{ if .Shorthand }}, -{{ .Shorthand }}{{ end }} <{{ .Type }}>` + "`" + ` — {{ .Usage }}{{ if .Required }} **(required)**{{ end }}{{ if ne .Default "" }}{{ if ne .Default "false" }}{{ if ne .Default "0" }} (default: {{ .Default }}){{ end }}{{ end }}{{ end }}
+{{- end }}
+
+## Examples
+
+` + "```" + `bash
+{{ .FullPath }}{{ range .Flags }}{{ if .Required }} --{{ .Name }} <{{ .Type }}>{{ end }}{{ end }}
+` + "```" + `
+`))
+
+// templateData extends commandMeta with template-specific computed fields.
+type templateData struct {
+	commandMeta
+	ArgumentHint     string
+	HasOptionalFlags bool
+}
+
+func newTemplateData(meta commandMeta) templateData {
+	hasOptional := false
+	for _, f := range meta.Flags {
+		if !f.Required {
+			hasOptional = true
+			break
+		}
+	}
+	return templateData{
+		commandMeta:      meta,
+		ArgumentHint:     buildArgumentHint(meta),
+		HasOptionalFlags: hasOptional,
+	}
+}
+
+// renderTemplate renders a template with the given data and returns the result.
+func renderTemplate(tmpl *template.Template, data templateData) (string, error) {
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		return "", fmt.Errorf("template execution failed: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// generateAgentConfig walks the ai-agent command tree and generates skill/command files.
+func generateAgentConfig(aiAgentCmd *cobra.Command, outputDir, agent string) error {
 	skillsDir := filepath.Join(outputDir, "skills")
+	commandsDir := filepath.Join(outputDir, "commands")
+
 	if err := os.MkdirAll(skillsDir, 0755); err != nil {
 		return err
 	}
-
-	// Create commands directory
-	commandsDir := filepath.Join(outputDir, "commands")
 	if err := os.MkdirAll(commandsDir, 0755); err != nil {
 		return err
 	}
 
-	// Generate get-page-by-id skill
-	getPageSkill := `---
-name: get-page-by-id
-description: Get a Confluence page by ID in export view format
-argument-hint: <page-id> [--with-labels] [--with-comments] [--with-descendants] [--depth N] [--skip-content] [--output <file>]
----
+	// Walk the "slash" subtree — generates both skills and commands
+	slashCmd, _, _ := aiAgentCmd.Find([]string{"slash"})
+	if slashCmd != nil {
+		for _, sub := range slashCmd.Commands() {
+			if sub.Hidden {
+				continue
+			}
+			meta := extractCommandMeta(sub, "slash", slashCmd.Commands())
+			data := newTemplateData(meta)
 
-## Purpose
+			// Generate skill file
+			content, err := renderTemplate(skillTemplate, data)
+			if err != nil {
+				return fmt.Errorf("rendering skill %s: %w", sub.Name(), err)
+			}
+			dir := filepath.Join(skillsDir, sub.Name())
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(dir, sub.Name()+".md"), []byte(content), 0644); err != nil {
+				return err
+			}
 
-Retrieves a Confluence page by its ID and returns the content in export view format (clean markdown) with JSON output optimized for AI agent consumption.
-
-## When to Use
-
-- When you need to read a specific Confluence page by its ID
-- When you need page content in a clean, readable markdown format
-- When you need structured JSON output with metadata (space, version, URLs)
-- When you want to include labels and/or comments with the page content
-
-## Command
-
-` + "```bash" + `
-confcli ai-agent slash get-page --id <page-id> [flags]
-` + "```" + `
-
-## Arguments
-
-- ` + "`<page-id>`" + ` - The Confluence page ID (required, use ` + "`--id`" + ` flag)
-
-## Flags
-
-- ` + "`--id <int>`" + ` - Page ID to retrieve (required)
-- ` + "`--with-labels`" + ` - Include page labels in the output
-- ` + "`--with-comments`" + ` - Include page comments in the output
-- ` + "`--with-descendants`" + ` - Include descendant pages with content converted to markdown
-- ` + "`--depth <int>`" + ` - Maximum depth for descendant traversal (0 = unlimited, requires --with-descendants)
-- ` + "`--skip-content`" + ` - Omit page content from descendants (structure only, requires --with-descendants)
-- ` + "`--output <string>`" + ` - Save JSON output to a file instead of stdout
-
-## Output Format
-
-The command returns JSON with the following structure:
-
-` + "```json" + `
-{
-  "page_id": "123456",
-  "title": "Page Title",
-  "space": "DEV",
-  "space_name": "Development",
-  "version": 5,
-  "content": "# Page Content in Markdown...",
-  "web_url": "/spaces/DEV/pages/123456",
-  "edit_url": "/pages/edit.action?pageId=123456",
-  "updated_at": "2024-01-01T00:00:00Z"
-}
-` + "```" + `
-
-When ` + "`--with-labels`" + ` is specified, a ` + "`labels`" + ` array is included.
-When ` + "`--with-comments`" + ` is specified, a ` + "`comments`" + ` array is included.
-When ` + "`--with-descendants`" + ` is specified, a ` + "`descendants`" + ` array is included with each entry containing page_id, title, version, web_url, updated_at, and content (unless --skip-content is used).
-
-## Examples
-
-` + "```bash" + `
-# Basic page retrieval
-confcli ai-agent slash get-page --id 123456
-
-# Get page with labels and comments
-confcli ai-agent slash get-page --id 123456 --with-labels --with-comments
-
-# Get page with all descendant pages and their content
-confcli ai-agent slash get-page --id 123456 --with-descendants
-
-# Get page tree structure only (no content for descendants), max 2 levels deep
-confcli ai-agent slash get-page --id 123456 --with-descendants --depth 2 --skip-content
-
-# Save output to file
-confcli ai-agent slash get-page --id 123456 --output page.json
-` + "```" + `
-
-## Related Skills
-
-- edit-page - Edit a page with AI assistance
-- get-page-diff - Compare two versions of a page
-`
-	getPageSkillDir := filepath.Join(skillsDir, "get-page-by-id")
-	if err := os.MkdirAll(getPageSkillDir, 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(getPageSkillDir, "get-page-by-id.md"), []byte(getPageSkill), 0644); err != nil {
-		return err
+			// Generate command file
+			content, err = renderTemplate(commandTemplate, data)
+			if err != nil {
+				return fmt.Errorf("rendering command %s: %w", sub.Name(), err)
+			}
+			dir = filepath.Join(commandsDir, sub.Name())
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(dir, sub.Name()+".md"), []byte(content), 0644); err != nil {
+				return err
+			}
+		}
 	}
 
-	// Generate get-page-diff skill
-	getPageDiffSkill := `---
-name: get-page-diff
-description: Get diff between two versions of a Confluence page
-argument-hint: <page-id> --old-version <v1> --new-version <v2> [--output <file>]
----
-
-## Purpose
-
-Shows the differences between two versions of a Confluence page using unified diff format. Returns structured JSON output with the diff and change statistics.
-
-## When to Use
-
-- When you need to compare two versions of a Confluence page
-- When reviewing changes made between versions
-- When you need to understand what content was added or removed
-- When generating change reports or audit trails
-
-## Command
-
-` + "```bash" + `
-confcli ai-agent slash get-page-diff --page-id <page-id> --old-version <v1> --new-version <v2> [flags]
-` + "```" + `
-
-## Arguments
-
-- ` + "`<page-id>`" + ` - The Confluence page ID (required, use ` + "`--page-id`" + ` flag)
-
-## Flags
-
-- ` + "`--page-id <int>`" + ` - Page ID to compare (required)
-- ` + "`--old-version <int>`" + ` - Older version number to compare from (required)
-- ` + "`--new-version <int>`" + ` - Newer version number to compare to (required)
-- ` + "`--format <string>`" + ` - Output format (default: unified)
-- ` + "`--output <string>`" + ` - Save JSON output to a file instead of stdout
-
-## Output Format
-
-The command returns JSON with the following structure:
-
-` + "```json" + `
-{
-  "page_id": 123456,
-  "old_version": 1,
-  "new_version": 2,
-  "format": "unified",
-  "diff": "--- version 1\n+++ version 2\n...",
-  "changes_summary": {
-    "old_line_count": 100,
-    "new_line_count": 105,
-    "lines_added": 10,
-    "lines_removed": 5,
-    "net_change": 5
-  }
-}
-` + "```" + `
-
-## Examples
-
-` + "```bash" + `
-# Compare versions 1 and 2
-confcli ai-agent slash get-page-diff --page-id 123456 --old-version 1 --new-version 2
-
-# Save diff to file
-confcli ai-agent slash get-page-diff --page-id 123456 --old-version 1 --new-version 2 --output diff.json
-` + "```" + `
-
-## Related Skills
-
-- get-page-by-id - Get page content and metadata
-- edit-page - Edit a page with AI assistance
-`
-	getPageDiffSkillDir := filepath.Join(skillsDir, "get-page-diff")
-	if err := os.MkdirAll(getPageDiffSkillDir, 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(getPageDiffSkillDir, "get-page-diff.md"), []byte(getPageDiffSkill), 0644); err != nil {
-		return err
-	}
-
-	// Generate edit-page skill
-	editPageSkill := `---
-name: edit-page
-description: Edit a Confluence page with AI assistance using a two-step workflow
-argument-hint: <page-id> [--content-file <file>] [--version-comment <text>] [--confirm]
----
-
-## Purpose
-
-Edits a Confluence page with AI assistance. This skill uses a two-step workflow:
-1. First call retrieves the page in edit view format and saves it to a temporary file
-2. Second call updates the page with the AI-modified content
-
-## When to Use
-
-- When you need to modify the content of an existing Confluence page
-- When you want AI to help rewrite, update, or improve page content
-- When you need to preserve Confluence editor formatting
-- When you want a safe, two-step edit process with explicit confirmation
-
-## Two-Step Workflow
-
-### Step 1: Retrieve Page for Editing
-
-` + "```bash" + `
-confcli ai-agent skill edit-page --id <page-id>
-` + "```" + `
-
-This will:
-1. Fetch the page in edit view format from Confluence
-2. Save the content to a temporary file
-3. Output JSON with the temp file location and next steps
-
-Output:
-` + "```json" + `
-{
-  "status": "temp_file_created",
-  "page_id": 123456,
-  "title": "Page Title",
-  "version": 5,
-  "temp_file": "/tmp/confcli-edit-abc123/page_123456.md",
-  "content": "...",
-  "next_step": "Modify the content and run: confcli ai-agent skill edit-page <id> --content-file <modified_file> --version-comment '<comment>' --confirm"
-}
-` + "```" + `
-
-### Step 2: Update Page with Modified Content
-
-After the AI agent modifies the content in the temp file:
-
-` + "```bash" + `
-confcli ai-agent skill edit-page --id <page-id> --content-file <modified-file> --version-comment "<comment>" --confirm
-` + "```" + `
-
-This will:
-1. Read the modified content from the specified file
-2. Update the Confluence page with the new content
-3. Clean up the temporary file (unless ` + "`--keep-temp`" + ` is specified)
-4. Output JSON with the update result
-
-Output:
-` + "```json" + `
-{
-  "status": "page_updated",
-  "page_id": 123456,
-  "title": "Page Title",
-  "old_version": 5,
-  "new_version": 6,
-  "version_comment": "Updated by AI",
-  "web_url": "/spaces/DEV/pages/123456",
-  "edit_url": "/pages/edit.action?pageId=123456",
-  "temp_file_removed": true
-}
-` + "```" + `
-
-## Flags
-
-- ` + "`--id <int>`" + ` - Page ID to edit (required)
-- ` + "`--content-file <string>`" + ` - Path to the modified content file (required for step 2)
-- ` + "`--version-comment <string>`" + ` - Comment describing the changes (recommended for step 2)
-- ` + "`--temp-dir <string>`" + ` - Custom temporary directory for the edit file
-- ` + "`--keep-temp`" + ` - Keep the temporary file after update (default: false)
-- ` + "`--confirm`" + ` - Confirm the update operation (required for step 2)
-
-## Examples
-
-` + "```bash" + `
-# Step 1: Get the page for editing
-confcli ai-agent skill edit-page --id 123456
-
-# AI agent modifies the temp file content...
-
-# Step 2: Update the page with changes
-confcli ai-agent skill edit-page --id 123456 --content-file /tmp/confcli-edit-abc123/page_123456.md --version-comment "Improved documentation" --confirm
-` + "```" + `
-
-## Important Notes
-
-1. **Two-Step Process**: The skill requires two separate invocations - one to get the content, one to update
-2. **Confirmation Required**: The ` + "`--confirm`" + ` flag is required for the update step to prevent accidental changes
-3. **Edit View Format**: Content is retrieved in Confluence editor format to preserve formatting
-4. **Temp File Cleanup**: Temporary files are automatically removed after successful update unless ` + "`--keep-temp`" + ` is specified
-5. **Version Tracking**: Each update increments the page version number
-
-## Related Skills
-
-- get-page-by-id - Get page content in export view
-- get-page-diff - Compare page versions
-`
-	editPageSkillDir := filepath.Join(skillsDir, "edit-page")
-	if err := os.MkdirAll(editPageSkillDir, 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(editPageSkillDir, "edit-page.md"), []byte(editPageSkill), 0644); err != nil {
-		return err
-	}
-
-	// Generate get-page command
-	getPageCmd := `---
-description: Get a Confluence page by ID in export view format
-argument-hint: <page-id> [--with-labels] [--with-comments] [--with-descendants] [--depth N] [--skip-content] [--output <file>]
----
-
-## Workflow
-
-1. Call the command with the page ID
-2. Parse the JSON output to get page content and metadata
-3. Use the content for analysis or as context for other operations
-
-## Command
-
-` + "```bash" + `
-confcli ai-agent slash get-page --id <page-id> [--with-labels] [--with-comments] [--with-descendants] [--depth N] [--skip-content] [--output <file>]
-` + "```" + `
-
-## Examples
-
-` + "```bash" + `
-# Basic usage
-confcli ai-agent slash get-page --id 123456
-
-# With labels and comments
-confcli ai-agent slash get-page --id 123456 --with-labels --with-comments
-
-# With descendant pages
-confcli ai-agent slash get-page --id 123456 --with-descendants --depth 2
-
-# Structure only (no descendant content)
-confcli ai-agent slash get-page --id 123456 --with-descendants --skip-content
-` + "```" + `
-
-## Output
-
-Returns JSON with: page_id, title, space, space_name, version, content, web_url, edit_url, updated_at
-When --with-descendants is used, includes a descendants array with page_id, title, version, web_url, updated_at, and content (unless --skip-content)
-`
-	getPageCmdDir := filepath.Join(commandsDir, "get-page")
-	if err := os.MkdirAll(getPageCmdDir, 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(getPageCmdDir, "get-page.md"), []byte(getPageCmd), 0644); err != nil {
-		return err
-	}
-
-	// Generate get-page-diff command
-	getPageDiffCmd := `---
-description: Get diff between two versions of a Confluence page
-argument-hint: <page-id> --old-version <v1> --new-version <v2> [--output <file>]
----
-
-## Workflow
-
-1. Use get-page to find the current version number
-2. Call get-page-diff with old and new version numbers
-3. Analyze the diff output to understand changes
-
-## Command
-
-` + "```bash" + `
-confcli ai-agent slash get-page-diff --page-id <page-id> --old-version <v1> --new-version <v2> [--output <file>]
-` + "```" + `
-
-## Examples
-
-` + "```bash" + `
-# Compare versions 1 and 2
-confcli ai-agent slash get-page-diff --page-id 123456 --old-version 1 --new-version 2
-` + "```" + `
-
-## Output
-
-Returns JSON with: page_id, old_version, new_version, format, diff, changes_summary
-`
-	getPageDiffCmdDir := filepath.Join(commandsDir, "get-page-diff")
-	if err := os.MkdirAll(getPageDiffCmdDir, 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(getPageDiffCmdDir, "get-page-diff.md"), []byte(getPageDiffCmd), 0644); err != nil {
-		return err
+	// Walk the "skill" subtree — generates skill files only
+	skillCmdGroup, _, _ := aiAgentCmd.Find([]string{"skill"})
+	if skillCmdGroup != nil {
+		// Collect all sibling commands across both subtrees for cross-referencing
+		var allSiblings []*cobra.Command
+		if slashCmd != nil {
+			allSiblings = append(allSiblings, slashCmd.Commands()...)
+		}
+		allSiblings = append(allSiblings, skillCmdGroup.Commands()...)
+
+		for _, sub := range skillCmdGroup.Commands() {
+			if sub.Hidden {
+				continue
+			}
+			meta := extractCommandMeta(sub, "skill", allSiblings)
+			data := newTemplateData(meta)
+
+			content, err := renderTemplate(skillTemplate, data)
+			if err != nil {
+				return fmt.Errorf("rendering skill %s: %w", sub.Name(), err)
+			}
+			dir := filepath.Join(skillsDir, sub.Name())
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(dir, sub.Name()+".md"), []byte(content), 0644); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
 }
 
-// generateClaudeConfig generates configuration files for Claude Code
-func generateClaudeConfig(outputDir string) error {
-	// Claude uses the same format as Qwen - just call the same function
-	return generateQwenConfig(outputDir)
+// mcpTool represents an MCP tool definition.
+type mcpTool struct {
+	Name        string                 `json:"name"`
+	Description string                 `json:"description"`
+	InputSchema map[string]interface{} `json:"inputSchema"`
+}
+
+// generateMCPTools generates MCP tool definitions from the cobra command tree.
+func generateMCPTools(aiAgentCmd *cobra.Command, outputPath string) error {
+	var tools []mcpTool
+
+	// Walk slash and skill subtrees
+	for _, groupName := range []string{"slash", "skill"} {
+		groupCmd, _, _ := aiAgentCmd.Find([]string{groupName})
+		if groupCmd == nil {
+			continue
+		}
+		for _, sub := range groupCmd.Commands() {
+			if sub.Hidden {
+				continue
+			}
+
+			properties := map[string]interface{}{}
+			var required []string
+
+			sub.Flags().VisitAll(func(flag *pflag.Flag) {
+				if flag.Hidden {
+					return
+				}
+				prop := map[string]interface{}{
+					"description": flag.Usage,
+				}
+				switch flag.Value.Type() {
+				case "int", "int32", "int64":
+					prop["type"] = "integer"
+				case "bool":
+					prop["type"] = "boolean"
+				case "float32", "float64":
+					prop["type"] = "number"
+				default:
+					prop["type"] = "string"
+				}
+				if flag.DefValue != "" && flag.DefValue != "0" && flag.DefValue != "false" {
+					prop["default"] = flag.DefValue
+				}
+				if enums := parseEnumValues(flag.Usage); len(enums) > 0 {
+					prop["enum"] = enums
+				}
+				properties[flag.Name] = prop
+				if isFlagRequired(flag) {
+					required = append(required, flag.Name)
+				}
+			})
+
+			schema := map[string]interface{}{
+				"type":       "object",
+				"properties": properties,
+			}
+			if len(required) > 0 {
+				schema["required"] = required
+			}
+
+			tools = append(tools, mcpTool{
+				Name:        fmt.Sprintf("confcli_%s_%s", groupName, strings.ReplaceAll(sub.Name(), "-", "_")),
+				Description: sub.Short,
+				InputSchema: schema,
+			})
+		}
+	}
+
+	data, err := json.MarshalIndent(map[string]interface{}{"tools": tools}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(outputPath, data, 0644)
 }
 
 // generateUnifiedDiff generates a unified diff between two strings
