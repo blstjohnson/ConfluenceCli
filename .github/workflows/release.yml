@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: confcli-bin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: confcli-bin/go.mod
+          cache-dependency-path: confcli-bin/go.sum
+
+      - name: Set version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binaries
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          COMMIT: ${{ github.sha }}
+          DATE: ${{ github.event.head_commit.timestamp }}
+        run: |
+          LDFLAGS="-s -w -X confcli/cmd/confcli/commands.Version=${VERSION} -X confcli/cmd/confcli/commands.Commit=${COMMIT} -X confcli/cmd/confcli/commands.Date=${DATE}"
+
+          mkdir -p dist
+
+          # Windows amd64
+          GOOS=windows GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/confcli-windows-amd64.exe ./cmd/confcli
+
+          # Linux amd64
+          GOOS=linux GOARCH=amd64 go build -ldflags "${LDFLAGS}" -o dist/confcli-linux-amd64 ./cmd/confcli
+
+          # macOS arm64
+          GOOS=darwin GOARCH=arm64 go build -ldflags "${LDFLAGS}" -o dist/confcli-darwin-arm64 ./cmd/confcli
+
+      - name: Create checksums
+        working-directory: confcli-bin/dist
+        run: sha256sum confcli-* > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            confcli-bin/dist/confcli-windows-amd64.exe
+            confcli-bin/dist/confcli-linux-amd64
+            confcli-bin/dist/confcli-darwin-arm64
+            confcli-bin/dist/checksums.txt

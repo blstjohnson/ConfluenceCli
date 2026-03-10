@@ -21,6 +21,7 @@
 !build.sh
 !Dockerfile.build
 !.devcontainer/devcontainer.json
+!.github/workflows/*.yml
 
 # ...even if they are in subdirectories
 !*/

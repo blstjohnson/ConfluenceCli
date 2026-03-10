@@ -1,6 +1,12 @@
 # Makefile for confcli build process
 
-.PHONY: build build-docker build-all clean release
+.PHONY: build build-docker build-all clean release test lint
+
+# Version info
+VERSION ?= dev
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS  = -s -w -X confcli/cmd/confcli/commands.Version=$(VERSION) -X confcli/cmd/confcli/commands.Commit=$(COMMIT) -X confcli/cmd/confcli/commands.Date=$(DATE)
 
 # Define output directory
 DIST_DIR = dist
@@ -53,13 +59,21 @@ build-native:
 	@mkdir -p $(DIST_DIR)/native/windows/arm64
 	@mkdir -p $(DIST_DIR)/native/darwin/amd64
 	@mkdir -p $(DIST_DIR)/native/darwin/arm64
-	cd confcli-bin && GOOS=linux GOARCH=amd64 go build -o ../$(DIST_DIR)/native/linux/amd64/confcli ./cmd/confcli
-	cd confcli-bin && GOOS=linux GOARCH=arm64 go build -o ../$(DIST_DIR)/native/linux/arm64/confcli ./cmd/confcli
-	cd confcli-bin && GOOS=windows GOARCH=amd64 go build -o ../$(DIST_DIR)/native/windows/amd64/confcli.exe ./cmd/confcli
-	cd confcli-bin && GOOS=windows GOARCH=arm64 go build -o ../$(DIST_DIR)/native/windows/arm64/confcli.exe ./cmd/confcli
-	cd confcli-bin && GOOS=darwin GOARCH=amd64 go build -o ../$(DIST_DIR)/native/darwin/amd64/confcli ./cmd/confcli
-	cd confcli-bin && GOOS=darwin GOARCH=arm64 go build -o ../$(DIST_DIR)/native/darwin/arm64/confcli ./cmd/confcli
+	cd confcli-bin && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '$(LDFLAGS)' -o ../$(DIST_DIR)/native/linux/amd64/confcli ./cmd/confcli
+	cd confcli-bin && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags '$(LDFLAGS)' -o ../$(DIST_DIR)/native/linux/arm64/confcli ./cmd/confcli
+	cd confcli-bin && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -ldflags '$(LDFLAGS)' -o ../$(DIST_DIR)/native/windows/amd64/confcli.exe ./cmd/confcli
+	cd confcli-bin && CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -ldflags '$(LDFLAGS)' -o ../$(DIST_DIR)/native/windows/arm64/confcli.exe ./cmd/confcli
+	cd confcli-bin && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags '$(LDFLAGS)' -o ../$(DIST_DIR)/native/darwin/amd64/confcli ./cmd/confcli
+	cd confcli-bin && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags '$(LDFLAGS)' -o ../$(DIST_DIR)/native/darwin/arm64/confcli ./cmd/confcli
 	@echo "Native binaries built in $(DIST_DIR)/native/"
+
+# Run tests
+test:
+	cd confcli-bin && go test ./...
+
+# Run linter
+lint:
+	cd confcli-bin && go vet ./...
 
 # Clean build artifacts
 clean:
