@@ -111,7 +111,7 @@ func newInitCmd() *cobra.Command {
 
 			fmt.Printf("AI agent configuration initialized in %s\n", outputDir)
 			fmt.Println("\nAvailable slash commands:")
-			fmt.Println("  /get-page <id>           - Get page by ID in export view")
+			fmt.Println("  /get-page <id>           - Get page by ID in export view (supports --with-descendants)")
 			fmt.Println("  /get-page-diff <id> <v1> <v2> - Get diff between page versions")
 			fmt.Println("\nAvailable skills:")
 			fmt.Println("  edit-page <id> <changes> - Edit page with AI assistance")
@@ -137,6 +137,9 @@ func newSlashGetPageCmd() *cobra.Command {
 			pageID, _ := cmd.Flags().GetInt("id")
 			withLabels, _ := cmd.Flags().GetBool("with-labels")
 			withComments, _ := cmd.Flags().GetBool("with-comments")
+			withDescendants, _ := cmd.Flags().GetBool("with-descendants")
+			depth, _ := cmd.Flags().GetInt("depth")
+			skipContent, _ := cmd.Flags().GetBool("skip-content")
 			outputFile, _ := cmd.Flags().GetString("output")
 
 			apiClient, err := clients.NewClientFromViper()
@@ -187,6 +190,45 @@ func newSlashGetPageCmd() *cobra.Command {
 				output["comments"] = resp.Comments
 			}
 
+			// Fetch descendants if requested
+			if withDescendants {
+				hierReq := &usecases.GetPageHierarchyRequest{
+					PageID: pageID,
+					Depth:  depth,
+				}
+				hierResp, err := pageUseCase.GetPageHierarchy(ctx, hierReq)
+				if err != nil {
+					return fmt.Errorf("failed to get descendants: %w", err)
+				}
+
+				descendants := make([]map[string]interface{}, 0, len(hierResp.Descendants))
+				for _, desc := range hierResp.Descendants {
+					descEntry := map[string]interface{}{
+						"page_id":    desc.ID.String(),
+						"title":      desc.Title,
+						"version":    desc.Version.Number,
+						"web_url":    desc.Links["webui"],
+						"updated_at": desc.Version.UpdatedAt,
+					}
+
+					if !skipContent {
+						descID, ok := desc.ID.Int()
+						if ok {
+							descContent, err := apiClient.GetPageContent(ctx, descID, "export_view", 0)
+							if err == nil {
+								md, err := converters.ExportViewToMarkdown(descContent, baseURL)
+								if err == nil {
+									descEntry["content"] = md
+								}
+							}
+						}
+					}
+
+					descendants = append(descendants, descEntry)
+				}
+				output["descendants"] = descendants
+			}
+
 			// Output as JSON for AI agent consumption
 			encoder := json.NewEncoder(os.Stdout)
 			encoder.SetIndent("", "  ")
@@ -212,6 +254,9 @@ func newSlashGetPageCmd() *cobra.Command {
 	cmd.Flags().Int("id", 0, "Page ID")
 	cmd.Flags().Bool("with-labels", false, "Include labels in output")
 	cmd.Flags().Bool("with-comments", false, "Include comments in output")
+	cmd.Flags().Bool("with-descendants", false, "Include descendant pages in output")
+	cmd.Flags().Int("depth", 0, "Maximum depth for descendant traversal (0 = unlimited, requires --with-descendants)")
+	cmd.Flags().Bool("skip-content", false, "Omit page content from descendants (structure only, requires --with-descendants)")
 	cmd.Flags().String("output", "", "Save output to file")
 
 	return cmd
@@ -490,7 +535,7 @@ func generateQwenConfig(outputDir string) error {
 	getPageSkill := `---
 name: get-page-by-id
 description: Get a Confluence page by ID in export view format
-argument-hint: <page-id> [--with-labels] [--with-comments] [--output <file>]
+argument-hint: <page-id> [--with-labels] [--with-comments] [--with-descendants] [--depth N] [--skip-content] [--output <file>]
 ---
 
 ## Purpose
@@ -519,6 +564,9 @@ confcli ai-agent slash get-page --id <page-id> [flags]
 - ` + "`--id <int>`" + ` - Page ID to retrieve (required)
 - ` + "`--with-labels`" + ` - Include page labels in the output
 - ` + "`--with-comments`" + ` - Include page comments in the output
+- ` + "`--with-descendants`" + ` - Include descendant pages with content converted to markdown
+- ` + "`--depth <int>`" + ` - Maximum depth for descendant traversal (0 = unlimited, requires --with-descendants)
+- ` + "`--skip-content`" + ` - Omit page content from descendants (structure only, requires --with-descendants)
 - ` + "`--output <string>`" + ` - Save JSON output to a file instead of stdout
 
 ## Output Format
@@ -541,6 +589,7 @@ The command returns JSON with the following structure:
 
 When ` + "`--with-labels`" + ` is specified, a ` + "`labels`" + ` array is included.
 When ` + "`--with-comments`" + ` is specified, a ` + "`comments`" + ` array is included.
+When ` + "`--with-descendants`" + ` is specified, a ` + "`descendants`" + ` array is included with each entry containing page_id, title, version, web_url, updated_at, and content (unless --skip-content is used).
 
 ## Examples
 
@@ -550,6 +599,12 @@ confcli ai-agent slash get-page --id 123456
 
 # Get page with labels and comments
 confcli ai-agent slash get-page --id 123456 --with-labels --with-comments
+
+# Get page with all descendant pages and their content
+confcli ai-agent slash get-page --id 123456 --with-descendants
+
+# Get page tree structure only (no content for descendants), max 2 levels deep
+confcli ai-agent slash get-page --id 123456 --with-descendants --depth 2 --skip-content
 
 # Save output to file
 confcli ai-agent slash get-page --id 123456 --output page.json
@@ -768,7 +823,7 @@ confcli ai-agent skill edit-page --id 123456 --content-file /tmp/confcli-edit-ab
 	// Generate get-page command
 	getPageCmd := `---
 description: Get a Confluence page by ID in export view format
-argument-hint: <page-id> [--with-labels] [--with-comments] [--output <file>]
+argument-hint: <page-id> [--with-labels] [--with-comments] [--with-descendants] [--depth N] [--skip-content] [--output <file>]
 ---
 
 ## Workflow
@@ -780,7 +835,7 @@ argument-hint: <page-id> [--with-labels] [--with-comments] [--output <file>]
 ## Command
 
 ` + "```bash" + `
-confcli ai-agent slash get-page --id <page-id> [--with-labels] [--with-comments] [--output <file>]
+confcli ai-agent slash get-page --id <page-id> [--with-labels] [--with-comments] [--with-descendants] [--depth N] [--skip-content] [--output <file>]
 ` + "```" + `
 
 ## Examples
@@ -791,11 +846,18 @@ confcli ai-agent slash get-page --id 123456
 
 # With labels and comments
 confcli ai-agent slash get-page --id 123456 --with-labels --with-comments
+
+# With descendant pages
+confcli ai-agent slash get-page --id 123456 --with-descendants --depth 2
+
+# Structure only (no descendant content)
+confcli ai-agent slash get-page --id 123456 --with-descendants --skip-content
 ` + "```" + `
 
 ## Output
 
 Returns JSON with: page_id, title, space, space_name, version, content, web_url, edit_url, updated_at
+When --with-descendants is used, includes a descendants array with page_id, title, version, web_url, updated_at, and content (unless --skip-content)
 `
 	getPageCmdDir := filepath.Join(commandsDir, "get-page")
 	if err := os.MkdirAll(getPageCmdDir, 0755); err != nil {
