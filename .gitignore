@@ -25,3 +25,9 @@
 
 # ...even if they are in subdirectories
 !*/
+
+# Gas Town (added by gt)
+.runtime/
+.claude/
+.logs/
+__pycache__/

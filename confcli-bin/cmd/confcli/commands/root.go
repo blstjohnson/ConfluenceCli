@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -151,15 +152,7 @@ func generateCommandHelp(cmd *cobra.Command) map[string]interface{} {
 	// Process flags
 	flags := []map[string]interface{}{}
 	cmd.Flags().VisitAll(func(flag *pflag.Flag) {
-		flagInfo := map[string]interface{}{
-			"name":        flag.Name,
-			"shorthand":   flag.Shorthand,
-			"usage":       flag.Usage,
-			"default":     flag.DefValue,
-			"value":       flag.Value.String(),
-			"changed":     flag.Changed,
-			"hidden":      flag.Hidden,
-		}
+		flagInfo := buildFlagInfo(flag)
 		flags = append(flags, flagInfo)
 	})
 
@@ -170,15 +163,7 @@ func generateCommandHelp(cmd *cobra.Command) map[string]interface{} {
 	// Process persistent flags
 	persistentFlags := []map[string]interface{}{}
 	cmd.PersistentFlags().VisitAll(func(flag *pflag.Flag) {
-		flagInfo := map[string]interface{}{
-			"name":        flag.Name,
-			"shorthand":   flag.Shorthand,
-			"usage":       flag.Usage,
-			"default":     flag.DefValue,
-			"value":       flag.Value.String(),
-			"changed":     flag.Changed,
-			"hidden":      flag.Hidden,
-		}
+		flagInfo := buildFlagInfo(flag)
 		persistentFlags = append(persistentFlags, flagInfo)
 	})
 
@@ -199,4 +184,71 @@ func generateCommandHelp(cmd *cobra.Command) map[string]interface{} {
 	}
 
 	return result
+}
+
+// buildFlagInfo builds an enriched metadata map for a single flag.
+func buildFlagInfo(flag *pflag.Flag) map[string]interface{} {
+	flagInfo := map[string]interface{}{
+		"name":      flag.Name,
+		"shorthand": flag.Shorthand,
+		"usage":     flag.Usage,
+		"default":   flag.DefValue,
+		"type":      flag.Value.Type(),
+		"required":  isFlagRequired(flag),
+		"hidden":    flag.Hidden,
+	}
+
+	if flag.Deprecated != "" {
+		flagInfo["deprecated"] = flag.Deprecated
+	}
+
+	if enum := parseEnumValues(flag.Usage); len(enum) > 0 {
+		flagInfo["enum"] = enum
+	}
+
+	return flagInfo
+}
+
+// isFlagRequired checks whether a flag has the cobra required annotation.
+func isFlagRequired(flag *pflag.Flag) bool {
+	if flag.Annotations == nil {
+		return false
+	}
+	vals, ok := flag.Annotations[cobra.BashCompOneRequiredFlag]
+	return ok && len(vals) > 0 && vals[0] == "true"
+}
+
+// parseEnumValues extracts allowed values from usage strings that follow
+// common patterns like "format: markdown, storage, html" or
+// "agent type: qwen, claude, or all".
+// Only simple single-word tokens are considered valid enum values.
+func parseEnumValues(usage string) []string {
+	// Strip trailing parenthetical like "(default: text)" before parsing
+	clean := usage
+	if paren := strings.Index(clean, "("); paren > 0 {
+		clean = strings.TrimSpace(clean[:paren])
+	}
+	// Look for ": val1, val2, val3" pattern (with optional "or" before last)
+	idx := strings.LastIndex(clean, ": ")
+	if idx < 0 {
+		return nil
+	}
+	tail := strings.TrimSpace(clean[idx+2:])
+	parts := strings.Split(tail, ",")
+	if len(parts) < 2 {
+		return nil
+	}
+	var values []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		// Handle "or val" in the last element
+		p = strings.TrimPrefix(p, "or ")
+		p = strings.TrimSpace(p)
+		// Only accept simple tokens (single word, no spaces) as enum values
+		if p == "" || strings.Contains(p, " ") {
+			return nil
+		}
+		values = append(values, p)
+	}
+	return values
 }
