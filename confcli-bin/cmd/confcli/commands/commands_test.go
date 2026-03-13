@@ -246,6 +246,57 @@ func TestHelpJsonCommand(t *testing.T) {
 	}
 }
 
+func TestNewInstallCmd(t *testing.T) {
+	cmd := NewInstallCmd()
+
+	if cmd == nil {
+		t.Fatal("NewInstallCmd returned nil")
+	}
+
+	if cmd.Use != "install" {
+		t.Errorf("Expected install command to use 'install', got '%s'", cmd.Use)
+	}
+
+	// Check that uninstall subcommand exists
+	subcommands := cmd.Commands()
+	foundUninstall := false
+	for _, subcmd := range subcommands {
+		if subcmd.Use == "uninstall" {
+			foundUninstall = true
+			break
+		}
+	}
+	if !foundUninstall {
+		t.Error("Expected to find install uninstall subcommand")
+	}
+
+	// Verify flags exist
+	flags := []string{"dir", "copy", "force"}
+	for _, flagName := range flags {
+		if cmd.Flags().Lookup(flagName) == nil {
+			t.Errorf("Expected install command to have --%s flag", flagName)
+		}
+	}
+}
+
+func TestInstallHelp(t *testing.T) {
+	cmd := NewInstallCmd()
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--help"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Errorf("Error executing install --help: %v", err)
+	}
+
+	output := buf.String()
+	if len(output) == 0 {
+		t.Error("Expected help output from install command")
+	}
+}
+
 // Additional tests to verify the functionality of the commands
 func TestMockClient(t *testing.T) {
 	// This is a mock test to verify that the formatter package can be imported
