@@ -66,7 +66,6 @@ It allows you to retrieve, search, and manage Confluence pages.`,
 	// Add commands
 	rootCmd.AddCommand(NewPageCmd())
 	rootCmd.AddCommand(NewHierarchyCmd())
-	rootCmd.AddCommand(NewDescendantsCmd())
 	rootCmd.AddCommand(NewSearchCmd())
 	rootCmd.AddCommand(NewConfigCmd())
 	rootCmd.AddCommand(NewCompletionCmd())

@@ -5,7 +5,7 @@
 ## Features
 
 - Retrieve Confluence pages by ID, space/title, or path
-- Export page hierarchies and descendants
+- Export page hierarchies
 - Support for multiple output formats (text, JSON, YAML, markdown, export)
 - Disk-based caching with configurable TTL
 - Cross-platform support (Linux, Windows, macOS)
@@ -120,9 +120,6 @@ confcli page get --path "DEV/Project/Documentation"
 # Export a space hierarchy
 confcli hierarchy space --space DEV --output-dir ./export
 
-# Get descendants of a page
-confcli descendants get --id 123456 --depth 3
-
 # Search for pages
 confcli search "my query"
 ```
@@ -169,10 +166,6 @@ confcli config set read_only true
 ### Hierarchy Commands
 
 - `confcli hierarchy space` - Get hierarchy of a space
-
-### Descendants Commands
-
-- `confcli descendants get` - Get descendants of a page
 
 ### Other Commands
 
@@ -236,22 +229,6 @@ confcli hierarchy space --space DEV --flat --format json
 
 # Limit depth of hierarchy
 confcli hierarchy space --space DEV --depth 2 --tree
-```
-
-### Working with Descendants
-
-```bash
-# Get descendants of a page
-confcli descendants get --id 123456
-
-# Get descendants with limited depth
-confcli descendants get --id 123456 --depth 2 --tree
-
-# Export descendants to directory
-confcli descendants get --id 123456 --output-dir ./descendants --format markdown
-
-# Include source page in output
-confcli descendants get --id 123456 --include-self --tree
 ```
 
 ### Managing Pages

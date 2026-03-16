@@ -31,7 +31,7 @@ func TestNewRootCmd(t *testing.T) {
 	}
 	
 	// Verify some key subcommands exist
-	expectedSubcommands := []string{"page", "hierarchy", "descendants", "config"}
+	expectedSubcommands := []string{"page", "hierarchy", "config"}
 	for _, expected := range expectedSubcommands {
 		found := false
 		for _, subcmd := range subcommands {
@@ -91,36 +91,6 @@ func TestNewHierarchyCmd(t *testing.T) {
 	}
 	if !foundSpace {
 		t.Error("Expected to find hierarchy space subcommand")
-	}
-}
-
-func TestNewDescendantsCmd(t *testing.T) {
-	cmd := NewDescendantsCmd()
-	
-	if cmd == nil {
-		t.Fatal("NewDescendantsCmd returned nil")
-	}
-	
-	if cmd.Use != "descendants" {
-		t.Errorf("Expected descendants command to use 'descendants', got '%s'", cmd.Use)
-	}
-	
-	// Check that descendants subcommands exist
-	subcommands := cmd.Commands()
-	if len(subcommands) == 0 {
-		t.Error("Expected descendants command to have subcommands")
-	}
-	
-	// Verify the get subcommand exists
-	foundGet := false
-	for _, subcmd := range subcommands {
-		if subcmd.Use == "get" {
-			foundGet = true
-			break
-		}
-	}
-	if !foundGet {
-		t.Error("Expected to find descendants get subcommand")
 	}
 }
 
