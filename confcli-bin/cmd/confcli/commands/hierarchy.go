@@ -123,55 +123,123 @@ func newHierarchySpaceCmd() *cobra.Command {
 				return nil
 			}
 
-			// For non-export commands (flat list, tree view) we need the space hierarchy.
-			spaceUseCase := usecases.NewSpaceUseCase(apiClient)
-			resp, err := spaceUseCase.GetSpaceHierarchy(ctx, &usecases.GetSpaceHierarchyRequest{
-				SpaceKey: space,
-				Depth:    depth,
-				Flat:     flat,
-			})
-			if err != nil {
-				return fmt.Errorf("failed to get space hierarchy: %w", err)
-			}
-
+			// For non-export commands (flat list, tree view) we need the hierarchy.
 			outputFormat := viper.GetString("output_format")
 
-			if flat {
-				if outputFormat == "json" {
-					flatPages := make([]map[string]interface{}, len(resp.AllPages))
-					for i, page := range resp.AllPages {
-						flatPages[i] = map[string]interface{}{
-							"id":    page.ID,
-							"title": page.Title,
-							"depth": 0,
+			if pageID > 0 {
+				// When a specific page is requested, show its ancestors (root→page)
+				// plus its descendant tree — the page in context.
+				pageUseCase := usecases.NewPageUseCase(apiClient)
+				hierResp, err := pageUseCase.GetPageHierarchy(ctx, &usecases.GetPageHierarchyRequest{
+					PageID: pageID,
+					Depth:  depth,
+				})
+				if err != nil {
+					return fmt.Errorf("failed to get page hierarchy: %w", err)
+				}
+
+				// Collect all pages: ancestors + target page + descendants
+				allPages := make([]models.Page, 0, len(hierResp.Ancestors)+1+len(hierResp.Descendants))
+				allPages = append(allPages, hierResp.Ancestors...)
+				allPages = append(allPages, *hierResp.Page)
+				allPages = append(allPages, hierResp.Descendants...)
+
+				if flat {
+					if outputFormat == "json" {
+						flatPages := make([]map[string]interface{}, len(allPages))
+						for i, page := range allPages {
+							flatPages[i] = map[string]interface{}{
+								"id":    page.ID,
+								"title": page.Title,
+							}
 						}
+						return formatters.FormatOutput(flatPages, "json")
 					}
-					return formatters.FormatOutput(flatPages, "json")
+					return formatters.FormatOutput(allPages, "text")
 				}
-				return formatters.FormatOutput(resp.AllPages, "text")
-			} else if treeView {
+
+				// Build a tree: ancestors form a linear chain, target page gets its subtree.
 				tree := treeprint.New()
-				for _, page := range resp.RootPages {
-					pID, _ := page.ID.Int()
-					tree.AddBranch(fmt.Sprintf("%d: %s", pID, page.Title))
+
+				// Build children map from descendants for the subtree under the target page.
+				descendantChildrenMap := make(map[int][]*models.Page)
+				for i := range hierResp.Descendants {
+					d := &hierResp.Descendants[i]
+					if len(d.Ancestors) > 0 {
+						parentID, ok := d.Ancestors[len(d.Ancestors)-1].ID.Int()
+						if ok {
+							descendantChildrenMap[parentID] = append(descendantChildrenMap[parentID], d)
+						}
+					} else {
+						// Descendant with no ancestors — treat as direct child of target page
+						descendantChildrenMap[pageID] = append(descendantChildrenMap[pageID], d)
+					}
 				}
+
+				// Walk the ancestor chain to build a linear spine, then attach the subtree.
+				var currentBranch treeprint.Tree = tree
+				for _, ancestor := range hierResp.Ancestors {
+					aID, _ := ancestor.ID.Int()
+					currentBranch = currentBranch.AddBranch(fmt.Sprintf("%d: %s", aID, ancestor.Title))
+				}
+
+				// Add the target page
+				targetID, _ := hierResp.Page.ID.Int()
+				targetBranch := currentBranch.AddBranch(fmt.Sprintf("%d: %s", targetID, hierResp.Page.Title))
+
+				// Attach descendant subtree under the target page
+				buildTree(targetBranch, descendantChildrenMap[targetID], descendantChildrenMap, depth, 0)
+
 				fmt.Println(tree.String())
 			} else {
-				tree := treeprint.New()
-				pageMap := make(map[int]*models.Page)
-				childrenMap := make(map[int][]*models.Page)
-
-				for i := range resp.AllPages {
-					page := &resp.AllPages[i]
-					pID, ok := page.ID.Int()
-					if ok {
-						pageMap[pID] = page
-						childrenMap[0] = append(childrenMap[0], page)
-					}
+				// Full space hierarchy
+				spaceUseCase := usecases.NewSpaceUseCase(apiClient)
+				resp, err := spaceUseCase.GetSpaceHierarchy(ctx, &usecases.GetSpaceHierarchyRequest{
+					SpaceKey: space,
+					Depth:    depth,
+					Flat:     flat,
+				})
+				if err != nil {
+					return fmt.Errorf("failed to get space hierarchy: %w", err)
 				}
-				_ = pageMap // used via childrenMap
-				buildTree(tree, childrenMap[0], childrenMap, depth, 0)
-				fmt.Println(tree.String())
+
+				if flat {
+					if outputFormat == "json" {
+						flatPages := make([]map[string]interface{}, len(resp.AllPages))
+						for i, page := range resp.AllPages {
+							flatPages[i] = map[string]interface{}{
+								"id":    page.ID,
+								"title": page.Title,
+								"depth": 0,
+							}
+						}
+						return formatters.FormatOutput(flatPages, "json")
+					}
+					return formatters.FormatOutput(resp.AllPages, "text")
+				} else if treeView {
+					tree := treeprint.New()
+					for _, page := range resp.RootPages {
+						pID, _ := page.ID.Int()
+						tree.AddBranch(fmt.Sprintf("%d: %s", pID, page.Title))
+					}
+					fmt.Println(tree.String())
+				} else {
+					tree := treeprint.New()
+					pageMap := make(map[int]*models.Page)
+					childrenMap := make(map[int][]*models.Page)
+
+					for i := range resp.AllPages {
+						page := &resp.AllPages[i]
+						pID, ok := page.ID.Int()
+						if ok {
+							pageMap[pID] = page
+							childrenMap[0] = append(childrenMap[0], page)
+						}
+					}
+					_ = pageMap // used via childrenMap
+					buildTree(tree, childrenMap[0], childrenMap, depth, 0)
+					fmt.Println(tree.String())
+				}
 			}
 
 			return nil
@@ -179,7 +247,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 	}
 
 	cmd.Flags().String("space", "", "Space key (required)")
-	cmd.Flags().Int("page-id", 0, "Root page ID to export (optional, if set, only this page and its descendants will be exported)")
+	cmd.Flags().Int("page-id", 0, "Starting page ID (optional; shows ancestors, the page, and its descendants in context)")
 	cmd.Flags().String("output-dir", "", "Export space to directory")
 	cmd.Flags().String("format", "markdown", "Format for saved pages: markdown, storage, html, plain, edit, export/export_view (converted to markdown)")
 	cmd.Flags().Int("depth", 0, "Recursion depth (default: unlimited)")
