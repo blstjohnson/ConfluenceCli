@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -59,6 +60,9 @@ func newPageGetCmd() *cobra.Command {
 			outputDir, _ := cmd.Flags().GetString("output-dir")
 			withComments, _ := cmd.Flags().GetBool("with-comments")
 			withLabels, _ := cmd.Flags().GetBool("with-labels")
+			withDescendants, _ := cmd.Flags().GetBool("with-descendants")
+			depth, _ := cmd.Flags().GetInt("depth")
+			skipContent, _ := cmd.Flags().GetBool("skip-content")
 			rewriteTFSLinks, _ := cmd.Flags().GetBool("rewrite-tfs-links")
 
 			// Validate inputs
@@ -202,6 +206,44 @@ func newPageGetCmd() *cobra.Command {
 					if withComments {
 						data["comments"] = resp.Comments
 					}
+					if withDescendants && id != 0 {
+						hierReq := &usecases.GetPageHierarchyRequest{
+							PageID: id,
+							Depth:  depth,
+						}
+						hierResp, hierErr := pageUseCase.GetPageHierarchy(ctx, hierReq)
+						if hierErr != nil {
+							return fmt.Errorf("failed to get descendants: %w", hierErr)
+						}
+
+						descendants := make([]map[string]interface{}, 0, len(hierResp.Descendants))
+						baseURL := viper.GetString("url")
+						for _, desc := range hierResp.Descendants {
+							descEntry := map[string]interface{}{
+								"page_id":    desc.ID.String(),
+								"title":      desc.Title,
+								"version":    desc.Version.Number,
+								"web_url":    desc.Links["webui"],
+								"updated_at": desc.Version.UpdatedAt,
+							}
+
+							if !skipContent {
+								descID, ok := desc.ID.Int()
+								if ok {
+									descContent, descErr := apiClient.GetPageContent(ctx, descID, "export_view", 0)
+									if descErr == nil {
+										md, mdErr := converters.ExportViewToMarkdown(descContent, baseURL)
+										if mdErr == nil {
+											descEntry["content"] = md
+										}
+									}
+								}
+							}
+
+							descendants = append(descendants, descEntry)
+						}
+						data["descendants"] = descendants
+					}
 					return formatters.FormatOutput(data, "json")
 				} else {
 					// For text/yaml output, display page info with content
@@ -223,6 +265,9 @@ func newPageGetCmd() *cobra.Command {
 	cmd.Flags().String("output-dir", "", "Save full page to directory")
 	cmd.Flags().Bool("with-comments", false, "Include comments in output")
 	cmd.Flags().Bool("with-labels", false, "Include labels in output")
+	cmd.Flags().Bool("with-descendants", false, "Include descendant pages in output (requires JSON output format)")
+	cmd.Flags().Int("depth", 0, "Maximum depth for descendant traversal (0 = unlimited, requires --with-descendants)")
+	cmd.Flags().Bool("skip-content", false, "Omit page content from descendants (structure only, requires --with-descendants)")
 	cmd.Flags().Bool("rewrite-tfs-links", false, "Rewrite TFS/Git repository links to local paths using config")
 
 	return cmd
@@ -582,6 +627,7 @@ func newPageDiffCmd() *cobra.Command {
 			newVersion, _ := cmd.Flags().GetInt("new-version")
 			format, _ := cmd.Flags().GetString("format")
 			color, _ := cmd.Flags().GetBool("color")
+			summary, _ := cmd.Flags().GetBool("summary")
 
 			if oldVersion <= 0 || newVersion <= 0 {
 				return fmt.Errorf("both --old-version and --new-version must be specified with positive version numbers")
@@ -636,7 +682,29 @@ func newPageDiffCmd() *cobra.Command {
 				return fmt.Errorf("failed to generate diff: %w", err)
 			}
 
+			outputFormat := viper.GetString("output_format")
+			if outputFormat == "json" {
+				data := map[string]interface{}{
+					"page_id":     pageID,
+					"old_version": oldVersion,
+					"new_version": newVersion,
+					"format":      format,
+					"diff":        diffOutput,
+				}
+				if summary {
+					data["changes_summary"] = summarizeChanges(oldContent, newContent)
+				}
+				return formatters.FormatOutput(data, "json")
+			}
+
 			fmt.Print(diffOutput)
+			if summary {
+				changeSummary := summarizeChanges(oldContent, newContent)
+				summaryJSON, jsonErr := json.MarshalIndent(changeSummary, "", "  ")
+				if jsonErr == nil {
+					fmt.Printf("\nChanges Summary:\n%s\n", string(summaryJSON))
+				}
+			}
 			return nil
 		},
 	}
@@ -645,6 +713,7 @@ func newPageDiffCmd() *cobra.Command {
 	cmd.Flags().Int("new-version", 0, "New version number to compare to (required)")
 	cmd.Flags().StringP("format", "f", "storage", "Content format: storage, edit (editor), export")
 	cmd.Flags().Bool("color", true, "Use colored output")
+	cmd.Flags().Bool("summary", false, "Include change statistics (lines added/removed)")
 
 	cmd.MarkFlagRequired("old-version")
 	cmd.MarkFlagRequired("new-version")
@@ -746,4 +815,45 @@ func generateSimpleDiff(pageID, oldVersion, newVersion int, oldContent, newConte
 	}
 
 	return result.String()
+}
+
+// summarizeChanges provides a summary of changes between two content strings
+func summarizeChanges(oldContent, newContent string) map[string]interface{} {
+	oldLines := strings.Split(oldContent, "\n")
+	newLines := strings.Split(newContent, "\n")
+
+	oldLineCount := len(oldLines)
+	newLineCount := len(newLines)
+
+	added := 0
+	removed := 0
+
+	oldSet := make(map[string]bool)
+	newSet := make(map[string]bool)
+
+	for _, line := range oldLines {
+		oldSet[line] = true
+	}
+	for _, line := range newLines {
+		newSet[line] = true
+	}
+
+	for line := range newSet {
+		if !oldSet[line] {
+			added++
+		}
+	}
+	for line := range oldSet {
+		if !newSet[line] {
+			removed++
+		}
+	}
+
+	return map[string]interface{}{
+		"old_line_count": oldLineCount,
+		"new_line_count": newLineCount,
+		"lines_added":    added,
+		"lines_removed":  removed,
+		"net_change":     added - removed,
+	}
 }
