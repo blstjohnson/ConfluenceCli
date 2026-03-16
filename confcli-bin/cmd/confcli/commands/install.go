@@ -106,16 +106,20 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(cmd.OutOrStdout(), "Copied confcli to %s\n", targetBin)
 	}
 
-	// Verify install
+	// Verify install — on Windows, auto-add to PATH if needed
 	if verifyInstall() {
 		fmt.Fprintln(cmd.OutOrStdout(), "Verified: confcli is now available on your PATH.")
+	} else if runtime.GOOS == "windows" {
+		if err := addToWindowsUserPATH(targetDir); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to add %s to PATH: %v\n", targetDir, err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "  You can add it manually: setx PATH \"%%PATH%%;%s\"\n", targetDir)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "Added %s to your user PATH.\n", targetDir)
+			fmt.Fprintln(cmd.OutOrStdout(), "Restart your terminal for the PATH change to take effect.")
+		}
 	} else {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s may not be on your PATH. Add it to your shell profile.\n", targetDir)
-		if runtime.GOOS == "windows" {
-			fmt.Fprintf(cmd.ErrOrStderr(), "  Run: setx PATH \"%%PATH%%;%s\"\n", targetDir)
-		} else {
-			fmt.Fprintf(cmd.ErrOrStderr(), "  Add to ~/.bashrc or ~/.zshrc: export PATH=\"%s:$PATH\"\n", targetDir)
-		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "  Add to ~/.bashrc or ~/.zshrc: export PATH=\"%s:$PATH\"\n", targetDir)
 	}
 
 	return nil
@@ -141,13 +145,19 @@ func runUninstall(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Removed %s\n", targetBin)
 
-	// On Windows, check if we added the directory to PATH and it's now empty
+	// On Windows, remove from PATH and clean up empty directory
 	if runtime.GOOS == "windows" && customDir == "" {
+		if err := removeFromWindowsUserPATH(targetDir); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to remove %s from PATH: %v\n", targetDir, err)
+			fmt.Fprintf(cmd.ErrOrStderr(), "  You may want to remove it manually.\n")
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "Removed %s from your user PATH.\n", targetDir)
+		}
+
 		entries, err := os.ReadDir(targetDir)
 		if err == nil && len(entries) == 0 {
 			_ = os.Remove(targetDir)
 			fmt.Fprintf(cmd.OutOrStdout(), "Removed empty directory %s\n", targetDir)
-			fmt.Fprintf(cmd.ErrOrStderr(), "Note: You may want to remove %s from your PATH.\n", targetDir)
 		}
 	}
 
