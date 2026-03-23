@@ -127,8 +127,8 @@ func newHierarchySpaceCmd() *cobra.Command {
 			outputFormat := viper.GetString("output_format")
 
 			if pageID > 0 {
-				// When a specific page is requested, show its ancestors (root→page)
-				// plus its descendant tree — the page in context.
+				// When a specific page is requested, show only the subtree
+				// rooted at that page (no ancestors).
 				pageUseCase := usecases.NewPageUseCase(apiClient)
 				hierResp, err := pageUseCase.GetPageHierarchy(ctx, &usecases.GetPageHierarchyRequest{
 					PageID: pageID,
@@ -138,9 +138,8 @@ func newHierarchySpaceCmd() *cobra.Command {
 					return fmt.Errorf("failed to get page hierarchy: %w", err)
 				}
 
-				// Collect all pages: ancestors + target page + descendants
-				allPages := make([]models.Page, 0, len(hierResp.Ancestors)+1+len(hierResp.Descendants))
-				allPages = append(allPages, hierResp.Ancestors...)
+				// Collect subtree only: target page + descendants (no ancestors)
+				allPages := make([]models.Page, 0, 1+len(hierResp.Descendants))
 				allPages = append(allPages, *hierResp.Page)
 				allPages = append(allPages, hierResp.Descendants...)
 
@@ -158,10 +157,10 @@ func newHierarchySpaceCmd() *cobra.Command {
 					return formatters.FormatOutput(allPages, "text")
 				}
 
-				// Build a tree: ancestors form a linear chain, target page gets its subtree.
+				// Build a subtree rooted at the target page (no ancestor spine).
 				tree := treeprint.New()
 
-				// Build children map from descendants for the subtree under the target page.
+				// Build children map from descendants.
 				descendantChildrenMap := make(map[int][]*models.Page)
 				for i := range hierResp.Descendants {
 					d := &hierResp.Descendants[i]
@@ -176,16 +175,9 @@ func newHierarchySpaceCmd() *cobra.Command {
 					}
 				}
 
-				// Walk the ancestor chain to build a linear spine, then attach the subtree.
-				var currentBranch treeprint.Tree = tree
-				for _, ancestor := range hierResp.Ancestors {
-					aID, _ := ancestor.ID.Int()
-					currentBranch = currentBranch.AddBranch(fmt.Sprintf("%d: %s", aID, ancestor.Title))
-				}
-
-				// Add the target page
+				// Add the target page as the tree root
 				targetID, _ := hierResp.Page.ID.Int()
-				targetBranch := currentBranch.AddBranch(fmt.Sprintf("%d: %s", targetID, hierResp.Page.Title))
+				targetBranch := tree.AddBranch(fmt.Sprintf("%d: %s", targetID, hierResp.Page.Title))
 
 				// Attach descendant subtree under the target page
 				buildTree(targetBranch, descendantChildrenMap[targetID], descendantChildrenMap, depth, 0)
@@ -247,7 +239,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 	}
 
 	cmd.Flags().String("space", "", "Space key (required)")
-	cmd.Flags().Int("page-id", 0, "Starting page ID (optional; shows ancestors, the page, and its descendants in context)")
+	cmd.Flags().Int("page-id", 0, "Starting page ID (optional; downloads only the subtree rooted at this page)")
 	cmd.Flags().String("output-dir", "", "Export space to directory")
 	cmd.Flags().String("format", "markdown", "Format for saved pages: markdown, storage, html, plain, edit, export/export_view (converted to markdown)")
 	cmd.Flags().Int("depth", 0, "Recursion depth (default: unlimited)")
