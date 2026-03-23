@@ -267,6 +267,70 @@ func TestInstallHelp(t *testing.T) {
 	}
 }
 
+func TestNewUpdateCmd(t *testing.T) {
+	cmd := NewUpdateCmd()
+
+	if cmd == nil {
+		t.Fatal("NewUpdateCmd returned nil")
+	}
+
+	if cmd.Use != "update" {
+		t.Errorf("Expected update command to use 'update', got '%s'", cmd.Use)
+	}
+
+	// Verify flags exist
+	flags := []string{"check", "force", "pre-release"}
+	for _, flagName := range flags {
+		if cmd.Flags().Lookup(flagName) == nil {
+			t.Errorf("Expected update command to have --%s flag", flagName)
+		}
+	}
+}
+
+func TestUpdateHelp(t *testing.T) {
+	cmd := NewUpdateCmd()
+
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"--help"})
+
+	err := cmd.Execute()
+	if err != nil {
+		t.Errorf("Error executing update --help: %v", err)
+	}
+
+	output := buf.String()
+	if len(output) == 0 {
+		t.Error("Expected help output from update command")
+	}
+}
+
+func TestExpectedAssetName(t *testing.T) {
+	name, err := expectedAssetName()
+	if err != nil {
+		// On unsupported platforms, we expect an error
+		t.Skipf("Unsupported platform: %v", err)
+	}
+	if name == "" {
+		t.Error("Expected non-empty asset name")
+	}
+}
+
+func TestUpdateRegistered(t *testing.T) {
+	rootCmd := NewRootCmd()
+
+	found := false
+	for _, subcmd := range rootCmd.Commands() {
+		if subcmd.Use == "update" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("Expected to find update subcommand in root")
+	}
+}
+
 // Additional tests to verify the functionality of the commands
 func TestMockClient(t *testing.T) {
 	// This is a mock test to verify that the formatter package can be imported
