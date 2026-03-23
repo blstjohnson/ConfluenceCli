@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"syscall"
+	"unsafe"
 )
 
 // addToWindowsUserPATH adds a directory to the user's persistent PATH
@@ -100,6 +102,61 @@ func setUserPATH(value string) error {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("setx failed: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	return nil
+}
+
+// addToWindowsUserPATHElevated attempts to add a directory to the user PATH
+// by re-running the setx command with elevated privileges via runas/ShellExecute.
+func addToWindowsUserPATHElevated(dir string) error {
+	current, err := getUserPATH()
+	if err != nil {
+		return err
+	}
+
+	// Check if already present
+	dirLower := strings.ToLower(dir)
+	for _, entry := range strings.Split(current, ";") {
+		if strings.ToLower(strings.TrimSpace(entry)) == dirLower {
+			return nil
+		}
+	}
+
+	newPath := current
+	if newPath != "" && !strings.HasSuffix(newPath, ";") {
+		newPath += ";"
+	}
+	newPath += dir
+
+	// Use ShellExecute with "runas" verb to elevate setx
+	return runElevated("setx", "PATH \""+newPath+"\"")
+}
+
+// runElevated runs a command with elevated privileges using ShellExecute's "runas" verb.
+func runElevated(exe, args string) error {
+	verb, _ := syscall.UTF16PtrFromString("runas")
+	exePath, _ := syscall.UTF16PtrFromString(exe)
+	argPtr, _ := syscall.UTF16PtrFromString(args)
+
+	// ShellExecute with "runas" triggers the UAC elevation prompt
+	shell32 := syscall.NewLazyDLL("shell32.dll")
+	shellExecute := shell32.NewProc("ShellExecuteW")
+
+	ret, _, err := shellExecute.Call(
+		0,
+		uintptr(unsafe.Pointer(verb)),
+		uintptr(unsafe.Pointer(exePath)),
+		uintptr(unsafe.Pointer(argPtr)),
+		0,
+		0, // SW_HIDE — don't show a console window
+	)
+
+	// ShellExecuteW returns > 32 on success
+	if ret <= 32 {
+		if err != nil && err != syscall.Errno(0) {
+			return fmt.Errorf("elevation failed: %w", err)
+		}
+		return fmt.Errorf("elevation failed (code %d)", ret)
 	}
 	return nil
 }

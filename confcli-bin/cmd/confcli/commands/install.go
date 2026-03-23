@@ -111,8 +111,16 @@ func runInstall(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(cmd.OutOrStdout(), "Verified: confcli is now available on your PATH.")
 	} else if runtime.GOOS == "windows" {
 		if err := addToWindowsUserPATH(targetDir); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: failed to add %s to PATH: %v\n", targetDir, err)
-			fmt.Fprintf(cmd.ErrOrStderr(), "  You can add it manually: setx PATH \"%%PATH%%;%s\"\n", targetDir)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Could not add %s to PATH: %v\n", targetDir, err)
+			fmt.Fprintln(cmd.ErrOrStderr(), "Attempting with elevated privileges...")
+			if elevErr := addToWindowsUserPATHElevated(targetDir); elevErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Elevation failed: %v\n", elevErr)
+				fmt.Fprintf(cmd.ErrOrStderr(), "Please re-run 'confcli install' as Administrator, or add to PATH manually:\n")
+				fmt.Fprintf(cmd.ErrOrStderr(), "  setx PATH \"%%PATH%%;%s\"\n", targetDir)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "Added %s to your user PATH (elevated).\n", targetDir)
+				fmt.Fprintln(cmd.OutOrStdout(), "Restart your terminal for the PATH change to take effect.")
+			}
 		} else {
 			fmt.Fprintf(cmd.OutOrStdout(), "Added %s to your user PATH.\n", targetDir)
 			fmt.Fprintln(cmd.OutOrStdout(), "Restart your terminal for the PATH change to take effect.")
