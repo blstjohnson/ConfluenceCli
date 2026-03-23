@@ -38,6 +38,9 @@ type Client interface {
 	AuthenticateViaBrowser(ctx context.Context) error
 	GetCurrentUserDetails(ctx context.Context) (*models.User, error)
 
+	// Version history operations
+	GetPageVersions(ctx context.Context, pageID int) ([]models.Version, error)
+
 	// Low-level access (for advanced use cases)
 	GetHTTPClient() interface{}
 }

@@ -180,6 +180,11 @@ func (c *client) GetLabels(ctx context.Context, pageID int) ([]models.Label, err
 	return c.pageService.GetLabels(ctx, pageID)
 }
 
+// GetPageVersions retrieves the version history for a page
+func (c *client) GetPageVersions(ctx context.Context, pageID int) ([]models.Version, error) {
+	return c.pageService.GetPageVersions(ctx, pageID)
+}
+
 // GetHTTPClient returns the underlying HTTP client
 func (c *client) GetHTTPClient() interface{} {
 	// This would need to be implemented based on the actual HTTP client

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
@@ -61,6 +62,24 @@ func newHierarchySpaceCmd() *cobra.Command {
 			rewriteTFSLinks, _ := cmd.Flags().GetBool("rewrite-tfs-links")
 			tfsBaseURL, _ := cmd.Flags().GetString("tfs-base-url")
 			localRepoPath, _ := cmd.Flags().GetString("local-repo-path")
+			dateStr, _ := cmd.Flags().GetString("date")
+
+			var dateFilter time.Time
+			if dateStr != "" {
+				var parseErr error
+				// Try date-only format first (YYYY-MM-DD), treat as end of day
+				dateFilter, parseErr = time.Parse("2006-01-02", dateStr)
+				if parseErr != nil {
+					// Try full datetime format
+					dateFilter, parseErr = time.Parse(time.RFC3339, dateStr)
+					if parseErr != nil {
+						return fmt.Errorf("invalid date format %q: use YYYY-MM-DD or RFC3339 (e.g. 2024-01-15T14:30:00Z)", dateStr)
+					}
+				} else {
+					// For date-only, use end of day so we include versions created on that date
+					dateFilter = dateFilter.Add(24*time.Hour - time.Nanosecond)
+				}
+			}
 
 			apiClient, err := clients.NewClientFromViper()
 			if err != nil {
@@ -113,7 +132,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 				// Apply package-level conversion settings (safe for CLI: single-threaded)
 				converters.DisableTOC = noTOC
 
-				if err := exportSpaceToDirectoryIterative(apiClient, space, pageID, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, skipRoot, linkCfg); err != nil {
+				if err := exportSpaceToDirectoryIterative(apiClient, space, pageID, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, skipRoot, linkCfg, dateFilter); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
 				if pageID > 0 {
@@ -259,6 +278,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 	cmd.Flags().Bool("flat-leaves", false, "Do not create a subdirectory for pages that have no children; save their content file directly in the parent folder")
 	cmd.Flags().Bool("no-toc", false, "Strip the table of contents from exported markdown (instead of regenerating it as a clean list)")
 	cmd.Flags().Bool("skip-root", false, "Skip creating folder/file for root page(s); their children are exported directly into the output directory")
+	cmd.Flags().String("date", "", "Retrieve page versions valid at this date (YYYY-MM-DD or RFC3339)")
 	cmd.MarkFlagRequired("space")
 
 	return cmd
@@ -393,7 +413,7 @@ func exportSpaceToDirectory(apiClient interface {
 // using iterative batch processing to save memory for large spaces
 // Creates a hierarchical folder structure: each page gets a folder named by pageId
 // Child pages are saved inside their parent page's folder
-func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPageID int, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, flatLeaves bool, skipRoot bool, linkCfg *converters.LinkRewriteConfig) error {
+func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPageID int, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, flatLeaves bool, skipRoot bool, linkCfg *converters.LinkRewriteConfig, dateFilter time.Time) error {
 	ctx := context.Background()
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -685,9 +705,32 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				apiFormat = utils.GetContentFormatForAPI(normalizedFormat)
 			}
 
+			// Determine which version to fetch
+			fetchVersion := 0 // 0 means current
+			if !dateFilter.IsZero() {
+				// Resolve the version that was current at the given date
+				versions, verErr := apiClient.GetPageVersions(ctx, pageID)
+				if verErr != nil {
+					return fmt.Errorf("failed to get version history for page %d: %w", pageID, verErr)
+				}
+				fetchVersion = resolveVersionAtDate(versions, dateFilter)
+				if fetchVersion == 0 {
+					fmt.Fprintf(os.Stderr, "Warning: no version of page %d existed before %s, skipping\n", pageID, dateFilter.Format("2006-01-02"))
+					// Skip to children
+					childIDs := childrenMap[pageID]
+					for _, childID := range childIDs {
+						if err := savePageWithChildren(childID, pageDir, currentDepth+1); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+			}
+
 			// Try to get content from the page body first (already fetched via expansions)
+			// but only when not using date-based version (cached body is always current version)
 			var apiContent string
-			if page.Body != nil {
+			if fetchVersion == 0 && page.Body != nil {
 				// First try the requested format
 				if bodyContent, ok := page.Body[apiFormat].(map[string]interface{}); ok {
 					if value, ok := bodyContent["value"].(string); ok && value != "" {
@@ -716,10 +759,10 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				}
 			}
 
-			// If still no content, fetch it via API call
+			// If still no content, fetch it via API call (with version if date-based)
 			if apiContent == "" {
 				var fetchErr error
-				apiContent, fetchErr = apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, 0)
+				apiContent, fetchErr = apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, fetchVersion)
 				if fetchErr != nil {
 					return fmt.Errorf("failed to get content for page %d: %w", pageID, fetchErr)
 				}
@@ -888,6 +931,22 @@ func savePageMetadata(spaceDir string, page *models.Page, sanitize func(string) 
 	}
 	filePath := filepath.Join(spaceDir, filename)
 	return os.WriteFile(filePath, []byte(metadataBytes), 0644)
+}
+
+// resolveVersionAtDate finds the version number that was current at the given date.
+// It returns the latest version with UpdatedAt <= date, or 0 if no version qualifies.
+func resolveVersionAtDate(versions []models.Version, date time.Time) int {
+	bestVersion := 0
+	var bestTime time.Time
+	for _, v := range versions {
+		if !v.UpdatedAt.IsZero() && !v.UpdatedAt.After(date) {
+			if v.UpdatedAt.After(bestTime) || bestVersion == 0 {
+				bestVersion = v.Number
+				bestTime = v.UpdatedAt
+			}
+		}
+	}
+	return bestVersion
 }
 
 // buildTree builds a tree structure from pages

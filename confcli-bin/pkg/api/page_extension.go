@@ -437,6 +437,65 @@ func extractBodyContent(body map[string]interface{}, format string) (string, err
 	return "", fmt.Errorf("could not extract content in format '%s'", format)
 }
 
+// FetchPageVersionsRequest represents a request to fetch page version history
+type FetchPageVersionsRequest struct {
+	PageID int
+}
+
+// FetchPageVersionsResponse represents the response from fetching page versions
+type FetchPageVersionsResponse struct {
+	Versions []models.Version
+}
+
+// FetchPageVersions fetches the version history for a page
+func (e *PageExtension) FetchPageVersions(ctx context.Context, req *FetchPageVersionsRequest) (*FetchPageVersionsResponse, error) {
+	path := fmt.Sprintf("%s/content/%d/version", e.client.APIPrefix, req.PageID)
+	params := url.Values{}
+	params.Add("limit", "200")
+
+	var allVersions []models.Version
+
+	for {
+		resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var result struct {
+			Results []models.Version `json:"results"`
+			Links   struct {
+				Next string `json:"next"`
+			} `json:"_links"`
+			Size  int `json:"size"`
+			Limit int `json:"limit"`
+			Start int `json:"start"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+
+		allVersions = append(allVersions, result.Results...)
+
+		if result.Links.Next == "" || result.Size < result.Limit {
+			break
+		}
+
+		// Update start for next page
+		params.Set("start", fmt.Sprintf("%d", result.Start+result.Size))
+	}
+
+	return &FetchPageVersionsResponse{Versions: allVersions}, nil
+}
+
 // GetHTTPClient returns the underlying HTTP client
 func (e *PageExtension) GetHTTPClient() *HTTPClient {
 	return e.client

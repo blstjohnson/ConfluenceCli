@@ -229,3 +229,14 @@ func (r *HTTPPageRepository) AddLabel(ctx context.Context, pageID int, labelName
 		LabelName: labelName,
 	})
 }
+
+// GetPageVersions retrieves the version history for a page
+func (r *HTTPPageRepository) GetPageVersions(ctx context.Context, pageID int) ([]models.Version, error) {
+	resp, err := r.pageExtension.FetchPageVersions(ctx, &api.FetchPageVersionsRequest{
+		PageID: pageID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.Versions, nil
+}
