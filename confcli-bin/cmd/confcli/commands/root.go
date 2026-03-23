@@ -70,7 +70,6 @@ It allows you to retrieve, search, and manage Confluence pages.`,
 	rootCmd.AddCommand(NewConfigCmd())
 	rootCmd.AddCommand(NewCompletionCmd())
 	rootCmd.AddCommand(NewLoginCmd())
-	rootCmd.AddCommand(NewAIAgentCmd())
 	rootCmd.AddCommand(NewVersionCmd())
 	rootCmd.AddCommand(NewInstallCmd())
 
