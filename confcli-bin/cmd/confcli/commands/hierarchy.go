@@ -147,21 +147,22 @@ func newHierarchySpaceCmd() *cobra.Command {
 			outputFormat := viper.GetString("output_format")
 
 			if pageID > 0 {
-				// When a specific page is requested, show only the subtree
-				// rooted at that page (no ancestors).
-				pageUseCase := usecases.NewPageUseCase(apiClient)
-				hierResp, err := pageUseCase.GetPageHierarchy(ctx, &usecases.GetPageHierarchyRequest{
-					PageID: pageID,
-					Depth:  depth,
-				})
+				// When a specific page is requested, fetch the root page + descendants
+				// using the API client directly (same approach as exportSpaceToDirectoryIterative).
+				rootPage, err := apiClient.GetPage(ctx, pageID)
 				if err != nil {
-					return fmt.Errorf("failed to get page hierarchy: %w", err)
+					return fmt.Errorf("failed to get page %d: %w", pageID, err)
+				}
+
+				descendants, err := apiClient.GetDescendants(ctx, pageID, depth)
+				if err != nil {
+					return fmt.Errorf("failed to get descendants for page %d: %w", pageID, err)
 				}
 
 				// Collect subtree only: target page + descendants (no ancestors)
-				allPages := make([]models.Page, 0, 1+len(hierResp.Descendants))
-				allPages = append(allPages, *hierResp.Page)
-				allPages = append(allPages, hierResp.Descendants...)
+				allPages := make([]models.Page, 0, 1+len(descendants))
+				allPages = append(allPages, *rootPage)
+				allPages = append(allPages, descendants...)
 
 				if flat {
 					if outputFormat == "json" {
@@ -182,8 +183,8 @@ func newHierarchySpaceCmd() *cobra.Command {
 
 				// Build children map from descendants.
 				descendantChildrenMap := make(map[int][]*models.Page)
-				for i := range hierResp.Descendants {
-					d := &hierResp.Descendants[i]
+				for i := range descendants {
+					d := &descendants[i]
 					if len(d.Ancestors) > 0 {
 						parentID, ok := d.Ancestors[len(d.Ancestors)-1].ID.Int()
 						if ok {
@@ -196,8 +197,8 @@ func newHierarchySpaceCmd() *cobra.Command {
 				}
 
 				// Add the target page as the tree root
-				targetID, _ := hierResp.Page.ID.Int()
-				targetBranch := tree.AddBranch(fmt.Sprintf("%d: %s", targetID, hierResp.Page.Title))
+				targetID, _ := rootPage.ID.Int()
+				targetBranch := tree.AddBranch(fmt.Sprintf("%d: %s", targetID, rootPage.Title))
 
 				// Attach descendant subtree under the target page
 				buildTree(targetBranch, descendantChildrenMap[targetID], descendantChildrenMap, depth, 0)

@@ -2,6 +2,7 @@ package usecases
 
 import (
 	"context"
+	"fmt"
 
 	"confcli/pkg/api"
 	"confcli/pkg/models"
@@ -212,7 +213,11 @@ func (uc *pageUseCase) GetPageHierarchy(ctx context.Context, req *GetPageHierarc
 	}
 	
 	// Get descendants
-	descendants, err := uc.apiClient.GetDescendants(ctx, page.ID.IntOrString().(int), req.Depth)
+	pageIDInt, ok := page.ID.Int()
+	if !ok {
+		return nil, fmt.Errorf("page ID %v is not a valid integer", page.ID)
+	}
+	descendants, err := uc.apiClient.GetDescendants(ctx, pageIDInt, req.Depth)
 	if err != nil {
 		return nil, err
 	}
