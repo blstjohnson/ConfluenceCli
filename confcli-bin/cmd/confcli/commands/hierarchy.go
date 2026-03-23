@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/schollz/progressbar/v3"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/xlab/treeprint"
@@ -432,6 +433,14 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 	childrenMap := make(map[int][]int) // parent ID -> list of child IDs
 	var rootPageIDs []int
 
+	// Progress bar for page collection (total unknown, use spinner)
+	collectBar := progressbar.NewOptions(-1,
+		progressbar.OptionSetDescription("Collecting pages"),
+		progressbar.OptionSetWriter(os.Stderr),
+		progressbar.OptionSpinnerType(14),
+		progressbar.OptionShowCount(),
+	)
+
 	// Use iterative processing to fetch all pages
 	var err error
 	if rootPageID > 0 {
@@ -456,6 +465,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 
 		for _, page := range allPages {
 			pageCount++
+			collectBar.Add(1)
 			pageID, ok := page.ID.Int()
 			if !ok {
 				continue
@@ -486,6 +496,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 		err = apiClient.GetAllPagesInSpaceIterative(ctx, space, batchSize, func(batch []models.Page) error {
 			for _, page := range batch {
 				pageCount++
+				collectBar.Add(1)
 				pageID, ok := page.ID.Int()
 				if !ok {
 					continue
@@ -508,6 +519,9 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			return nil
 		})
 	}
+
+	collectBar.Finish()
+	fmt.Fprintln(os.Stderr)
 
 	if err != nil {
 		return fmt.Errorf("failed to fetch pages: %w", err)
@@ -620,6 +634,14 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 		}
 		linkCfg.PageMap = pageFileMap
 	}
+
+	// Progress bar for content download phase (total known)
+	downloadBar := progressbar.NewOptions(pageCount,
+		progressbar.OptionSetDescription("Downloading content"),
+		progressbar.OptionSetWriter(os.Stderr),
+		progressbar.OptionShowCount(),
+		progressbar.OptionSetPredictTime(true),
+	)
 
 	// Recursive function to save page and its children in hierarchy
 	// parentDir is the absolute directory of the parent page (or spaceDir for root pages)
@@ -760,6 +782,8 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			}
 		}
 
+		downloadBar.Add(1)
+
 		// Recursively save children
 		childIDs := childrenMap[pageID]
 		for _, childID := range childIDs {
@@ -786,6 +810,9 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			}
 		}
 	}
+
+	downloadBar.Finish()
+	fmt.Fprintln(os.Stderr)
 
 	// Write space metadata only when --save-metadata is set
 	if saveMetadata {
