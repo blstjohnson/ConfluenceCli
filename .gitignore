@@ -18,6 +18,7 @@
 !LICENSE
 !Makefile
 !BUILD.md
+!CHANGELOG.md
 !build.sh
 !Dockerfile.build
 !.devcontainer/devcontainer.json
