@@ -219,6 +219,123 @@ confcli hierarchy space --space DEV --output-dir ./export --format storage
 | `--no-toc` | Удалить оглавление из экспортированного markdown |
 | `--no-length-limit` | Снять ограничение в 80 символов на длину имён файлов и папок |
 | `--date` | Получить версии страниц, актуальные на указанную дату (формат: `YYYY-MM-DD` или RFC3339) |
+| `--transform` | Применить профиль трансформации (имя профиля или путь к YAML-файлу) |
+| `--set` | Переопределить параметры профиля трансформации (например, `--set page.format=html`) |
+
+## Профили трансформации
+
+Профили трансформации позволяют задать набор правил обработки контента при экспорте: удаление макросов, замена ссылок, модификация текста и другие преобразования. Профили описываются в формате YAML.
+
+### Использование
+
+```bash
+# Экспорт с профилем трансформации
+confcli hierarchy space --space DEV --output-dir ./export --transform my-profile
+
+# Профиль из файла
+confcli hierarchy space --space DEV --output-dir ./export --transform ./custom-profile.yaml
+
+# Переопределение параметров профиля
+confcli hierarchy space --space DEV --output-dir ./export --transform my-profile --set page.format=html --set folder.flat_leaves=true
+
+# Получение страницы с трансформацией
+confcli page get --id 123456 --transform my-profile
+```
+
+### Управление профилями
+
+```bash
+# Список доступных профилей
+confcli transform list
+
+# Показать содержимое профиля
+confcli transform show my-profile
+
+# Создать шаблон профиля
+confcli transform init my-profile
+
+# Перезаписать существующий профиль
+confcli transform init my-profile --force
+```
+
+Именованные профили хранятся в `~/.confcli/transformations/` как `.yaml`-файлы. Также можно указать путь к произвольному файлу.
+
+### Формат профиля
+
+```yaml
+folder:
+  naming: slug        # slug, title или id
+  length_limit: 80    # максимальная длина имён папок (0 = без ограничений)
+  flat_leaves: false   # сохранять конечные страницы прямо в родительскую папку
+  skip_root: false     # пропустить корневую страницу
+
+page:
+  format: markdown     # markdown, storage, html, plain, export
+  strip_toc: false     # удалить оглавление
+  save_metadata: false # сохранять .meta.json
+
+  transforms:          # конвейер трансформаций контента
+    - type: remove_macro
+      params:
+        macro_names: [toc, status]
+
+    - type: remove_element
+      params:
+        selectors: [".confluence-information-macro"]
+
+    - type: modify_content
+      params:
+        phase: post    # pre (до конвертации) или post (после конвертации)
+        rules:
+          - find: "старый-текст"
+            replace: "новый-текст"
+
+    - type: modify_links
+      params:
+        rules:
+          - find: "https://old-domain.com"
+            replace: "https://new-domain.com"
+
+    - type: rewrite_tfs_links
+      params:
+        tfs_base_url: "https://tfs.example.com"
+        local_repo_path: "/path/to/repo"
+
+    - type: rewrite_internal_links
+      params:
+        conf_base_url: "https://confluence.example.com"
+
+pages:                 # переопределения для конкретных страниц
+  - id: 12345
+    strip_toc: true
+  - path: "*/Archive/*"
+    skip: true         # пропустить страницы, соответствующие шаблону
+```
+
+### Типы трансформаций
+
+| Тип | Описание |
+|-----|----------|
+| `remove_macro` | Удаление Confluence-макросов по имени (например, toc, status) |
+| `remove_element` | Удаление HTML-элементов по CSS-селектору |
+| `modify_links` | Замена URL в ссылках по правилам find/replace |
+| `modify_content` | Замена текста в контенте (до или после конвертации) |
+| `rewrite_tfs_links` | Перезапись ссылок TFS/Git-репозиториев на локальные пути |
+| `rewrite_internal_links` | Перезапись внутренних ссылок Confluence на относительные пути |
+
+### Переопределение параметров через --set
+
+Флаг `--set` позволяет переопределить параметры профиля без редактирования файла:
+
+| Ключ | Описание |
+|------|----------|
+| `folder.naming` | Способ именования папок (slug, title, id) |
+| `folder.length_limit` | Ограничение длины имён папок |
+| `folder.flat_leaves` | Плоская структура для конечных страниц |
+| `folder.skip_root` | Пропуск корневой страницы |
+| `page.format` | Формат вывода контента |
+| `page.strip_toc` | Удаление оглавления |
+| `page.save_metadata` | Сохранение метаданных |
 
 ## Форматы контента
 

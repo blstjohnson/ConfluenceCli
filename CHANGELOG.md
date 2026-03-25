@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.0.8] - 2026-03-25
+
+### Added
+
+- Transform profiles: YAML-based content transformation pipelines for export
+  - 6 built-in transform types: `remove_macro`, `remove_element`, `modify_links`, `modify_content`, `rewrite_tfs_links`, `rewrite_internal_links`
+  - Profile resolution: file path or named profile from `~/.confcli/transformations/`
+  - Per-page overrides with ID and path glob matching
+  - `--set` flag for inline parameter overrides without editing the profile
+- `--transform` flag on `hierarchy space` and `page get` commands
+- `confcli transform` subcommand with `list`, `show`, and `init` actions
+- Starter template generation for new transform profiles
+
+### Changed
+
+- `hierarchy space` export flags (`--named-folders`, `--flat-leaves`, `--skip-root`, etc.) can now be driven by a transform profile, with explicit flags taking priority
+
+## [v0.0.7] - 2026-03-25
+
 ### Added
 
 - Self-update command for in-place binary updates
