@@ -1,0 +1,368 @@
+package transforms
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestLoadProfile(t *testing.T) {
+	yaml := `
+folder:
+  naming: slug
+  length_limit: 50
+  flat_leaves: true
+  skip_root: false
+page:
+  format: markdown
+  strip_toc: true
+  save_metadata: false
+  transforms:
+    - type: remove_macro
+      params:
+        macro_names: ["toc", "info"]
+    - type: modify_content
+      params:
+        phase: post
+        rules:
+          - find: "foo"
+            replace: "bar"
+pages:
+  - id: 12345
+    format: html
+    skip_transforms: true
+  - path: "docs/*.md"
+    transforms:
+      - type: remove_element
+        params:
+          selectors: ["div.sidebar"]
+  - id: [100, 200, 300]
+    skip: true
+`
+	p, err := LoadProfile([]byte(yaml))
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+
+	// Folder config
+	if p.Folder.Naming != "slug" {
+		t.Errorf("Folder.Naming = %q, want %q", p.Folder.Naming, "slug")
+	}
+	if p.Folder.LengthLimit != 50 {
+		t.Errorf("Folder.LengthLimit = %d, want 50", p.Folder.LengthLimit)
+	}
+	if !p.Folder.FlatLeaves {
+		t.Error("Folder.FlatLeaves = false, want true")
+	}
+
+	// Page defaults
+	if p.Page.Format != "markdown" {
+		t.Errorf("Page.Format = %q, want %q", p.Page.Format, "markdown")
+	}
+	if !p.Page.StripTOC {
+		t.Error("Page.StripTOC = false, want true")
+	}
+	if len(p.Page.Transforms) != 2 {
+		t.Fatalf("len(Page.Transforms) = %d, want 2", len(p.Page.Transforms))
+	}
+	if p.Page.Transforms[0].Type != "remove_macro" {
+		t.Errorf("Transforms[0].Type = %q, want %q", p.Page.Transforms[0].Type, "remove_macro")
+	}
+
+	// Page overrides
+	if len(p.Pages) != 3 {
+		t.Fatalf("len(Pages) = %d, want 3", len(p.Pages))
+	}
+	if p.Pages[0].Format != "html" {
+		t.Errorf("Pages[0].Format = %q, want %q", p.Pages[0].Format, "html")
+	}
+	if !p.Pages[0].SkipTransforms {
+		t.Error("Pages[0].SkipTransforms = false, want true")
+	}
+	if !p.Pages[2].Skip {
+		t.Error("Pages[2].Skip = false, want true")
+	}
+}
+
+func TestPageOverrideMatchesPage(t *testing.T) {
+	tests := []struct {
+		name     string
+		override PageOverride
+		pageID   int
+		pagePath string
+		want     bool
+	}{
+		{
+			name:     "match by int id",
+			override: PageOverride{ID: 123},
+			pageID:   123,
+			want:     true,
+		},
+		{
+			name:     "no match by int id",
+			override: PageOverride{ID: 123},
+			pageID:   456,
+			want:     false,
+		},
+		{
+			name:     "match by float64 id (yaml decode)",
+			override: PageOverride{ID: float64(123)},
+			pageID:   123,
+			want:     true,
+		},
+		{
+			name:     "match by id list",
+			override: PageOverride{ID: []interface{}{float64(100), float64(200)}},
+			pageID:   200,
+			want:     true,
+		},
+		{
+			name:     "no match by id list",
+			override: PageOverride{ID: []interface{}{float64(100), float64(200)}},
+			pageID:   300,
+			want:     false,
+		},
+		{
+			name:     "match by path glob",
+			override: PageOverride{Path: "docs/*.md"},
+			pagePath: "docs/intro.md",
+			want:     true,
+		},
+		{
+			name:     "no match by path glob",
+			override: PageOverride{Path: "docs/*.md"},
+			pagePath: "src/main.go",
+			want:     false,
+		},
+		{
+			name:     "match by both id and path",
+			override: PageOverride{ID: float64(42), Path: "docs/*.md"},
+			pageID:   42,
+			pagePath: "docs/intro.md",
+			want:     true,
+		},
+		{
+			name:     "id matches but path doesn't (AND logic)",
+			override: PageOverride{ID: float64(42), Path: "docs/*.md"},
+			pageID:   42,
+			pagePath: "src/main.go",
+			want:     false,
+		},
+		{
+			name:     "no id or path set",
+			override: PageOverride{},
+			pageID:   42,
+			pagePath: "docs/intro.md",
+			want:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.override.MatchesPage(tc.pageID, tc.pagePath)
+			if got != tc.want {
+				t.Errorf("MatchesPage(%d, %q) = %v, want %v", tc.pageID, tc.pagePath, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolvePageConfig(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	profile := &TransformProfile{
+		Page: PageConfig{
+			Format:   "markdown",
+			StripTOC: false,
+			Transforms: []TransformSpec{
+				{Type: "remove_macro", Params: map[string]interface{}{"macro_names": []interface{}{"toc"}}},
+			},
+		},
+		Pages: []PageOverride{
+			{
+				ID:     float64(42),
+				Format: "html",
+			},
+			{
+				Path:           "api/*",
+				SkipTransforms: true,
+			},
+			{
+				ID:       float64(99),
+				StripTOC: boolPtr(true),
+				Transforms: []TransformSpec{
+					{Type: "remove_element", Params: map[string]interface{}{"selectors": []interface{}{"div.nav"}}},
+				},
+			},
+		},
+	}
+
+	// Default (no override matches)
+	cfg, skip := profile.ResolvePageConfig(1, "unmatched/path")
+	if skip {
+		t.Error("default: unexpected skip")
+	}
+	if cfg.Format != "markdown" {
+		t.Errorf("default: Format = %q, want %q", cfg.Format, "markdown")
+	}
+	if len(cfg.Transforms) != 1 {
+		t.Errorf("default: len(Transforms) = %d, want 1", len(cfg.Transforms))
+	}
+
+	// Override format
+	cfg, skip = profile.ResolvePageConfig(42, "")
+	if skip {
+		t.Error("id=42: unexpected skip")
+	}
+	if cfg.Format != "html" {
+		t.Errorf("id=42: Format = %q, want %q", cfg.Format, "html")
+	}
+
+	// Skip transforms
+	cfg, _ = profile.ResolvePageConfig(1, "api/users")
+	if len(cfg.Transforms) != 0 {
+		t.Errorf("api/*: len(Transforms) = %d, want 0", len(cfg.Transforms))
+	}
+
+	// Append transforms
+	cfg, _ = profile.ResolvePageConfig(99, "")
+	if !cfg.StripTOC {
+		t.Error("id=99: StripTOC = false, want true")
+	}
+	if len(cfg.Transforms) != 2 {
+		t.Errorf("id=99: len(Transforms) = %d, want 2", len(cfg.Transforms))
+	}
+}
+
+func TestResolveProfile(t *testing.T) {
+	// Test loading from file path
+	dir := t.TempDir()
+	profilePath := filepath.Join(dir, "test.yaml")
+	err := os.WriteFile(profilePath, []byte(`
+page:
+  format: html
+`), 0644)
+	if err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	p, err := ResolveProfile(profilePath)
+	if err != nil {
+		t.Fatalf("ResolveProfile(%q): %v", profilePath, err)
+	}
+	if p.Page.Format != "html" {
+		t.Errorf("Format = %q, want %q", p.Page.Format, "html")
+	}
+
+	// Test not found
+	_, err = ResolveProfile("nonexistent-profile-xyz")
+	if err == nil {
+		t.Error("expected error for nonexistent profile, got nil")
+	}
+}
+
+func TestApplySetOverrides(t *testing.T) {
+	p := &TransformProfile{}
+
+	overrides := map[string]string{
+		"folder.naming":       "slug",
+		"folder.length_limit": "100",
+		"folder.flat_leaves":  "true",
+		"folder.skip_root":    "yes",
+		"page.format":         "storage",
+		"page.strip_toc":      "1",
+		"page.save_metadata":  "false",
+	}
+
+	if err := ApplySetOverrides(p, overrides); err != nil {
+		t.Fatalf("ApplySetOverrides: %v", err)
+	}
+
+	if p.Folder.Naming != "slug" {
+		t.Errorf("Folder.Naming = %q, want %q", p.Folder.Naming, "slug")
+	}
+	if p.Folder.LengthLimit != 100 {
+		t.Errorf("Folder.LengthLimit = %d, want 100", p.Folder.LengthLimit)
+	}
+	if !p.Folder.FlatLeaves {
+		t.Error("Folder.FlatLeaves = false, want true")
+	}
+	if !p.Folder.SkipRoot {
+		t.Error("Folder.SkipRoot = false, want true")
+	}
+	if p.Page.Format != "storage" {
+		t.Errorf("Page.Format = %q, want %q", p.Page.Format, "storage")
+	}
+	if !p.Page.StripTOC {
+		t.Error("Page.StripTOC = false, want true")
+	}
+	if p.Page.SaveMetadata {
+		t.Error("Page.SaveMetadata = true, want false")
+	}
+}
+
+func TestApplySetOverridesErrors(t *testing.T) {
+	p := &TransformProfile{}
+
+	// Unknown key
+	err := ApplySetOverrides(p, map[string]string{"bogus.key": "val"})
+	if err == nil {
+		t.Error("expected error for unknown key")
+	}
+
+	// Invalid int
+	err = ApplySetOverrides(p, map[string]string{"folder.length_limit": "abc"})
+	if err == nil {
+		t.Error("expected error for invalid int")
+	}
+
+	// Invalid bool
+	err = ApplySetOverrides(p, map[string]string{"folder.flat_leaves": "maybe"})
+	if err == nil {
+		t.Error("expected error for invalid bool")
+	}
+}
+
+func TestBuildPipeline(t *testing.T) {
+	reg := DefaultRegistry()
+
+	specs := []TransformSpec{
+		{
+			Type: "remove_macro",
+			Params: map[string]interface{}{
+				"macro_names": []interface{}{"toc", "info"},
+			},
+		},
+		{
+			Type: "remove_element",
+			Params: map[string]interface{}{
+				"selectors": []interface{}{"div.sidebar"},
+			},
+		},
+	}
+
+	pipeline, err := BuildPipeline(specs, reg)
+	if err != nil {
+		t.Fatalf("BuildPipeline: %v", err)
+	}
+	if pipeline.Len() != 2 {
+		t.Errorf("pipeline.Len() = %d, want 2", pipeline.Len())
+	}
+}
+
+func TestBuildPipelineUnknownType(t *testing.T) {
+	reg := DefaultRegistry()
+	specs := []TransformSpec{{Type: "bogus_transform"}}
+	_, err := BuildPipeline(specs, reg)
+	if err == nil {
+		t.Error("expected error for unknown transform type")
+	}
+}
+
+func TestRegistryBuildRemoveMacroMissingParam(t *testing.T) {
+	reg := DefaultRegistry()
+	_, err := reg.Build(TransformSpec{Type: "remove_macro", Params: map[string]interface{}{}})
+	if err == nil {
+		t.Error("expected error for remove_macro with no macro_names")
+	}
+}
