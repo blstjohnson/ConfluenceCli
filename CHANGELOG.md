@@ -4,10 +4,22 @@ All notable changes to confcli will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.0.8] - 2026-03-25
 
 ### Added
 
+- **Transformation profiles**: YAML-based configuration for page and folder transforms
+  - `--transform` flag on `hierarchy space` and `page get` commands
+  - Named profiles from `~/.confcli/transformations/` or external file paths
+  - `--set key=value` for one-off overrides
+- **Transform pipeline**: ordered processing steps for page content
+  - `remove/macro`: strip Confluence macros by name (regex)
+  - `remove/element`: strip elements by CSS selector
+  - `modify/links`: regex find/replace on link URLs
+  - `modify/content`: regex find/replace on page content
+  - `rewrite/tfs-links` and `rewrite/internal-links`: refactored existing link rewriting
+- **Per-page transforms**: target specific pages by ID or path glob with custom transform rules
+- `confcli transform list|show|init` subcommands for profile management
 - Self-update command for in-place binary updates
 
 ### Fixed
