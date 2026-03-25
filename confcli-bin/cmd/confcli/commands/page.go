@@ -17,6 +17,7 @@ import (
 	"confcli/pkg/config"
 	"confcli/pkg/converters"
 	"confcli/pkg/formatters"
+	"confcli/pkg/transforms"
 	"confcli/pkg/usecases"
 	"confcli/pkg/utils"
 )
@@ -64,6 +65,34 @@ func newPageGetCmd() *cobra.Command {
 			depth, _ := cmd.Flags().GetInt("depth")
 			skipContent, _ := cmd.Flags().GetBool("skip-content")
 			rewriteTFSLinks, _ := cmd.Flags().GetBool("rewrite-tfs-links")
+			transformProfile, _ := cmd.Flags().GetString("transform")
+			setOverrides, _ := cmd.Flags().GetStringArray("set")
+
+			// Resolve transform profile if specified
+			var profile *transforms.TransformProfile
+			if transformProfile != "" {
+				var err error
+				profile, err = transforms.ResolveProfile(transformProfile)
+				if err != nil {
+					return err
+				}
+				if len(setOverrides) > 0 {
+					overrideMap := make(map[string]string)
+					for _, s := range setOverrides {
+						parts := strings.SplitN(s, "=", 2)
+						if len(parts) != 2 {
+							return fmt.Errorf("invalid --set format %q: expected key=value", s)
+						}
+						overrideMap[parts[0]] = parts[1]
+					}
+					if err := transforms.ApplySetOverrides(profile, overrideMap); err != nil {
+						return err
+					}
+				}
+				if !cmd.Flags().Changed("format") && profile.Page.Format != "" {
+					format = profile.Page.Format
+				}
+			}
 
 			// Validate inputs
 			if id == 0 && title == "" && path == "" {
@@ -136,6 +165,29 @@ func newPageGetCmd() *cobra.Command {
 				transformedContent, err = converters.ExportViewToMarkdown(resp.Content, baseURL)
 				if err != nil {
 					return fmt.Errorf("failed to convert export_view to markdown: %w", err)
+				}
+			}
+
+			// Apply transform pipeline if profile is set
+			if profile != nil {
+				pageCfg, _ := profile.ResolvePageConfig(id, "")
+				if len(pageCfg.Transforms) > 0 {
+					reg := transforms.DefaultRegistry()
+					pipeline, pipeErr := transforms.BuildPipeline(pageCfg.Transforms, reg)
+					if pipeErr != nil {
+						return fmt.Errorf("failed to build transform pipeline: %w", pipeErr)
+					}
+					tctx := &transforms.TransformContext{
+						PreContent:  resp.Content,
+						PostContent: transformedContent,
+						PageID:      id,
+						PageTitle:   resp.Page.Title,
+						Format:      format,
+					}
+					if err := pipeline.Run(tctx); err != nil {
+						return fmt.Errorf("transform failed: %w", err)
+					}
+					transformedContent = tctx.PostContent
 				}
 			}
 
@@ -269,6 +321,8 @@ func newPageGetCmd() *cobra.Command {
 	cmd.Flags().Int("depth", 0, "Maximum depth for descendant traversal (0 = unlimited, requires --with-descendants)")
 	cmd.Flags().Bool("skip-content", false, "Omit page content from descendants (structure only, requires --with-descendants)")
 	cmd.Flags().Bool("rewrite-tfs-links", false, "Rewrite TFS/Git repository links to local paths using config")
+	cmd.Flags().String("transform", "", "Transform profile name or file path")
+	cmd.Flags().StringArray("set", nil, "Override profile values (repeatable): key=value, e.g. --set page.strip_toc=true")
 
 	return cmd
 }

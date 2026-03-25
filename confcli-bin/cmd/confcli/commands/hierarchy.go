@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/schollz/progressbar/v3"
@@ -18,6 +19,7 @@ import (
 	"confcli/pkg/converters"
 	"confcli/pkg/formatters"
 	"confcli/pkg/models"
+	"confcli/pkg/transforms"
 	"confcli/pkg/usecases"
 	"confcli/pkg/utils"
 )
@@ -63,6 +65,63 @@ func newHierarchySpaceCmd() *cobra.Command {
 			tfsBaseURL, _ := cmd.Flags().GetString("tfs-base-url")
 			localRepoPath, _ := cmd.Flags().GetString("local-repo-path")
 			dateStr, _ := cmd.Flags().GetString("date")
+			transformProfile, _ := cmd.Flags().GetString("transform")
+			setOverrides, _ := cmd.Flags().GetStringArray("set")
+
+			// Resolve transform profile if specified
+			var profile *transforms.TransformProfile
+			if transformProfile != "" {
+				var err error
+				profile, err = transforms.ResolveProfile(transformProfile)
+				if err != nil {
+					return err
+				}
+
+				// Apply --set overrides
+				if len(setOverrides) > 0 {
+					overrideMap := make(map[string]string)
+					for _, s := range setOverrides {
+						parts := strings.SplitN(s, "=", 2)
+						if len(parts) != 2 {
+							return fmt.Errorf("invalid --set format %q: expected key=value", s)
+						}
+						overrideMap[parts[0]] = parts[1]
+					}
+					if err := transforms.ApplySetOverrides(profile, overrideMap); err != nil {
+						return err
+					}
+				}
+
+				// Apply profile folder settings as defaults (explicit flags override)
+				if !cmd.Flags().Changed("named-folders") && !cmd.Flags().Changed("clean-names") {
+					switch profile.Folder.Naming {
+					case "slug":
+						namedFolders = true
+					case "title":
+						cleanNames = true
+					case "id":
+						// default behavior
+					}
+				}
+				if !cmd.Flags().Changed("no-length-limit") && profile.Folder.LengthLimit == 0 {
+					noLengthLimit = true
+				}
+				if !cmd.Flags().Changed("flat-leaves") {
+					flatLeaves = profile.Folder.FlatLeaves
+				}
+				if !cmd.Flags().Changed("skip-root") {
+					skipRoot = profile.Folder.SkipRoot
+				}
+				if !cmd.Flags().Changed("save-metadata") {
+					saveMetadata = profile.Page.SaveMetadata
+				}
+				if !cmd.Flags().Changed("no-toc") {
+					noTOC = profile.Page.StripTOC
+				}
+				if !cmd.Flags().Changed("format") && profile.Page.Format != "" {
+					format = profile.Page.Format
+				}
+			}
 
 			var dateFilter time.Time
 			if dateStr != "" {
@@ -132,7 +191,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 				// Apply package-level conversion settings (safe for CLI: single-threaded)
 				converters.DisableTOC = noTOC
 
-				if err := exportSpaceToDirectoryIterative(apiClient, space, pageID, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, skipRoot, linkCfg, dateFilter); err != nil {
+				if err := exportSpaceToDirectoryIterative(apiClient, space, pageID, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, skipRoot, linkCfg, dateFilter, profile); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
 				if pageID > 0 {
@@ -280,6 +339,8 @@ func newHierarchySpaceCmd() *cobra.Command {
 	cmd.Flags().Bool("no-toc", false, "Strip the table of contents from exported markdown (instead of regenerating it as a clean list)")
 	cmd.Flags().Bool("skip-root", false, "Skip creating folder/file for root page(s); their children are exported directly into the output directory")
 	cmd.Flags().String("date", "", "Retrieve page versions valid at this date (YYYY-MM-DD or RFC3339)")
+	cmd.Flags().String("transform", "", "Transform profile name or file path")
+	cmd.Flags().StringArray("set", nil, "Override profile values (repeatable): key=value, e.g. --set page.strip_toc=true")
 	cmd.MarkFlagRequired("space")
 
 	return cmd
@@ -414,7 +475,7 @@ func exportSpaceToDirectory(apiClient interface {
 // using iterative batch processing to save memory for large spaces
 // Creates a hierarchical folder structure: each page gets a folder named by pageId
 // Child pages are saved inside their parent page's folder
-func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPageID int, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, flatLeaves bool, skipRoot bool, linkCfg *converters.LinkRewriteConfig, dateFilter time.Time) error {
+func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPageID int, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, flatLeaves bool, skipRoot bool, linkCfg *converters.LinkRewriteConfig, dateFilter time.Time, profile *transforms.TransformProfile) error {
 	ctx := context.Background()
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -769,6 +830,38 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				}
 			}
 
+			// Run pre-conversion transforms if profile is set
+			if profile != nil {
+				pageCfg, skip := profile.ResolvePageConfig(pageID, "")
+				if skip {
+					downloadBar.Add(1)
+					childIDs := childrenMap[pageID]
+					for _, childID := range childIDs {
+						if err := savePageWithChildren(childID, pageDir, currentDepth+1); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
+				if len(pageCfg.Transforms) > 0 {
+					reg := transforms.DefaultRegistry()
+					pipeline, pipeErr := transforms.BuildPipeline(pageCfg.Transforms, reg)
+					if pipeErr != nil {
+						return fmt.Errorf("failed to build transform pipeline for page %d: %w", pageID, pipeErr)
+					}
+					tctx := &transforms.TransformContext{
+						PreContent: apiContent,
+						PageID:     pageID,
+						PageTitle:  page.Title,
+						Format:     normalizedFormat,
+					}
+					if err := pipeline.Run(tctx); err != nil {
+						return fmt.Errorf("pre-transform failed for page %d: %w", pageID, err)
+					}
+					apiContent = tctx.PreContent
+				}
+			}
+
 			var content string
 			var convertErr error
 			// For export/export_view format, convert to markdown
@@ -783,6 +876,29 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				content, convertErr = utils.ConvertContentFromStorage(apiContent, normalizedFormat, baseURL)
 				if convertErr != nil {
 					content = apiContent
+				}
+			}
+
+			// Run post-conversion transforms if profile is set
+			if profile != nil {
+				pageCfg, _ := profile.ResolvePageConfig(pageID, "")
+				if len(pageCfg.Transforms) > 0 {
+					reg := transforms.DefaultRegistry()
+					pipeline, pipeErr := transforms.BuildPipeline(pageCfg.Transforms, reg)
+					if pipeErr == nil {
+						tctx := &transforms.TransformContext{
+							PreContent:  apiContent,
+							PostContent: content,
+							PageID:      pageID,
+							PageTitle:   page.Title,
+							Format:      normalizedFormat,
+						}
+						if err := pipeline.Run(tctx); err != nil {
+							fmt.Fprintf(os.Stderr, "Warning: post-transform failed for page %d: %v\n", pageID, err)
+						} else {
+							content = tctx.PostContent
+						}
+					}
 				}
 			}
 
