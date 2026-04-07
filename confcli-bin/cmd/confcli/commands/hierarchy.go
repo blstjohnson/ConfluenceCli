@@ -728,6 +728,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 	// Recursive function to save page and its children in hierarchy
 	// parentDir is the absolute directory of the parent page (or spaceDir for root pages)
 	var savePageWithChildren func(pageID int, parentDir string, currentDepth int) error
+	var downloadErrors []string
 	savePageWithChildren = func(pageID int, parentDir string, currentDepth int) error {
 		page, exists := pageMap[pageID]
 		if !exists {
@@ -756,7 +757,9 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 		// Save page metadata (only when --save-metadata is set)
 		if saveMetadata {
 			if err := savePageMetadata(pageDir, page, sanitize, cleanNames); err != nil {
-				return fmt.Errorf("failed to save metadata for page %d: %w", pageID, err)
+				msg := fmt.Sprintf("Warning: failed to save metadata for page %d (%s): %v", pageID, page.Title, err)
+				fmt.Fprintln(os.Stderr, msg)
+				downloadErrors = append(downloadErrors, msg)
 			}
 		}
 
@@ -773,7 +776,17 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				// Resolve the version that was current at the given date
 				versions, verErr := apiClient.GetPageVersions(ctx, pageID)
 				if verErr != nil {
-					return fmt.Errorf("failed to get version history for page %d: %w", pageID, verErr)
+					msg := fmt.Sprintf("Warning: failed to get version history for page %d (%s), skipping: %v", pageID, page.Title, verErr)
+					fmt.Fprintln(os.Stderr, msg)
+					downloadErrors = append(downloadErrors, msg)
+					downloadBar.Add(1)
+					childIDs := childrenMap[pageID]
+					for _, childID := range childIDs {
+						if err := savePageWithChildren(childID, pageDir, currentDepth+1); err != nil {
+							return err
+						}
+					}
+					return nil
 				}
 				fetchVersion = resolveVersionAtDate(versions, dateFilter)
 				if fetchVersion == 0 {
@@ -826,7 +839,17 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				var fetchErr error
 				apiContent, fetchErr = apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), apiFormat, fetchVersion)
 				if fetchErr != nil {
-					return fmt.Errorf("failed to get content for page %d: %w", pageID, fetchErr)
+					msg := fmt.Sprintf("Warning: failed to get content for page %d (%s), skipping: %v", pageID, page.Title, fetchErr)
+					fmt.Fprintln(os.Stderr, msg)
+					downloadErrors = append(downloadErrors, msg)
+					downloadBar.Add(1)
+					childIDs := childrenMap[pageID]
+					for _, childID := range childIDs {
+						if err := savePageWithChildren(childID, pageDir, currentDepth+1); err != nil {
+							return err
+						}
+					}
+					return nil
 				}
 			}
 
@@ -841,18 +864,24 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 					reg := transforms.DefaultRegistry()
 					pipeline, pipeErr := transforms.BuildPipeline(pageCfg.Transforms, reg)
 					if pipeErr != nil {
-						return fmt.Errorf("failed to build transform pipeline for page %d: %w", pageID, pipeErr)
+						msg := fmt.Sprintf("Warning: failed to build transform pipeline for page %d (%s): %v", pageID, page.Title, pipeErr)
+						fmt.Fprintln(os.Stderr, msg)
+						downloadErrors = append(downloadErrors, msg)
+					} else {
+						tctx := &transforms.TransformContext{
+							PreContent: apiContent,
+							PageID:     pageID,
+							PageTitle:  page.Title,
+							Format:     normalizedFormat,
+						}
+						if err := pipeline.Run(tctx); err != nil {
+							msg := fmt.Sprintf("Warning: pre-transform failed for page %d (%s): %v", pageID, page.Title, err)
+							fmt.Fprintln(os.Stderr, msg)
+							downloadErrors = append(downloadErrors, msg)
+						} else {
+							apiContent = tctx.PreContent
+						}
 					}
-					tctx := &transforms.TransformContext{
-						PreContent: apiContent,
-						PageID:     pageID,
-						PageTitle:  page.Title,
-						Format:     normalizedFormat,
-					}
-					if err := pipeline.Run(tctx); err != nil {
-						return fmt.Errorf("pre-transform failed for page %d: %w", pageID, err)
-					}
-					apiContent = tctx.PreContent
 				}
 			}
 
@@ -932,7 +961,9 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				content = converters.RewriteLinks(content, rewriteCfg)
 			}
 			if writeErr := os.WriteFile(absFilePath, []byte(content), 0644); writeErr != nil {
-				return fmt.Errorf("failed to write page %d to file: %w", pageID, writeErr)
+				msg := fmt.Sprintf("Warning: failed to write page %d (%s) to file: %v", pageID, page.Title, writeErr)
+				fmt.Fprintln(os.Stderr, msg)
+				downloadErrors = append(downloadErrors, msg)
 			}
 		}
 
@@ -967,6 +998,10 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 
 	downloadBar.Finish()
 	fmt.Fprintln(os.Stderr)
+
+	if len(downloadErrors) > 0 {
+		fmt.Fprintf(os.Stderr, "\n%d page(s) had errors during export (see warnings above)\n", len(downloadErrors))
+	}
 
 	// Write space metadata only when --save-metadata is set
 	if saveMetadata {
