@@ -301,8 +301,7 @@ func (p *ConfluencePlugin) handleMacro(ctx html2md.Context, w html2md.Writer, n 
 	case "toc":
 		return p.handleTocMacro(ctx, w, n)
 	default:
-		// Unknown macro - let other handlers try or skip
-		return html2md.RenderTryNext
+		return p.handleGenericMacro(ctx, w, n, macroName)
 	}
 }
 
@@ -664,6 +663,67 @@ func (p *ConfluencePlugin) handleCodeMacro(ctx html2md.Context, w html2md.Writer
 func (p *ConfluencePlugin) handleTocMacro(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
 	// Skip TOC in markdown
 	return html2md.RenderSuccess
+}
+
+// handleGenericMacro handles unknown macros with content bodies or file references.
+// Inline body (ac:plain-text-body or ac:rich-text-body) is rendered as a fenced
+// code block with the macro name as language hint.  File/URL parameters are
+// rendered as markdown links so that the link-rewrite pipeline can resolve them.
+func (p *ConfluencePlugin) handleGenericMacro(ctx html2md.Context, w html2md.Writer, n *html.Node, macroName string) html2md.RenderStatus {
+	var plainBody, richBody string
+	var urlParam string
+
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != html.ElementNode {
+			continue
+		}
+		switch child.Data {
+		case "ac:plain-text-body":
+			plainBody = p.getNodeText(child)
+		case "ac:rich-text-body":
+			richBody = p.getNodeText(child)
+		case "ac:parameter":
+			// Look for URL or file-reference parameters
+			val := strings.TrimSpace(p.getNodeText(child))
+			if val != "" && looksLikeURL(val) && urlParam == "" {
+				urlParam = val
+			}
+		}
+	}
+
+	// Prefer inline body content rendered as a fenced code block.
+	body := plainBody
+	if body == "" {
+		body = richBody
+	}
+	if body != "" {
+		body = strings.TrimPrefix(body, "\n")
+		body = strings.TrimSuffix(body, "\n")
+		w.WriteString(fmt.Sprintf("```%s\n%s\n```\n", macroName, body))
+		return html2md.RenderSuccess
+	}
+
+	// Fall back to URL/file-reference parameter rendered as a markdown link.
+	if urlParam != "" {
+		w.WriteString(fmt.Sprintf("[%s](%s)\n", macroName, urlParam))
+		return html2md.RenderSuccess
+	}
+
+	// Nothing recognisable — let other handlers try.
+	return html2md.RenderTryNext
+}
+
+// looksLikeURL returns true if s looks like a URL or file reference
+// (starts with a scheme, or is a rooted/relative path with an extension).
+func looksLikeURL(s string) bool {
+	if strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "/") {
+		return true
+	}
+	// Relative path with file extension (e.g. "diagram.puml", "assets/flow.png")
+	if strings.Contains(s, ".") && !strings.ContainsAny(s, " \t\n") {
+		return true
+	}
+	return false
 }
 
 // handleUserMention handles user mentions (span with data-account-id/data-user-key)
