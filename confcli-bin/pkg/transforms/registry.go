@@ -39,6 +39,7 @@ func DefaultRegistry() *Registry {
 	r.Register("modify_content", buildModifyContent)
 	r.Register("rewrite_tfs_links", buildRewriteTFSLinks)
 	r.Register("rewrite_internal_links", buildRewriteInternalLinks)
+	r.Register("expand_tiny_urls", buildExpandTinyURLs)
 
 	return r
 }
@@ -115,6 +116,16 @@ func buildRewriteInternalLinks(params map[string]interface{}) (Transform, error)
 	}
 	// page_map is typically injected at runtime, not from YAML
 	return NewRewriteInternalLinks(nil, confBase, currentDir), nil
+}
+
+func buildExpandTinyURLs(params map[string]interface{}) (Transform, error) {
+	confBase, _ := params["conf_base_url"].(string)
+	if confBase == "" {
+		return nil, fmt.Errorf("expand_tiny_urls requires 'conf_base_url' param")
+	}
+	// Default to client-side decoding resolver when used from YAML profiles.
+	// The hierarchy export injects a smarter resolver at runtime.
+	return NewExpandTinyURLs(confBase, DecodingResolver()), nil
 }
 
 // --- param helpers ---

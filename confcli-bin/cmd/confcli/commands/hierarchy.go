@@ -722,6 +722,22 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 		linkCfg.PageMap = pageFileMap
 	}
 
+	// Set up tiny URL expander (shared across all pages for caching)
+	var tinyURLExpander *transforms.ExpandTinyURLs
+	if rewriteLinks && linkCfg.ConfBaseURL != "" {
+		resolver := transforms.CachingResolver(
+			transforms.VerifyingResolver(func(id int) bool {
+				if _, ok := pageMap[id]; ok {
+					return true
+				}
+				// Page not in export — verify existence via Confluence API
+				_, apiErr := apiClient.GetPage(ctx, id)
+				return apiErr == nil
+			}),
+		)
+		tinyURLExpander = transforms.NewExpandTinyURLs(linkCfg.ConfBaseURL, resolver)
+	}
+
 	// Progress bar for content download phase (total known)
 	downloadBar := progressbar.NewOptions(pageCount,
 		progressbar.OptionSetDescription("Downloading content"),
@@ -860,6 +876,21 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 						}
 					}
 					return nil
+				}
+			}
+
+			// Expand Confluence tiny URLs (/x/AbCd) to canonical page URLs
+			// before conversion so the link rewriter can match them.
+			if tinyURLExpander != nil {
+				tctx := &transforms.TransformContext{
+					PreContent: apiContent,
+					PageID:     pageID,
+					PageTitle:  page.Title,
+				}
+				if err := tinyURLExpander.Apply(tctx); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: tiny URL expansion failed for page %d: %v\n", pageID, err)
+				} else {
+					apiContent = tctx.PreContent
 				}
 			}
 
