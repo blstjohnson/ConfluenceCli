@@ -1536,7 +1536,28 @@ func preProcessHTML(htmlContent string) string {
 	// Remove matching </span> for color spans — this is safe because we're just
 	// unwrapping them. The extra </span> closers will be ignored by the HTML parser.
 
+	// Strip TOC macros at the HTML level — catches ac:name="toc" regardless of
+	// nesting depth (layout cells, panels, expand macros, etc.). The converter's
+	// handleTocMacro only fires when the converter dispatches to it, which fails
+	// for TOC macros nested inside unhandled container elements. The post-conversion
+	// stripTOC() regex remains as a fallback safety net.
+	htmlContent = stripTOCMacro(htmlContent)
+
 	return htmlContent
+}
+
+// tocMacroRe matches <ac:structured-macro ac:name="toc"...>...</ac:structured-macro>
+// including any nested content (parameters, rich-text-body, etc.).
+// Uses non-greedy matching and the (?s) flag so '.' matches newlines.
+var tocMacroRe = regexp.MustCompile(
+	`(?is)<ac:structured-macro[^>]*\bac:name\s*=\s*"toc"[^>]*>.*?</ac:structured-macro>`,
+)
+
+// stripTOCMacro removes all TOC macro elements from Confluence storage HTML.
+// This operates before conversion, so it catches TOC macros regardless of
+// nesting depth (inside layout cells, panels, expand macros, etc.).
+func stripTOCMacro(htmlContent string) string {
+	return tocMacroRe.ReplaceAllString(htmlContent, "")
 }
 
 // fixAdjacentEmphasis fixes adjacent bold/italic markers that run together
