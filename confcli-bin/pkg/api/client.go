@@ -41,6 +41,9 @@ type Client interface {
 	// Version history operations
 	GetPageVersions(ctx context.Context, pageID int) ([]models.Version, error)
 
+	// Scroll Versions plugin operations
+	ScrollVersions() *ScrollVersionsClient
+
 	// Low-level access (for advanced use cases)
 	GetHTTPClient() interface{}
 }

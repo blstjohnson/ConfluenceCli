@@ -65,6 +65,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 			tfsBaseURL, _ := cmd.Flags().GetString("tfs-base-url")
 			localRepoPath, _ := cmd.Flags().GetString("local-repo-path")
 			dateStr, _ := cmd.Flags().GetString("date")
+			scrollVersion, _ := cmd.Flags().GetString("scroll-version")
 			transformProfile, _ := cmd.Flags().GetString("transform")
 			setOverrides, _ := cmd.Flags().GetStringArray("set")
 
@@ -191,10 +192,66 @@ func newHierarchySpaceCmd() *cobra.Command {
 				// Apply package-level conversion settings (safe for CLI: single-threaded)
 				converters.DisableTOC = noTOC
 
-				if err := exportSpaceToDirectoryIterative(apiClient, space, pageID, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, skipRoot, linkCfg, dateFilter, profile); err != nil {
+				// Scroll Versions: detect plugin and resolve version-filtered page IDs
+				var scrollPageIDs []int
+				if scrollVersion != "" || outputDir != "" {
+					svClient := apiClient.ScrollVersions()
+					svCfg, svErr := svClient.GetConfig(ctx, space)
+					if svErr != nil {
+						fmt.Fprintf(os.Stderr, "Warning: could not probe Scroll Versions plugin: %v\n", svErr)
+					}
+					if svCfg != nil && svCfg.EnableVersionManagement {
+						versions, vErr := svClient.GetVersions(ctx, space)
+						if vErr != nil {
+							fmt.Fprintf(os.Stderr, "Warning: could not list Scroll Versions: %v\n", vErr)
+						} else if len(versions) > 0 {
+							if scrollVersion != "" {
+								// Find the requested version by name
+								var targetVersion *models.ScrollVersion
+								for i := range versions {
+									if versions[i].Name == scrollVersion {
+										targetVersion = &versions[i]
+										break
+									}
+								}
+								if targetVersion == nil {
+									names := make([]string, len(versions))
+									for i, v := range versions {
+										names[i] = v.Name
+									}
+									return fmt.Errorf("scroll version %q not found; available versions: %s", scrollVersion, strings.Join(names, ", "))
+								}
+
+								// Walk the version-filtered page tree and resolve to Confluence page IDs
+								resolvedIDs, resolveErr := resolveScrollVersionPages(ctx, svClient, apiClient, space, targetVersion.ID)
+								if resolveErr != nil {
+									return fmt.Errorf("failed to resolve scroll version pages: %w", resolveErr)
+								}
+								scrollPageIDs = resolvedIDs
+								fmt.Fprintf(os.Stderr, "Scroll Versions: exporting version %q (%d pages)\n", scrollVersion, len(scrollPageIDs))
+							} else {
+								// No --scroll-version flag, but versions exist: inform the user
+								names := make([]string, len(versions))
+								for i, v := range versions {
+									suffix := ""
+									if v.Archived {
+										suffix = " (archived)"
+									}
+									names[i] = v.Name + suffix
+								}
+								fmt.Fprintf(os.Stderr, "Note: this space uses Scroll Versions. Available versions: %s\n", strings.Join(names, ", "))
+								fmt.Fprintf(os.Stderr, "Use --scroll-version=<name> to export a specific version.\n")
+							}
+						}
+					}
+				}
+
+				if err := exportSpaceToDirectoryIterative(apiClient, space, pageID, outputDir, format, depth, skipContent, batchSize, rewriteLinks, rewriteTFSLinks, namedFolders, cleanNames, noLengthLimit, saveMetadata, flatLeaves, skipRoot, linkCfg, dateFilter, profile, scrollPageIDs); err != nil {
 					return fmt.Errorf("failed to export space to directory: %w", err)
 				}
-				if pageID > 0 {
+				if scrollVersion != "" {
+					fmt.Printf("Space %s (scroll version %q) exported to %s\n", space, scrollVersion, outputDir)
+				} else if pageID > 0 {
 					fmt.Printf("Page %d and descendants from space %s exported to %s\n", pageID, space, outputDir)
 				} else {
 					fmt.Printf("Space %s exported to %s\n", space, outputDir)
@@ -339,6 +396,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 	cmd.Flags().Bool("no-toc", false, "Strip the table of contents from exported markdown (instead of regenerating it as a clean list)")
 	cmd.Flags().Bool("skip-root", false, "Skip creating folder/file for root page(s); their children are exported directly into the output directory")
 	cmd.Flags().String("date", "", "Retrieve page versions valid at this date (YYYY-MM-DD or RFC3339)")
+	cmd.Flags().String("scroll-version", "", "Export a specific Scroll Versions version by name (requires Scroll Versions plugin)")
 	cmd.Flags().String("transform", "", "Transform profile name or file path")
 	cmd.Flags().StringArray("set", nil, "Override profile values (repeatable): key=value, e.g. --set page.strip_toc=true")
 	cmd.MarkFlagRequired("space")
@@ -475,7 +533,7 @@ func exportSpaceToDirectory(apiClient interface {
 // using iterative batch processing to save memory for large spaces
 // Creates a hierarchical folder structure: each page gets a folder named by pageId
 // Child pages are saved inside their parent page's folder
-func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPageID int, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, flatLeaves bool, skipRoot bool, linkCfg *converters.LinkRewriteConfig, dateFilter time.Time, profile *transforms.TransformProfile) error {
+func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPageID int, outputDir, format string, depth int, skipContent bool, batchSize int, rewriteLinks bool, rewriteTFSLinks bool, namedFolders bool, cleanNames bool, noLengthLimit bool, saveMetadata bool, flatLeaves bool, skipRoot bool, linkCfg *converters.LinkRewriteConfig, dateFilter time.Time, profile *transforms.TransformProfile, scrollPageIDs []int) error {
 	ctx := context.Background()
 
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
@@ -525,7 +583,40 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 
 	// Use iterative processing to fetch all pages
 	var err error
-	if rootPageID > 0 {
+	if len(scrollPageIDs) > 0 {
+		// Scroll Versions mode: fetch each resolved Confluence page by ID.
+		// scrollPageIDs is already the flat list of real Confluence page IDs in
+		// tree order (parents before children) produced by resolveScrollVersionPages.
+		scrollIDSet := make(map[int]bool, len(scrollPageIDs))
+		for _, id := range scrollPageIDs {
+			scrollIDSet[id] = true
+		}
+		for _, id := range scrollPageIDs {
+			page, fetchErr := apiClient.GetPage(ctx, id)
+			if fetchErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to fetch scroll-resolved page %d: %v\n", id, fetchErr)
+				continue
+			}
+			pageCount++
+			collectBar.Add(1)
+			pID, ok := page.ID.Int()
+			if !ok {
+				continue
+			}
+			pageMap[pID] = page
+			// Build parent-child: use ancestors, but only if parent is also in the scroll set
+			if len(page.Ancestors) > 0 {
+				parentID, pOk := page.Ancestors[len(page.Ancestors)-1].ID.Int()
+				if pOk && scrollIDSet[parentID] {
+					childrenMap[parentID] = append(childrenMap[parentID], pID)
+				} else {
+					rootPageIDs = append(rootPageIDs, pID)
+				}
+			} else {
+				rootPageIDs = append(rootPageIDs, pID)
+			}
+		}
+	} else if rootPageID > 0 {
 		// Fetch specific page and its descendants
 		// 1. Fetch the root page
 		rootPage, err := apiClient.GetPage(ctx, rootPageID)
@@ -1073,6 +1164,73 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 	}
 
 	return nil
+}
+
+// resolveScrollVersionPages walks the Scroll Versions page tree for the given
+// versionID and resolves every scroll page to its real Confluence page ID.
+// Returns a flat list of Confluence page IDs (parents before children).
+func resolveScrollVersionPages(ctx context.Context, svClient *api.ScrollVersionsClient, apiClient api.Client, spaceKey, versionID string) ([]int, error) {
+	// Get top-level page tree nodes
+	roots, err := svClient.GetPageTree(ctx, spaceKey, versionID)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []int
+
+	// Recursive walk: for each node, resolve its Confluence page, then recurse into children.
+	var walk func(nodes []models.ScrollPageTreeNode) error
+	walk = func(nodes []models.ScrollPageTreeNode) error {
+		for _, node := range nodes {
+			if node.ScrollPageID == "" || node.IsDeleted {
+				continue
+			}
+
+			// If the tree node already has a changePageId (the version-specific
+			// Confluence page), use it directly.
+			if node.ChangePageID > 0 {
+				result = append(result, int(node.ChangePageID))
+			} else if node.ID > 0 {
+				// Fallback: use the node's base Confluence page ID
+				result = append(result, int(node.ID))
+			} else {
+				// Must resolve via the page endpoint
+				sp, resolveErr := svClient.ResolvePage(ctx, spaceKey, node.ScrollPageID, versionID)
+				if resolveErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to resolve scroll page %s: %v\n", node.ScrollPageID, resolveErr)
+					continue
+				}
+				if sp == nil || sp.ConfluencePage == nil {
+					continue
+				}
+				result = append(result, int(sp.ConfluencePage.ID))
+			}
+
+			// If the node reports children but the children slice is empty,
+			// fetch them explicitly via the pagetree children endpoint.
+			children := node.Children
+			if node.HasChildren && len(children) == 0 {
+				fetched, fetchErr := svClient.GetPageTreeChildren(ctx, spaceKey, versionID, node.ScrollPageID, node.ID)
+				if fetchErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to fetch children for scroll page %s: %v\n", node.ScrollPageID, fetchErr)
+				} else {
+					children = fetched
+				}
+			}
+
+			if len(children) > 0 {
+				if err := walk(children); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+
+	if err := walk(roots); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // savePageMetadata saves page metadata to a JSON file.

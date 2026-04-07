@@ -15,6 +15,7 @@ import (
 
 // client implements the api.Client interface
 type client struct {
+	httpClient    *api.HTTPClient
 	pageService   services.PageServiceInterface
 	spaceService  services.SpaceServiceInterface
 	searchService services.SearchServiceInterface
@@ -40,6 +41,7 @@ func NewClient(options *api.ClientOptions) (api.Client, error) {
 
 	// Create the client instance
 	c := &client{
+		httpClient:    httpClient,
 		pageService:   pageService,
 		spaceService:  spaceService,
 		searchService: searchService,
@@ -185,9 +187,12 @@ func (c *client) GetPageVersions(ctx context.Context, pageID int) ([]models.Vers
 	return c.pageService.GetPageVersions(ctx, pageID)
 }
 
+// ScrollVersions returns a client for the Scroll Versions plugin API.
+func (c *client) ScrollVersions() *api.ScrollVersionsClient {
+	return api.NewScrollVersionsClient(c.httpClient)
+}
+
 // GetHTTPClient returns the underlying HTTP client
 func (c *client) GetHTTPClient() interface{} {
-	// This would need to be implemented based on the actual HTTP client
-	// For now, returning nil
-	return nil
+	return c.httpClient
 }
