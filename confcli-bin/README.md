@@ -13,6 +13,9 @@
 - Read-only mode for safe operations
 - Machine-readable help output
 - Full CRUD operations for pages, comments, and labels
+- Scroll Versions plugin support for version-aware exports
+- Resilient downloads: per-page errors are logged, not fatal
+- Generic macro body handling: inline content as code blocks, file references as links
 ### Content Formats
 
 The CLI supports multiple content formats for retrieving pages:
@@ -193,6 +196,9 @@ confcli hierarchy space --space DEV --tree
 
 # Export space to directory structure
 confcli hierarchy space --space DEV --output-dir ./export --format both
+
+# Export a specific Scroll Versions version
+confcli hierarchy space --space DEV --output-dir ./export --scroll-version "Release 2.0"
 
 # Get flat list of all pages in space
 confcli hierarchy space --space DEV --flat --format json

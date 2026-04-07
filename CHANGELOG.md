@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.0.9] - 2026-04-07
+
+### Added
+
+- Scroll Versions plugin support: `--scroll-version` flag exports a specific named version from spaces using the Scroll Versions plugin
+- Generic macro body handling: unknown macros with content bodies render as fenced code blocks; macros with file/URL references render as markdown links for link rewriting
+- Tiny URL expansion: `expand_tiny_urls` transform resolves Confluence `/x/AbCd` short links to canonical page URLs before link rewriting
+- Per-page flatten override: `flatten: true/false` in transform profile `pages:` section overrides the global `--flat-leaves` setting per page
+- Skip cascading for child pages: `skip: true` and `skip_transforms: true` per-page overrides in transform profiles
+
+### Fixed
+
+- TOC stripping now operates at the HTML/storage macro level with nesting-aware regex, correctly removing TOC macros nested inside layout cells, panels, and expand macros
+- Hierarchy download is now resilient to per-page errors: failed pages are logged to stderr and skipped instead of aborting the entire export
+
 ## [v0.0.8] - 2026-03-25
 
 ### Added
