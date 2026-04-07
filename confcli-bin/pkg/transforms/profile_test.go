@@ -234,6 +234,109 @@ func TestResolvePageConfig(t *testing.T) {
 	}
 }
 
+func TestResolveFlatten(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	profile := &TransformProfile{
+		Pages: []PageOverride{
+			{
+				Path:    "*/API Docs/*",
+				Flatten: boolPtr(true),
+			},
+			{
+				Path:    "*/Guides/*",
+				Flatten: boolPtr(false),
+			},
+			{
+				ID:      float64(555),
+				Flatten: boolPtr(true),
+			},
+		},
+	}
+
+	tests := []struct {
+		name            string
+		pageID          int
+		pagePath        string
+		globalFlatLeaves bool
+		want            bool
+	}{
+		{
+			name:            "no override, global false",
+			pageID:          1,
+			pagePath:        "unmatched/path",
+			globalFlatLeaves: false,
+			want:            false,
+		},
+		{
+			name:            "no override, global true",
+			pageID:          1,
+			pagePath:        "unmatched/path",
+			globalFlatLeaves: true,
+			want:            true,
+		},
+		{
+			name:            "path override enables flatten",
+			pageID:          1,
+			pagePath:        "space/API Docs/endpoints",
+			globalFlatLeaves: false,
+			want:            true,
+		},
+		{
+			name:            "path override disables flatten",
+			pageID:          1,
+			pagePath:        "space/Guides/intro",
+			globalFlatLeaves: true,
+			want:            false,
+		},
+		{
+			name:            "id override enables flatten",
+			pageID:          555,
+			pagePath:        "",
+			globalFlatLeaves: false,
+			want:            true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := profile.ResolveFlatten(tc.pageID, tc.pagePath, tc.globalFlatLeaves)
+			if got != tc.want {
+				t.Errorf("ResolveFlatten(%d, %q, %v) = %v, want %v",
+					tc.pageID, tc.pagePath, tc.globalFlatLeaves, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadProfileWithFlatten(t *testing.T) {
+	yaml := `
+pages:
+  - path: "*/API Docs/*"
+    flatten: true
+  - path: "*/Guides/*"
+    flatten: false
+  - id: 42
+    format: html
+`
+	p, err := LoadProfile([]byte(yaml))
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	if len(p.Pages) != 3 {
+		t.Fatalf("len(Pages) = %d, want 3", len(p.Pages))
+	}
+	if p.Pages[0].Flatten == nil || *p.Pages[0].Flatten != true {
+		t.Error("Pages[0].Flatten should be true")
+	}
+	if p.Pages[1].Flatten == nil || *p.Pages[1].Flatten != false {
+		t.Error("Pages[1].Flatten should be false")
+	}
+	if p.Pages[2].Flatten != nil {
+		t.Error("Pages[2].Flatten should be nil (not specified)")
+	}
+}
+
 func TestResolveProfile(t *testing.T) {
 	// Test loading from file path
 	dir := t.TempDir()

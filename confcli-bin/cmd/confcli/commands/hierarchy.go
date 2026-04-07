@@ -685,9 +685,14 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				return
 			}
 			// When --flat-leaves: leaf pages (no children) live directly in the parent dir.
+			// Per-page flatten overrides from the transform profile take precedence.
 			isLeaf := len(childrenMap[pageID]) == 0
+			effectiveFlatten := flatLeaves
+			if profile != nil {
+				effectiveFlatten = profile.ResolveFlatten(pageID, "", flatLeaves)
+			}
 			var pageDir string
-			if flatLeaves && isLeaf {
+			if effectiveFlatten && isLeaf {
 				pageDir = parentDir
 			} else {
 				pageDir = filepath.Join(parentDir, getFolderName(pageID))
@@ -742,9 +747,14 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 
 		// When --flat-leaves: leaf pages (no children) are saved directly in the parent
 		// directory — no subdirectory is created for them.
+		// Per-page flatten overrides from the transform profile take precedence.
 		isLeaf := len(childrenMap[pageID]) == 0
+		effectiveFlatten := flatLeaves
+		if profile != nil {
+			effectiveFlatten = profile.ResolveFlatten(pageID, "", flatLeaves)
+		}
 		var pageDir string
-		if flatLeaves && isLeaf {
+		if effectiveFlatten && isLeaf {
 			// parentDir already exists (created by the parent's MkdirAll, or is spaceDir).
 			pageDir = parentDir
 		} else {

@@ -40,6 +40,7 @@ type PageOverride struct {
 	Format         string           `yaml:"format,omitempty"`
 	StripTOC       *bool            `yaml:"strip_toc,omitempty"`
 	SaveMetadata   *bool            `yaml:"save_metadata,omitempty"`
+	Flatten        *bool            `yaml:"flatten,omitempty"`
 	Transforms     []TransformSpec  `yaml:"transforms,omitempty"`
 	SkipTransforms bool             `yaml:"skip_transforms,omitempty"`
 	Skip           bool             `yaml:"skip,omitempty"`
@@ -208,6 +209,20 @@ func (p *TransformProfile) ResolvePageConfig(pageID int, pagePath string) (PageC
 	}
 
 	return result, false
+}
+
+// ResolveFlatten returns the effective flatten-leaf decision for a specific page.
+// Per-page overrides take precedence over the global FlatLeaves setting.
+func (p *TransformProfile) ResolveFlatten(pageID int, pagePath string, globalFlatLeaves bool) bool {
+	for _, override := range p.Pages {
+		if !override.MatchesPage(pageID, pagePath) {
+			continue
+		}
+		if override.Flatten != nil {
+			return *override.Flatten
+		}
+	}
+	return globalFlatLeaves
 }
 
 // ApplySetOverrides applies --set key=value overrides to a TransformProfile.
