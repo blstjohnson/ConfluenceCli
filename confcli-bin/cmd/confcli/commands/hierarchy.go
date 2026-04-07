@@ -835,12 +835,6 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				pageCfg, skip := profile.ResolvePageConfig(pageID, "")
 				if skip {
 					downloadBar.Add(1)
-					childIDs := childrenMap[pageID]
-					for _, childID := range childIDs {
-						if err := savePageWithChildren(childID, pageDir, currentDepth+1); err != nil {
-							return err
-						}
-					}
 					return nil
 				}
 				if len(pageCfg.Transforms) > 0 {
