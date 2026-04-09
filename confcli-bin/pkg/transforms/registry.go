@@ -54,6 +54,18 @@ func buildRemoveMacro(params map[string]interface{}) (Transform, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("remove_macro requires at least one macro_names entry")
 	}
+	
+	// Check if preserve_content is set (useful for expand macros)
+	preserveContent := false
+	if pc, ok := params["preserve_content"]; ok {
+		if pb, ok := pc.(bool); ok {
+			preserveContent = pb
+		}
+	}
+	
+	if preserveContent {
+		return NewRemoveMacroWithContentPreserve(names...)
+	}
 	return NewRemoveMacro(names...)
 }
 

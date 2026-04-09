@@ -12,7 +12,6 @@ folder:
   naming: slug
   length_limit: 50
   flat_leaves: true
-  skip_root: false
 page:
   format: markdown
   strip_toc: true
@@ -371,7 +370,6 @@ func TestApplySetOverrides(t *testing.T) {
 		"folder.naming":       "slug",
 		"folder.length_limit": "100",
 		"folder.flat_leaves":  "true",
-		"folder.skip_root":    "yes",
 		"page.format":         "storage",
 		"page.strip_toc":      "1",
 		"page.save_metadata":  "false",
@@ -389,9 +387,6 @@ func TestApplySetOverrides(t *testing.T) {
 	}
 	if !p.Folder.FlatLeaves {
 		t.Error("Folder.FlatLeaves = false, want true")
-	}
-	if !p.Folder.SkipRoot {
-		t.Error("Folder.SkipRoot = false, want true")
 	}
 	if p.Page.Format != "storage" {
 		t.Errorf("Page.Format = %q, want %q", p.Page.Format, "storage")

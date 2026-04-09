@@ -1,6 +1,9 @@
 package transforms
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestRemoveMacroSimple(t *testing.T) {
 	rm, err := NewRemoveMacro("code")
@@ -95,5 +98,30 @@ func TestRemoveMacroName(t *testing.T) {
 	}
 	if rm.Name() != "remove/macro" {
 		t.Errorf("expected 'remove/macro', got %q", rm.Name())
+	}
+}
+
+func TestRemoveMacroPreserveContent(t *testing.T) {
+	rm, err := NewRemoveMacroWithContentPreserve("expand")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &TransformContext{
+		PreContent: `<p>Before</p><ac:structured-macro ac:name="expand"><ac:parameter ac:name="summary">Click to expand</ac:parameter><ac:rich-text-body><p>Expanded content here</p></ac:rich-text-body></ac:structured-macro><p>After</p>`,
+	}
+
+	if err := rm.Apply(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Content should be preserved
+	if !strings.Contains(ctx.PreContent, "Expanded content here") {
+		t.Errorf("expected content to be preserved, got %q", ctx.PreContent)
+	}
+	
+	// Macro wrapper should be removed
+	if strings.Contains(ctx.PreContent, "ac:structured-macro") {
+		t.Errorf("macro wrapper should be removed, got %q", ctx.PreContent)
 	}
 }

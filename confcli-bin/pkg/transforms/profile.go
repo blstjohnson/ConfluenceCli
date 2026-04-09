@@ -21,7 +21,6 @@ type FolderConfig struct {
 	Naming      string `yaml:"naming"`       // e.g. "slug", "title", "id"
 	LengthLimit int    `yaml:"length_limit"`  // max folder name length (0 = no limit)
 	FlatLeaves  bool   `yaml:"flat_leaves"`   // flatten leaf pages into parent dir
-	SkipRoot    bool   `yaml:"skip_root"`     // omit root space folder
 }
 
 // PageConfig holds default page-level settings.
@@ -228,7 +227,7 @@ func (p *TransformProfile) ResolveFlatten(pageID int, pagePath string, globalFla
 // ApplySetOverrides applies --set key=value overrides to a TransformProfile.
 // Supported dot-paths:
 //
-//	folder.naming, folder.length_limit, folder.flat_leaves, folder.skip_root
+//	folder.naming, folder.length_limit, folder.flat_leaves
 //	page.format, page.strip_toc, page.save_metadata
 func ApplySetOverrides(p *TransformProfile, overrides map[string]string) error {
 	for key, val := range overrides {
@@ -255,12 +254,6 @@ func applySetOverride(p *TransformProfile, key, val string) error {
 			return err
 		}
 		p.Folder.FlatLeaves = b
-	case "folder.skip_root":
-		b, err := parseBool(val)
-		if err != nil {
-			return err
-		}
-		p.Folder.SkipRoot = b
 	case "page.format":
 		p.Page.Format = val
 	case "page.strip_toc":
