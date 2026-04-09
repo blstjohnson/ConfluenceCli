@@ -1,16 +1,15 @@
-name: Release
+name: Pre-release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and Release
+  pre-release:
+    name: Build and Upload Pre-release
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -25,18 +24,15 @@ jobs:
           go-version-file: confcli-bin/go.mod
           cache-dependency-path: confcli-bin/go.sum
 
-      - name: Set version from tag
+      - name: Generate version string
         id: version
-        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Detect pre-release
-        id: prerelease
         run: |
-          if echo "${GITHUB_REF_NAME}" | grep -qE '-(alpha|beta|rc|dev|pre)'; then
-            echo "IS_PRERELEASE=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "IS_PRERELEASE=false" >> "$GITHUB_OUTPUT"
-          fi
+          # Get the latest tag for base version, or use 0.0.0 if none exists
+          LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          BASE_VERSION=${LATEST_TAG#v}
+          COMMIT_SHORT=$(git rev-parse --short=8 HEAD)
+          TIMESTAMP=$(date -u +"%Y%m%d%H%M%S")
+          echo "VERSION=${BASE_VERSION}-dev.${COMMIT_SHORT}.${TIMESTAMP}" >> "$GITHUB_OUTPUT"
 
       - name: Build binaries
         env:
@@ -66,13 +62,31 @@ jobs:
           zip -j confcli-windows-amd64.zip windows-amd64/confcli.exe
           sha256sum confcli-linux-amd64.tar.gz confcli-darwin-arm64.tar.gz confcli-windows-amd64.zip > checksums.txt
 
-      - name: Create GitHub Release
+      - name: Delete existing pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Delete the existing 'dev' release if it exists
+          gh release delete dev --yes 2>/dev/null || true
+          # Clean up the git tag if it exists
+          git push --delete origin dev 2>/dev/null || true
+
+      - name: Create dev pre-release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: dev
+          name: "Development Build"
+          prerelease: true
           generate_release_notes: true
-          prerelease: ${{ steps.prerelease.outputs.IS_PRERELEASE }}
           files: |
             confcli-bin/dist/confcli-linux-amd64.tar.gz
             confcli-bin/dist/confcli-darwin-arm64.tar.gz
             confcli-bin/dist/confcli-windows-amd64.zip
             confcli-bin/dist/checksums.txt
+          body: |
+            ## Development Build
+            - **Commit:** ${{ github.sha }}
+            - **Version:** ${{ steps.version.outputs.VERSION }}
+            - **Built:** ${{ github.event.head_commit.timestamp }}
+
+            > This is an automated pre-release build from the `main` branch. It may contain unreleased features and bug fixes.
