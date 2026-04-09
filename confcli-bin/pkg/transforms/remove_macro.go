@@ -4,14 +4,23 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"golang.org/x/net/html"
 )
 
 // RemoveMacro strips Confluence structured macros by name from PreContent.
 // Macro names are matched against the ac:name attribute of <ac:structured-macro> tags.
+// For expand macros, the content inside ac:rich-text-body is preserved.
 type RemoveMacro struct {
 	// MacroNames is a list of macro names to remove. Each entry is treated as a
 	// regex pattern matched against the ac:name attribute value.
 	MacroNames []string
+
+	// PreserveContent indicates whether to preserve the content inside macros
+	// (e.g., the text inside ac:rich-text-body or ac:plain-text-body).
+	// This is particularly useful for expand macros where you want to keep
+	// the expanded content.
+	PreserveContent bool
 
 	compiled []*regexp.Regexp
 }
@@ -26,7 +35,21 @@ func NewRemoveMacro(macroNames ...string) (*RemoveMacro, error) {
 		}
 		compiled[i] = re
 	}
-	return &RemoveMacro{MacroNames: macroNames, compiled: compiled}, nil
+	return &RemoveMacro{MacroNames: macroNames, compiled: compiled, PreserveContent: false}, nil
+}
+
+// NewRemoveMacroWithContentPreserve creates a RemoveMacro that preserves the
+// content inside the removed macros (e.g., expand macro content).
+func NewRemoveMacroWithContentPreserve(macroNames ...string) (*RemoveMacro, error) {
+	compiled := make([]*regexp.Regexp, len(macroNames))
+	for i, name := range macroNames {
+		re, err := regexp.Compile(name)
+		if err != nil {
+			return nil, fmt.Errorf("invalid macro name pattern %q: %w", name, err)
+		}
+		compiled[i] = re
+	}
+	return &RemoveMacro{MacroNames: macroNames, compiled: compiled, PreserveContent: true}, nil
 }
 
 func (r *RemoveMacro) Name() string {
@@ -34,7 +57,11 @@ func (r *RemoveMacro) Name() string {
 }
 
 func (r *RemoveMacro) Apply(ctx *TransformContext) error {
-	ctx.PreContent = r.removeMacros(ctx.PreContent)
+	if r.PreserveContent {
+		ctx.PreContent = r.removeMacrosPreserveContent(ctx.PreContent)
+	} else {
+		ctx.PreContent = r.removeMacros(ctx.PreContent)
+	}
 	return nil
 }
 
@@ -47,6 +74,100 @@ func (r *RemoveMacro) removeMacros(content string) string {
 		result = removeMacrosByPattern(result, nameRe)
 	}
 	return result
+}
+
+// removeMacrosPreserveContent removes macros but preserves their inner content
+func (r *RemoveMacro) removeMacrosPreserveContent(content string) string {
+	result := content
+	for _, nameRe := range r.compiled {
+		result = removeMacrosPreserveContentByPattern(result, nameRe)
+	}
+	return result
+}
+
+// removeMacrosPreserveContentByPattern removes all <ac:structured-macro> blocks whose ac:name matches
+// the pattern, but preserves the content inside ac:rich-text-body or ac:plain-text-body.
+func removeMacrosPreserveContentByPattern(content string, nameRe *regexp.Regexp) string {
+	// Parse the HTML fragment
+	doc, err := html.Parse(strings.NewReader("<wrap>" + content + "</wrap>"))
+	if err != nil {
+		// Fallback to simple removal if parsing fails
+		return removeMacrosByPattern(content, nameRe)
+	}
+
+	// Walk and process macros
+	var processMacros func(*html.Node)
+	processMacros = func(n *html.Node) {
+		for child := n.FirstChild; child != nil; {
+			next := child.NextSibling
+			if isMacroMatching(child, nameRe) {
+				// Extract content from ac:rich-text-body or ac:plain-text-body
+				extractedContent := extractMacroContent(child)
+				
+				// Create text node with the extracted content
+				if extractedContent != "" {
+					textNode := &html.Node{
+						Type: html.TextNode,
+						Data: extractedContent,
+					}
+					n.InsertBefore(textNode, child)
+				}
+				
+				// Remove the macro node
+				n.RemoveChild(child)
+			} else {
+				processMacros(child)
+			}
+			child = next
+		}
+	}
+
+	processMacros(doc)
+
+	var buf strings.Builder
+	if err := html.Render(&buf, doc); err != nil {
+		return content
+	}
+
+	// Extract content from wrapper
+	result := buf.String()
+	result = strings.TrimPrefix(result, "<html><head></head><body><wrap>")
+	result = strings.TrimSuffix(result, "</wrap></body></html>\n")
+	return result
+}
+
+// isMacroMatching checks if a node is a structured macro matching the pattern
+func isMacroMatching(n *html.Node, nameRe *regexp.Regexp) bool {
+	if n.Type != html.ElementNode {
+		return false
+	}
+	if n.Data != "ac:structured-macro" {
+		return false
+	}
+	for _, attr := range n.Attr {
+		if attr.Key == "ac:name" {
+			return nameRe.MatchString(attr.Val)
+		}
+	}
+	return false
+}
+
+// extractMacroContent extracts the content from ac:rich-text-body or ac:plain-text-body
+func extractMacroContent(n *html.Node) string {
+	for child := n.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == html.ElementNode && 
+			(child.Data == "ac:rich-text-body" || child.Data == "ac:plain-text-body") {
+			// Render the inner content
+			var buf strings.Builder
+			for inner := child.FirstChild; inner != nil; inner = inner.NextSibling {
+				if err := html.Render(&buf, inner); err != nil {
+					continue
+				}
+			}
+			return buf.String()
+		}
+	}
+	return ""
 }
 
 // removeMacrosByPattern removes all <ac:structured-macro> blocks whose ac:name matches the pattern.

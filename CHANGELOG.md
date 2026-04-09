@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `preserve_content` parameter for `remove_macro` transform: preserves the content inside removed macros (e.g., expand macro content) instead of discarding it entirely
+- Language identifier fallback for code blocks: when no explicit language is set, macro name is used as a hint (e.g., `plantuml` macro → `plantuml` language identifier)
+
+### Changed
+
+- `skip_root` removed from transform profile YAML configuration; now available **only** as `--skip-root` CLI flag on `hierarchy space` command
+- TOC stripping now uses HTML parser-based approach instead of regex for more reliable handling of deeply nested TOC macros
+- Empty folders are no longer created when pages are skipped via transform profile `skip: true`
+
+### Fixed
+
+- `<!--THE-END-->` HTML comments are now stripped after image removal during space export
+- TOC stripping handles nested TOC macros inside layout cells, panels, expand macros, and other container elements
+- Expand macro removal now preserves inner content when `preserve_content: true` is set
+
 ## [v0.0.9] - 2026-04-07
 
 ### Added

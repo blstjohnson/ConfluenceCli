@@ -171,7 +171,6 @@ folder:
   naming: slug        # slug, title, or id
   length_limit: 80    # max folder name length (0 = no limit)
   flat_leaves: false   # save leaf pages directly in parent folder
-  skip_root: false     # skip creating folder for root page
 
 page:
   format: markdown     # markdown, storage, html, plain, export

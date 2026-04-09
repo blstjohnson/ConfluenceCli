@@ -621,18 +621,8 @@ func (p *ConfluencePlugin) handleGitPluginContainer(ctx html2md.Context, w html2
 // handleCodeMacro handles code macros
 func (p *ConfluencePlugin) handleCodeMacro(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
 	language := ""
-	for _, attr := range n.Attr {
-		if attr.Key == "ac:parameter" {
-			for _, pattr := range n.Attr {
-				if pattr.Key == "ac:name" && pattr.Val == "language" {
-					language = pattr.Val
-					break
-				}
-			}
-		}
-	}
-
-	// Try to get language from ac:parameter child
+	
+	// Try to get language from ac:parameter children
 	for child := n.FirstChild; child != nil; child = child.NextSibling {
 		if child.Type == html.ElementNode && child.Data == "ac:parameter" {
 			for _, attr := range child.Attr {
@@ -640,6 +630,28 @@ func (p *ConfluencePlugin) handleCodeMacro(ctx html2md.Context, w html2md.Writer
 					language = strings.TrimSpace(p.getNodeText(child))
 					break
 				}
+			}
+		}
+	}
+
+	// If no language found in parameters, check macro name (e.g., "plantuml" macro)
+	if language == "" {
+		for _, attr := range n.Attr {
+			if attr.Key == "ac:name" {
+				macroName := strings.ToLower(attr.Val)
+				// Map common macro names to language identifiers
+				switch macroName {
+				case "plantuml":
+					language = "plantuml"
+				case "code":
+					// Generic code macro - leave language empty
+				default:
+					// Use macro name as language hint if it looks like a language
+					if len(macroName) > 0 && len(macroName) < 20 {
+						language = macroName
+					}
+				}
+				break
 			}
 		}
 	}
@@ -1292,11 +1304,14 @@ var markdownImageRe = regexp.MustCompile(`!\[[^\]]*\]\([^()\s]*(?:\([^()]*\)[^()
 // stripMarkdownImages removes all inline markdown image references from the document.
 // Confluece exports routinely embed emoticon SVGs, attachment previews, and
 // git-plugin export URLs as images — none of which are useful in plain markdown.
-// After removal, runs of 3+ consecutive newlines are collapsed to 2.
+// After removal, runs of 3+ consecutive newlines are collapsed to 2, and
+// THE-END comments left behind are also stripped.
 func stripMarkdownImages(markdown string) string {
 	result := markdownImageRe.ReplaceAllString(markdown, "")
 	// Collapse large gaps left by removed images
 	result = regexp.MustCompile(`\n{3,}`).ReplaceAllString(result, "\n\n")
+	// Strip THE-END comments that may remain after image removal
+	result = regexp.MustCompile(`<!--\s*THE-END\s*-->`).ReplaceAllString(result, "")
 	return result
 }
 
@@ -1606,17 +1621,69 @@ func preProcessHTML(htmlContent string) string {
 	return htmlContent
 }
 
-// tocMacroRe matches <ac:structured-macro ac:name="toc"...>...</ac:structured-macro>
-// including any nested content (parameters, rich-text-body, etc.).
-// Uses non-greedy matching and the (?s) flag so '.' matches newlines.
-var tocMacroRe = regexp.MustCompile(
-	`(?is)<ac:structured-macro[^>]*\bac:name\s*=\s*"toc"[^>]*>.*?</ac:structured-macro>`,
-)
-
 // stripTOCMacro removes all TOC macro elements from Confluence storage HTML.
-// This operates before conversion, so it catches TOC macros regardless of
-// nesting depth (inside layout cells, panels, expand macros, etc.).
+// This operates before conversion using an HTML parser to properly handle
+// nested structures (layout cells, panels, expand macros, etc.).
 func stripTOCMacro(htmlContent string) string {
+	// Wrap in a dummy element to make it a valid HTML document for parsing
+	doc, err := html.Parse(strings.NewReader("<wrap>" + htmlContent + "</wrap>"))
+	if err != nil {
+		// Fallback to regex if parsing fails
+		return stripTOCMacroRegex(htmlContent)
+	}
+
+	// Walk the DOM and remove TOC macro elements
+	var removeTOCs func(*html.Node)
+	removeTOCs = func(n *html.Node) {
+		for child := n.FirstChild; child != nil; {
+			next := child.NextSibling
+			if isTOCMacro(child) {
+				n.RemoveChild(child)
+			} else {
+				removeTOCs(child)
+			}
+			child = next
+		}
+	}
+
+	removeTOCs(doc)
+
+	var buf strings.Builder
+	if err := html.Render(&buf, doc); err != nil {
+		return htmlContent
+	}
+
+	// Extract content from the wrapper
+	result := buf.String()
+	// Remove <html><head></head><body><wrap> and </wrap></body></html>
+	// Also handle trailing newline
+	result = strings.TrimPrefix(result, "<html><head></head><body><wrap>")
+	result = strings.TrimSuffix(result, "</wrap></body></html>")
+	result = strings.TrimSuffix(result, "</wrap></body></html>\n")
+	return result
+}
+
+// isTOCMacro checks if a node is a TOC macro element
+func isTOCMacro(n *html.Node) bool {
+	if n.Type != html.ElementNode {
+		return false
+	}
+	if n.Data != "ac:structured-macro" {
+		return false
+	}
+	for _, attr := range n.Attr {
+		if attr.Key == "ac:name" && attr.Val == "toc" {
+			return true
+		}
+	}
+	return false
+}
+
+// stripTOCMacroRegex is a fallback regex-based TOC stripper
+func stripTOCMacroRegex(htmlContent string) string {
+	tocMacroRe := regexp.MustCompile(
+		`(?is)<ac:structured-macro[^>]*\bac:name\s*=\s*"toc"[^>]*>.*?</ac:structured-macro>`,
+	)
 	return tocMacroRe.ReplaceAllString(htmlContent, "")
 }
 

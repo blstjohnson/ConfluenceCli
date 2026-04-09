@@ -110,9 +110,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 				if !cmd.Flags().Changed("flat-leaves") {
 					flatLeaves = profile.Folder.FlatLeaves
 				}
-				if !cmd.Flags().Changed("skip-root") {
-					skipRoot = profile.Folder.SkipRoot
-				}
+				// skip_root is now ONLY available as a CLI flag
 				if !cmd.Flags().Changed("save-metadata") {
 					saveMetadata = profile.Page.SaveMetadata
 				}
@@ -852,6 +850,23 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			return nil
 		}
 
+		// Check if this page should be skipped based on transform profile
+		// Do this BEFORE creating any directories to avoid empty folders
+		if profile != nil {
+			_, skip := profile.ResolvePageConfig(pageID, "")
+			if skip {
+				downloadBar.Add(1)
+				// Still process children even if this page is skipped
+				childIDs := childrenMap[pageID]
+				for _, childID := range childIDs {
+					if err := savePageWithChildren(childID, parentDir, currentDepth+1); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+		}
+
 		// When --flat-leaves: leaf pages (no children) are saved directly in the parent
 		// directory — no subdirectory is created for them.
 		// Per-page flatten overrides from the transform profile take precedence.
@@ -987,11 +1002,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 
 			// Run pre-conversion transforms if profile is set
 			if profile != nil {
-				pageCfg, skip := profile.ResolvePageConfig(pageID, "")
-				if skip {
-					downloadBar.Add(1)
-					return nil
-				}
+				pageCfg, _ := profile.ResolvePageConfig(pageID, "")
 				if len(pageCfg.Transforms) > 0 {
 					reg := transforms.DefaultRegistry()
 					pipeline, pipeErr := transforms.BuildPipeline(pageCfg.Transforms, reg)

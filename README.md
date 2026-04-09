@@ -277,7 +277,6 @@ folder:
   naming: slug        # slug, title или id
   length_limit: 80    # максимальная длина имён папок (0 = без ограничений)
   flat_leaves: false   # сохранять конечные страницы прямо в родительскую папку
-  skip_root: false     # пропустить корневую страницу
 
 page:
   format: markdown     # markdown, storage, html, plain, export
@@ -288,6 +287,7 @@ page:
     - type: remove_macro
       params:
         macro_names: [toc, status]
+        # preserve_content: true  # сохранить содержимое макроса (например, для expand)
 
     - type: remove_element
       params:
@@ -329,7 +329,7 @@ pages:                 # переопределения для конкретн�
 
 | Тип | Описание |
 |-----|----------|
-| `remove_macro` | Удаление Confluence-макросов по имени (например, toc, status) |
+| `remove_macro` | Удаление Confluence-макросов по имени (например, toc, status). Поддерживает `preserve_content: true` для сохранения содержимого |
 | `remove_element` | Удаление HTML-элементов по CSS-селектору |
 | `modify_links` | Замена URL в ссылках по правилам find/replace |
 | `modify_content` | Замена текста в контенте (до или после конвертации) |
@@ -346,7 +346,6 @@ pages:                 # переопределения для конкретн�
 | `folder.naming` | Способ именования папок (slug, title, id) |
 | `folder.length_limit` | Ограничение длины имён папок |
 | `folder.flat_leaves` | Плоская структура для конечных страниц |
-| `folder.skip_root` | Пропуск корневой страницы |
 | `page.format` | Формат вывода контента |
 | `page.strip_toc` | Удаление оглавления |
 | `page.save_metadata` | Сохранение метаданных |
