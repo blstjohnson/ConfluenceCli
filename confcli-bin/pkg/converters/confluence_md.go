@@ -1772,9 +1772,10 @@ func stripTOC(markdown string) string {
 	return result.String()
 }
 
-// StorageToMarkdownAdvanced converts Confluence storage format to Markdown
-// using the html-to-markdown library with Confluence-specific plugin support
-func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, error) {
+// storageToMarkdownCore converts Confluence storage/export_view HTML to Markdown
+// with all post-processing except image stripping, so callers can intervene
+// (e.g. to replace PlantUML images with code blocks) before images are removed.
+func storageToMarkdownCore(storageContent string, baseURL string) (string, error) {
 	// Pre-process HTML to remove elements that break the converter
 	storageContent = preProcessHTML(storageContent)
 
@@ -1818,7 +1819,91 @@ func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, e
 	//    Running them in this order handles \\+ correctly: \\+ → \+ → +
 	markdown = fixEscapedBackslashes(markdown)
 	markdown = RemoveMarkdownEscaping(markdown)
-	markdown = stripJunkImages(markdown)
 
 	return markdown, nil
+}
+
+// StorageToMarkdownAdvanced converts Confluence storage format to Markdown
+// using the html-to-markdown library with Confluence-specific plugin support
+func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, error) {
+	markdown, err := storageToMarkdownCore(storageContent, baseURL)
+	if err != nil {
+		return "", err
+	}
+	markdown = stripJunkImages(markdown)
+	return markdown, nil
+}
+
+// ExportViewToMarkdownKeepImages converts export_view HTML to Markdown without
+// stripping image references. This allows callers to replace specific images
+// (e.g. PlantUML diagrams) with code blocks before stripping the rest.
+func ExportViewToMarkdownKeepImages(exportViewContent string, baseURL string) (string, error) {
+	return storageToMarkdownCore(exportViewContent, baseURL)
+}
+
+// StripJunkImages removes junk markdown image references, preserving known-good ones.
+func StripJunkImages(markdown string) string {
+	return stripJunkImages(markdown)
+}
+
+// ---------------------------------------------------------------------------
+// PlantUML dual-fetch helpers
+// ---------------------------------------------------------------------------
+
+// plantumlImgRe matches <img> tags whose src contains "plantuml" (case-insensitive).
+// Confluence export_view renders PlantUML macros as <img> pointing to the
+// PlantUML servlet or plugin endpoint.
+var plantumlImgRe = regexp.MustCompile(`(?i)<img[^>]+src\s*=\s*"[^"]*plantuml[^"]*"[^>]*/?>`)
+
+// HasPlantUMLImages reports whether export_view HTML contains rendered PlantUML
+// images that should be replaced with source code from the storage format.
+func HasPlantUMLImages(htmlContent string) bool {
+	return plantumlImgRe.MatchString(htmlContent)
+}
+
+// plantumlMacroRe matches <ac:structured-macro ac:name="plantuml"> blocks in
+// Confluence storage format and captures the content of <ac:plain-text-body>.
+var plantumlMacroRe = regexp.MustCompile(
+	`(?si)<ac:structured-macro[^>]*ac:name\s*=\s*"plantuml"[^>]*>` +
+		`.*?<ac:plain-text-body>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</ac:plain-text-body>` +
+		`.*?</ac:structured-macro>`)
+
+// ExtractPlantUMLBlocks extracts PlantUML source code blocks from Confluence
+// storage format HTML. Returns the blocks in document order.
+func ExtractPlantUMLBlocks(storage string) []string {
+	matches := plantumlMacroRe.FindAllStringSubmatch(storage, -1)
+	blocks := make([]string, 0, len(matches))
+	for _, m := range matches {
+		body := strings.TrimSpace(m[1])
+		if body != "" {
+			blocks = append(blocks, body)
+		}
+	}
+	return blocks
+}
+
+// plantumlMdImgRe matches markdown image references whose URL contains "plantuml".
+var plantumlMdImgRe = regexp.MustCompile(`(?i)!\[[^\]]*\]\([^)]*plantuml[^)]*\)`)
+
+// ReplacePlantUMLImages replaces PlantUML image references in markdown with
+// fenced plantuml code blocks. Blocks are consumed in order; if there are more
+// images than blocks (or vice-versa), extras are left as-is / appended.
+func ReplacePlantUMLImages(markdown string, blocks []string) string {
+	if len(blocks) == 0 {
+		return markdown
+	}
+	idx := 0
+	result := plantumlMdImgRe.ReplaceAllStringFunc(markdown, func(match string) string {
+		if idx >= len(blocks) {
+			return match // no more blocks, keep original image ref
+		}
+		replacement := fmt.Sprintf("```plantuml\n%s\n```", blocks[idx])
+		idx++
+		return replacement
+	})
+	// Append any remaining blocks that had no corresponding image reference
+	for ; idx < len(blocks); idx++ {
+		result += fmt.Sprintf("\n\n```plantuml\n%s\n```", blocks[idx])
+	}
+	return result
 }

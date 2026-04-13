@@ -162,7 +162,28 @@ func newPageGetCmd() *cobra.Command {
 			} else if format == "export" {
 				// export_view is already clean HTML, convert to markdown
 				baseURL := viper.GetString("url")
-				transformedContent, err = converters.ExportViewToMarkdown(resp.Content, baseURL)
+				if converters.HasPlantUMLImages(resp.Content) {
+					// Dual fetch: get storage format for PlantUML source code
+					storageContent, storageErr := apiClient.GetPageContent(ctx, id, "storage", version)
+					if storageErr == nil {
+						blocks := converters.ExtractPlantUMLBlocks(storageContent)
+						if len(blocks) > 0 {
+							md, mdErr := converters.ExportViewToMarkdownKeepImages(resp.Content, baseURL)
+							if mdErr == nil {
+								md = converters.ReplacePlantUMLImages(md, blocks)
+								transformedContent = converters.StripJunkImages(md)
+								err = nil
+							} else {
+								err = mdErr
+							}
+						}
+					}
+					if transformedContent == "" {
+						transformedContent, err = converters.ExportViewToMarkdown(resp.Content, baseURL)
+					}
+				} else {
+					transformedContent, err = converters.ExportViewToMarkdown(resp.Content, baseURL)
+				}
 				if err != nil {
 					return fmt.Errorf("failed to convert export_view to markdown: %w", err)
 				}
@@ -284,7 +305,26 @@ func newPageGetCmd() *cobra.Command {
 								if ok {
 									descContent, descErr := apiClient.GetPageContent(ctx, descID, "export_view", 0)
 									if descErr == nil {
-										md, mdErr := converters.ExportViewToMarkdown(descContent, baseURL)
+										var md string
+										var mdErr error
+										if converters.HasPlantUMLImages(descContent) {
+											storageCnt, sErr := apiClient.GetPageContent(ctx, descID, "storage", 0)
+											if sErr == nil {
+												blocks := converters.ExtractPlantUMLBlocks(storageCnt)
+												if len(blocks) > 0 {
+													md, mdErr = converters.ExportViewToMarkdownKeepImages(descContent, baseURL)
+													if mdErr == nil {
+														md = converters.ReplacePlantUMLImages(md, blocks)
+														md = converters.StripJunkImages(md)
+													}
+												}
+											}
+											if md == "" {
+												md, mdErr = converters.ExportViewToMarkdown(descContent, baseURL)
+											}
+										} else {
+											md, mdErr = converters.ExportViewToMarkdown(descContent, baseURL)
+										}
 										if mdErr == nil {
 											descEntry["content"] = md
 										}
