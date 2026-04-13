@@ -1400,6 +1400,7 @@ func expandTableSpans(htmlContent string) string {
 }
 
 // expandSingleTable expands colspan/rowspan in a single table.
+// Content is placed only at the origin cell; expansion cells are left empty.
 // Returns true if any spans were expanded.
 func expandSingleTable(tableNode *html.Node) bool {
 	// Find tbody (or use table directly)
@@ -1448,6 +1449,11 @@ func expandSingleTable(tableNode *html.Node) bool {
 		grid[i] = make([]*html.Node, maxCols)
 	}
 
+	// originMap tracks the origin position (first placement) of each cell.
+	// Only the origin position gets the cell's content; expansion cells are left empty.
+	type cellOrigin struct{ row, col int }
+	originMap := make(map[*html.Node]cellOrigin)
+
 	// Fill the grid
 	for rowIdx, row := range rows {
 		colIdx := 0
@@ -1465,6 +1471,9 @@ func expandSingleTable(tableNode *html.Node) bool {
 
 			cs := getAttrInt(cell, "colspan", 1)
 			rs := getAttrInt(cell, "rowspan", 1)
+
+			// Record the origin position for this cell
+			originMap[cell] = cellOrigin{rowIdx, colIdx}
 
 			// Fill grid positions for this cell's span
 			for r := 0; r < rs && rowIdx+r < numRows; r++ {
@@ -1496,31 +1505,6 @@ func expandSingleTable(tableNode *html.Node) bool {
 		return false
 	}
 
-	// Detect "content tables" — tables with a "Параметры сообщения" row.
-	// For these tables, column 0 is a visual hierarchy spacer and should be dropped.
-	isContentTable := false
-	for rowIdx := 0; rowIdx < numRows; rowIdx++ {
-		for colIdx := 0; colIdx < maxCols; colIdx++ {
-			cell := grid[rowIdx][colIdx]
-			if cell != nil {
-				text := extractText(cell)
-				if strings.Contains(text, "Параметры сообщения") {
-					isContentTable = true
-					break
-				}
-			}
-		}
-		if isContentTable {
-			break
-		}
-	}
-
-	// For content tables, drop the first column (empty hierarchy spacer)
-	startCol := 0
-	if isContentTable && maxCols > 1 {
-		startCol = 1
-	}
-
 	// Rebuild each row with expanded cells
 	for rowIdx, row := range rows {
 		// Remove all existing cell children
@@ -1532,8 +1516,8 @@ func expandSingleTable(tableNode *html.Node) bool {
 			row.RemoveChild(child)
 		}
 
-		// Add new cells from the grid (skipping startCol columns)
-		for colIdx := startCol; colIdx < maxCols; colIdx++ {
+		// Add new cells from the grid
+		for colIdx := 0; colIdx < maxCols; colIdx++ {
 			srcCell := grid[rowIdx][colIdx]
 			newCell := &html.Node{
 				Type: html.ElementNode,
@@ -1548,9 +1532,12 @@ func expandSingleTable(tableNode *html.Node) bool {
 						break
 					}
 				}
-				// Deep-clone children from source cell
-				for child := srcCell.FirstChild; child != nil; child = child.NextSibling {
-					newCell.AppendChild(cloneNode(child))
+				// Only clone content for the origin position; expansion cells stay empty
+				origin := originMap[srcCell]
+				if rowIdx == origin.row && colIdx == origin.col {
+					for child := srcCell.FirstChild; child != nil; child = child.NextSibling {
+						newCell.AppendChild(cloneNode(child))
+					}
 				}
 			}
 			row.AppendChild(newCell)
@@ -1594,7 +1581,7 @@ func preProcessHTML(htmlContent string) string {
 	// because <ul>/<ol> in <td> breaks the table plugin entirely
 	htmlContent = flattenListsInTableCells(htmlContent)
 
-	// Expand colspan/rowspan into individual cells with duplicated content
+	// Expand colspan/rowspan into individual cells (content only at origin position)
 	// This normalizes tables into uniform 2D grids the table plugin can render
 	htmlContent = expandTableSpans(htmlContent)
 
