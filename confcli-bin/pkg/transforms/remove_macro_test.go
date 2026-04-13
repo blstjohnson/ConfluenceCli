@@ -125,3 +125,38 @@ func TestRemoveMacroPreserveContent(t *testing.T) {
 		t.Errorf("macro wrapper should be removed, got %q", ctx.PreContent)
 	}
 }
+
+func TestRemoveMacroPreserveContentNestedMacro(t *testing.T) {
+	rm, err := NewRemoveMacroWithContentPreserve("expand")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := &TransformContext{
+		PreContent: `<p>Before</p><ac:structured-macro ac:name="expand"><ac:parameter ac:name="summary">Details</ac:parameter><ac:rich-text-body><p>Some text</p><ac:structured-macro ac:name="toc"><ac:parameter ac:name="maxLevel">3</ac:parameter></ac:structured-macro></ac:rich-text-body></ac:structured-macro><p>After</p>`,
+	}
+
+	if err := rm.Apply(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// The expand macro should be removed
+	if strings.Contains(ctx.PreContent, `ac:name="expand"`) {
+		t.Errorf("expand macro should be removed, got %q", ctx.PreContent)
+	}
+
+	// The nested toc macro should be preserved as a proper element (not escaped)
+	if !strings.Contains(ctx.PreContent, `<ac:structured-macro ac:name="toc"`) {
+		t.Errorf("nested toc macro should be preserved as proper element, got %q", ctx.PreContent)
+	}
+
+	// Should not contain escaped HTML entities from the nested macro
+	if strings.Contains(ctx.PreContent, "&lt;ac:") {
+		t.Errorf("nested macro should not be escaped, got %q", ctx.PreContent)
+	}
+
+	// Surrounding content should be preserved
+	if !strings.Contains(ctx.PreContent, "<p>Before</p>") || !strings.Contains(ctx.PreContent, "<p>After</p>") {
+		t.Errorf("surrounding content should be preserved, got %q", ctx.PreContent)
+	}
+}

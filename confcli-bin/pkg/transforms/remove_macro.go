@@ -101,17 +101,9 @@ func removeMacrosPreserveContentByPattern(content string, nameRe *regexp.Regexp)
 		for child := n.FirstChild; child != nil; {
 			next := child.NextSibling
 			if isMacroMatching(child, nameRe) {
-				// Extract content from ac:rich-text-body or ac:plain-text-body
-				extractedContent := extractMacroContent(child)
-				
-				// Create text node with the extracted content
-				if extractedContent != "" {
-					textNode := &html.Node{
-						Type: html.TextNode,
-						Data: extractedContent,
-					}
-					n.InsertBefore(textNode, child)
-				}
+				// Move content nodes from ac:rich-text-body or ac:plain-text-body
+				// directly into the tree, preserving nested macros as proper DOM elements
+				reparentMacroContent(n, child)
 				
 				// Remove the macro node
 				n.RemoveChild(child)
@@ -152,22 +144,22 @@ func isMacroMatching(n *html.Node, nameRe *regexp.Regexp) bool {
 	return false
 }
 
-// extractMacroContent extracts the content from ac:rich-text-body or ac:plain-text-body
-func extractMacroContent(n *html.Node) string {
-	for child := n.FirstChild; child != nil; child = child.NextSibling {
-		if child.Type == html.ElementNode && 
-			(child.Data == "ac:rich-text-body" || child.Data == "ac:plain-text-body") {
-			// Render the inner content
-			var buf strings.Builder
-			for inner := child.FirstChild; inner != nil; inner = inner.NextSibling {
-				if err := html.Render(&buf, inner); err != nil {
-					continue
-				}
+// reparentMacroContent moves child nodes from ac:rich-text-body or ac:plain-text-body
+// directly into the parent node before the macro. This preserves nested macros as proper
+// DOM elements instead of escaped text (which would happen with html.TextNode insertion).
+func reparentMacroContent(parent, macro *html.Node) {
+	for c := macro.FirstChild; c != nil; c = c.NextSibling {
+		if c.Type == html.ElementNode &&
+			(c.Data == "ac:rich-text-body" || c.Data == "ac:plain-text-body") {
+			for inner := c.FirstChild; inner != nil; {
+				next := inner.NextSibling
+				c.RemoveChild(inner)
+				parent.InsertBefore(inner, macro)
+				inner = next
 			}
-			return buf.String()
+			return
 		}
 	}
-	return ""
 }
 
 // removeMacrosByPattern removes all <ac:structured-macro> blocks whose ac:name matches the pattern.
