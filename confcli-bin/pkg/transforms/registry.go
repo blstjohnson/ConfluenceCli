@@ -40,6 +40,7 @@ func DefaultRegistry() *Registry {
 	r.Register("rewrite_tfs_links", buildRewriteTFSLinks)
 	r.Register("rewrite_internal_links", buildRewriteInternalLinks)
 	r.Register("expand_tiny_urls", buildExpandTinyURLs)
+	r.Register("drop_table_column", buildDropTableColumn)
 
 	return r
 }
@@ -140,6 +141,21 @@ func buildExpandTinyURLs(params map[string]interface{}) (Transform, error) {
 	return NewExpandTinyURLs(confBase, DecodingResolver()), nil
 }
 
+func buildDropTableColumn(params map[string]interface{}) (Transform, error) {
+	indices, err := getIntSlice(params, "columns")
+	if err != nil {
+		return nil, err
+	}
+	patterns, err := getStringSlice(params, "header_patterns")
+	if err != nil {
+		return nil, err
+	}
+	if len(indices) == 0 && len(patterns) == 0 {
+		return nil, fmt.Errorf("drop_table_column requires at least one of 'columns' or 'header_patterns'")
+	}
+	return NewDropTableColumn(indices, patterns)
+}
+
 // --- param helpers ---
 
 func getStringSlice(params map[string]interface{}, key string) ([]string, error) {
@@ -162,6 +178,32 @@ func getStringSlice(params map[string]interface{}, key string) ([]string, error)
 		return val, nil
 	default:
 		return nil, fmt.Errorf("%s: expected string array, got %T", key, v)
+	}
+}
+
+func getIntSlice(params map[string]interface{}, key string) ([]int, error) {
+	v, ok := params[key]
+	if !ok {
+		return nil, nil
+	}
+	switch val := v.(type) {
+	case []interface{}:
+		result := make([]int, len(val))
+		for i, item := range val {
+			switch n := item.(type) {
+			case int:
+				result[i] = n
+			case float64:
+				result[i] = int(n)
+			default:
+				return nil, fmt.Errorf("%s[%d]: expected integer, got %T", key, i, item)
+			}
+		}
+		return result, nil
+	case []int:
+		return val, nil
+	default:
+		return nil, fmt.Errorf("%s: expected integer array, got %T", key, v)
 	}
 }
 
