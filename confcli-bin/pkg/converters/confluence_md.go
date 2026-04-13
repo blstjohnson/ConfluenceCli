@@ -1301,13 +1301,32 @@ func fixTableUnderscores(markdown string) string {
 // Uses the same balanced-parentheses URL pattern as markdownLinkRe.
 var markdownImageRe = regexp.MustCompile(`!\[[^\]]*\]\([^()\s]*(?:\([^()]*\)[^()\s]*)*\)`)
 
-// stripMarkdownImages removes all inline markdown image references from the document.
-// Confluece exports routinely embed emoticon SVGs, attachment previews, and
-// git-plugin export URLs as images — none of which are useful in plain markdown.
+// stripJunkImages removes junk inline markdown image references (emoticons, SVGs,
+// git-plugin export URLs) while preserving real content images.
+// Preserved: images whose URL contains /download/attachments/ (real Confluence
+// attachments, not thumbnails), and external http/https images.
 // After removal, runs of 3+ consecutive newlines are collapsed to 2, and
 // THE-END comments left behind are also stripped.
-func stripMarkdownImages(markdown string) string {
-	result := markdownImageRe.ReplaceAllString(markdown, "")
+func stripJunkImages(markdown string) string {
+	result := markdownImageRe.ReplaceAllStringFunc(markdown, func(match string) string {
+		// Extract URL from ![alt](url)
+		parenIdx := strings.Index(match, "](")
+		if parenIdx < 0 {
+			return "" // malformed, strip it
+		}
+		url := match[parenIdx+2 : len(match)-1]
+
+		// Preserve real Confluence attachments (not thumbnails)
+		if strings.Contains(url, "/download/attachments/") {
+			return match
+		}
+		// Preserve external images
+		if strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://") {
+			return match
+		}
+		// Strip everything else (emoticons, SVGs, relative junk)
+		return ""
+	})
 	// Collapse large gaps left by removed images
 	result = regexp.MustCompile(`\n{3,}`).ReplaceAllString(result, "\n\n")
 	// Strip THE-END comments that may remain after image removal
@@ -1812,7 +1831,7 @@ func StorageToMarkdownAdvanced(storageContent string, baseURL string) (string, e
 	//    Running them in this order handles \\+ correctly: \\+ → \+ → +
 	markdown = fixEscapedBackslashes(markdown)
 	markdown = RemoveMarkdownEscaping(markdown)
-	markdown = stripMarkdownImages(markdown)
+	markdown = stripJunkImages(markdown)
 
 	return markdown, nil
 }
