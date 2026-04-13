@@ -381,48 +381,30 @@ func (p *ConfluencePlugin) handleStatusMacro(ctx html2md.Context, w html2md.Writ
 	return html2md.RenderSuccess
 }
 
-// handleExpandMacro handles expand macros
+// handleExpandMacro handles expand macros.
+// Renders content only — summary text is dropped.
 func (p *ConfluencePlugin) handleExpandMacro(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
-	summary := "Click to expand"
 	var content string
 
 	for child := n.FirstChild; child != nil; child = child.NextSibling {
-		if child.Type == html.ElementNode {
-			if child.Data == "ac:parameter" {
-				// Check if this is the summary parameter
-				for _, attr := range child.Attr {
-					if attr.Key == "ac:name" && attr.Val == "summary" {
-						summary = p.getNodeText(child)
-						break
-					}
-				}
-			} else if child.Data == "ac:rich-text-body" {
-				content = strings.TrimSpace(p.renderChildren(ctx, child))
-			}
+		if child.Type == html.ElementNode && child.Data == "ac:rich-text-body" {
+			content = strings.TrimSpace(p.renderChildren(ctx, child))
 		}
 	}
 
-	w.WriteString(fmt.Sprintf("<details>\n<summary>%s</summary>\n\n%s\n\n</details>\n", summary, content))
+	w.WriteString(content + "\n")
 	return html2md.RenderSuccess
 }
 
-// handleExpandDiv handles expand macro div containers (alternative format)
+// handleExpandDiv handles expand macro div containers (alternative format).
+// Renders content only — summary text is dropped.
 func (p *ConfluencePlugin) handleExpandDiv(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
-	summary := "Click to expand"
 	var content string
 
-	// Find summary and content
+	// Find content
 	for child := n.FirstChild; child != nil; child = child.NextSibling {
 		if child.Type == html.ElementNode {
-			if child.Data == "span" {
-				// Check for expand-control-text class
-				for _, attr := range child.Attr {
-					if attr.Key == "class" && strings.Contains(attr.Val, "expand-control-text") {
-						summary = strings.TrimSpace(p.getNodeText(child))
-						break
-					}
-				}
-			} else if child.Data == "div" {
+			if child.Data == "div" {
 				for _, attr := range child.Attr {
 					if attr.Key == "class" && strings.Contains(attr.Val, "expand-content") {
 						content = strings.TrimSpace(p.renderChildren(ctx, child))
@@ -433,7 +415,7 @@ func (p *ConfluencePlugin) handleExpandDiv(ctx html2md.Context, w html2md.Writer
 		}
 	}
 
-	w.WriteString(fmt.Sprintf("<details>\n<summary>%s</summary>\n\n%s\n\n</details>\n", summary, content))
+	w.WriteString(content + "\n")
 	return html2md.RenderSuccess
 }
 
@@ -443,8 +425,9 @@ func (p *ConfluencePlugin) handleExpandDiv(ctx html2md.Context, w html2md.Writer
 //	  <div class="expand-control"><span class="expand-icon ..."/><b>Summary</b></div>
 //	  <div class="expand-content expand-hidden">Content</div>
 //	</div>
+//
+// Renders content only — summary/control elements are dropped.
 func (p *ConfluencePlugin) handleExpandContainerDiv(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
-	summary := "Click to expand"
 	var content string
 
 	for child := n.FirstChild; child != nil; child = child.NextSibling {
@@ -452,43 +435,13 @@ func (p *ConfluencePlugin) handleExpandContainerDiv(ctx html2md.Context, w html2
 			continue
 		}
 		childCls := getAttr(child, "class")
-		if strings.Contains(childCls, "expand-control") {
-			// Extract summary text, skipping icon children
-			t := p.extractExpandSummaryText(child)
-			if t != "" {
-				summary = t
-			}
-		} else if strings.Contains(childCls, "expand-content") {
+		if strings.Contains(childCls, "expand-content") {
 			content = strings.TrimSpace(p.renderChildren(ctx, child))
 		}
 	}
 
-	w.WriteString(fmt.Sprintf("<details>\n<summary>%s</summary>\n\n%s\n\n</details>\n", summary, content))
+	w.WriteString(content + "\n")
 	return html2md.RenderSuccess
-}
-
-// extractExpandSummaryText walks the expand-control element and returns the first
-// non-empty text node that isn't part of an icon element.
-func (p *ConfluencePlugin) extractExpandSummaryText(n *html.Node) string {
-	for child := n.FirstChild; child != nil; child = child.NextSibling {
-		if child.Type == html.TextNode {
-			t := strings.TrimSpace(child.Data)
-			if t != "" {
-				return t
-			}
-		}
-		if child.Type == html.ElementNode {
-			childCls := getAttr(child, "class")
-			if strings.Contains(childCls, "icon") || child.Data == "img" {
-				continue
-			}
-			t := strings.TrimSpace(p.getNodeText(child))
-			if t != "" {
-				return t
-			}
-		}
-	}
-	return ""
 }
 
 // handleStatusMacroSpan handles <span class="status-macro ..."> wrappers in export_view.
@@ -1356,6 +1309,38 @@ func RemoveMarkdownEscaping(markdown string) string {
 	return strings.Join(lines, "\n")
 }
 
+// detailsTagRe matches <details>, </details>, <summary>, and </summary> HTML tags
+// (with optional attributes) on their own lines or inline.
+var detailsTagRe = regexp.MustCompile(`(?m)^[ \t]*</?(?:details|summary)(?:\s[^>]*)?>[ \t]*\n?`)
+
+// stripDetailsElements removes any <details>, </details>, <summary>, and </summary>
+// HTML tags that leak through from export_view HTML. The content within is preserved.
+// Fenced code blocks (``` … ```) are left untouched.
+func stripDetailsElements(markdown string) string {
+	lines := strings.Split(markdown, "\n")
+	var result []string
+	inCodeBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inCodeBlock = !inCodeBlock
+			result = append(result, line)
+			continue
+		}
+		if inCodeBlock {
+			result = append(result, line)
+			continue
+		}
+		cleaned := detailsTagRe.ReplaceAllString(line, "")
+		// If the line was nothing but a details/summary tag, skip the empty line
+		if strings.TrimSpace(cleaned) == "" && detailsTagRe.MatchString(line) {
+			continue
+		}
+		result = append(result, cleaned)
+	}
+	return strings.Join(result, "\n")
+}
+
 // expandTableSpans normalizes HTML tables by expanding colspan and rowspan attributes
 // into individual cells with duplicated content. This produces uniform 2D tables that
 // the markdown table plugin can render cleanly.
@@ -1819,6 +1804,8 @@ func storageToMarkdownCore(storageContent string, baseURL string) (string, error
 	//    Running them in this order handles \\+ correctly: \\+ → \+ → +
 	markdown = fixEscapedBackslashes(markdown)
 	markdown = RemoveMarkdownEscaping(markdown)
+	// Strip any <details>/<summary> tags that leak through from export_view HTML
+	markdown = stripDetailsElements(markdown)
 
 	return markdown, nil
 }
