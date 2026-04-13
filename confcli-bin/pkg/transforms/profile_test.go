@@ -197,9 +197,12 @@ func TestResolvePageConfig(t *testing.T) {
 	}
 
 	// Default (no override matches)
-	cfg, skip := profile.ResolvePageConfig(1, "unmatched/path")
+	cfg, skip, skipContent := profile.ResolvePageConfig(1, "unmatched/path")
 	if skip {
 		t.Error("default: unexpected skip")
+	}
+	if skipContent {
+		t.Error("default: unexpected skipContent")
 	}
 	if cfg.Format != "markdown" {
 		t.Errorf("default: Format = %q, want %q", cfg.Format, "markdown")
@@ -209,7 +212,7 @@ func TestResolvePageConfig(t *testing.T) {
 	}
 
 	// Override format
-	cfg, skip = profile.ResolvePageConfig(42, "")
+	cfg, skip, _ = profile.ResolvePageConfig(42, "")
 	if skip {
 		t.Error("id=42: unexpected skip")
 	}
@@ -218,18 +221,63 @@ func TestResolvePageConfig(t *testing.T) {
 	}
 
 	// Skip transforms
-	cfg, _ = profile.ResolvePageConfig(1, "api/users")
+	cfg, _, _ = profile.ResolvePageConfig(1, "api/users")
 	if len(cfg.Transforms) != 0 {
 		t.Errorf("api/*: len(Transforms) = %d, want 0", len(cfg.Transforms))
 	}
 
 	// Append transforms
-	cfg, _ = profile.ResolvePageConfig(99, "")
+	cfg, _, _ = profile.ResolvePageConfig(99, "")
 	if !cfg.StripTOC {
 		t.Error("id=99: StripTOC = false, want true")
 	}
 	if len(cfg.Transforms) != 2 {
 		t.Errorf("id=99: len(Transforms) = %d, want 2", len(cfg.Transforms))
+	}
+}
+
+func TestResolvePageConfigSkipContent(t *testing.T) {
+	profile := &TransformProfile{
+		Page: PageConfig{
+			Format: "markdown",
+		},
+		Pages: []PageOverride{
+			{
+				ID:          float64(10),
+				Skip:        true,
+			},
+			{
+				ID:          float64(20),
+				SkipContent: true,
+			},
+		},
+	}
+
+	// skip:true → skip=true, skipContent=false
+	_, skip, skipContent := profile.ResolvePageConfig(10, "")
+	if !skip {
+		t.Error("id=10: expected skip=true")
+	}
+	if skipContent {
+		t.Error("id=10: expected skipContent=false when skip=true")
+	}
+
+	// skip_content:true → skip=false, skipContent=true
+	_, skip, skipContent = profile.ResolvePageConfig(20, "")
+	if skip {
+		t.Error("id=20: unexpected skip")
+	}
+	if !skipContent {
+		t.Error("id=20: expected skipContent=true")
+	}
+
+	// No match → both false
+	_, skip, skipContent = profile.ResolvePageConfig(99, "")
+	if skip {
+		t.Error("id=99: unexpected skip")
+	}
+	if skipContent {
+		t.Error("id=99: unexpected skipContent")
 	}
 }
 

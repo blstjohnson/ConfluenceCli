@@ -792,6 +792,27 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			if !exists {
 				return
 			}
+
+			// Check skip/skip_content from transform profile
+			if profile != nil {
+				_, skip, skipCont := profile.ResolvePageConfig(pageID, "")
+				if skip {
+					// Skip entire subtree: no file map entries for page or descendants
+					return
+				}
+				if skipCont {
+					// Skip content file, but build folder path for children
+					childIDs := childrenMap[pageID]
+					if len(childIDs) > 0 {
+						pgDir := filepath.Join(parentDir, getFolderName(pageID))
+						for _, childID := range childIDs {
+							buildFileMap(childID, pgDir)
+						}
+					}
+					return
+				}
+			}
+
 			// When --flat-leaves: leaf pages (no children) live directly in the parent dir.
 			// Per-page flatten overrides from the transform profile take precedence.
 			isLeaf := len(childrenMap[pageID]) == 0
@@ -872,14 +893,34 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 		// Check if this page should be skipped based on transform profile
 		// Do this BEFORE creating any directories to avoid empty folders
 		if profile != nil {
-			_, skip := profile.ResolvePageConfig(pageID, "")
+			_, skip, skipCont := profile.ResolvePageConfig(pageID, "")
 			if skip {
+				// Skip entire subtree: page + all descendants, no folder, no children
+				var countSubtree func(id int) int
+				countSubtree = func(id int) int {
+					n := 1
+					for _, cID := range childrenMap[id] {
+						n += countSubtree(cID)
+					}
+					return n
+				}
+				downloadBar.Add(countSubtree(pageID))
+				return nil
+			}
+			if skipCont {
+				// Skip content file only, still process children
 				downloadBar.Add(1)
-				// Still process children even if this page is skipped
 				childIDs := childrenMap[pageID]
-				for _, childID := range childIDs {
-					if err := savePageWithChildren(childID, parentDir, currentDepth+1); err != nil {
-						return err
+				if len(childIDs) > 0 {
+					// Create folder so children have a container
+					pgDir := filepath.Join(parentDir, getFolderName(pageID))
+					if err := os.MkdirAll(pgDir, 0755); err != nil {
+						return fmt.Errorf("failed to create directory for page %d: %w", pageID, err)
+					}
+					for _, childID := range childIDs {
+						if err := savePageWithChildren(childID, pgDir, currentDepth+1); err != nil {
+							return err
+						}
 					}
 				}
 				return nil
@@ -1021,7 +1062,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 
 			// Run pre-conversion transforms if profile is set
 			if profile != nil {
-				pageCfg, _ := profile.ResolvePageConfig(pageID, "")
+				pageCfg, _, _ := profile.ResolvePageConfig(pageID, "")
 				if len(pageCfg.Transforms) > 0 {
 					reg := transforms.DefaultRegistry()
 					pipeline, pipeErr := transforms.BuildPipeline(pageCfg.Transforms, reg)
@@ -1086,7 +1127,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 
 			// Run post-conversion transforms if profile is set
 			if profile != nil {
-				pageCfg, _ := profile.ResolvePageConfig(pageID, "")
+				pageCfg, _, _ := profile.ResolvePageConfig(pageID, "")
 				if len(pageCfg.Transforms) > 0 {
 					reg := transforms.DefaultRegistry()
 					pipeline, pipeErr := transforms.BuildPipeline(pageCfg.Transforms, reg)

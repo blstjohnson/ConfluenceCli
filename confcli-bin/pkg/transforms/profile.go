@@ -43,6 +43,7 @@ type PageOverride struct {
 	Transforms     []TransformSpec  `yaml:"transforms,omitempty"`
 	SkipTransforms bool             `yaml:"skip_transforms,omitempty"`
 	Skip           bool             `yaml:"skip,omitempty"`
+	SkipContent    bool             `yaml:"skip_content,omitempty"`
 }
 
 // TransformSpec is a single transform entry in the YAML pipeline.
@@ -177,9 +178,12 @@ func transformationsDir() (string, error) {
 
 // ResolvePageConfig returns the effective PageConfig for a specific page,
 // merging the profile defaults with any matching page overrides.
-// If a matching override has Skip: true, the second return value is true.
-func (p *TransformProfile) ResolvePageConfig(pageID int, pagePath string) (PageConfig, bool) {
+// If a matching override has Skip: true, the second return value is true
+// (skip entire subtree). If SkipContent: true, the third return value is
+// true (skip content file only, still process children).
+func (p *TransformProfile) ResolvePageConfig(pageID int, pagePath string) (PageConfig, bool, bool) {
 	result := p.Page
+	skipContent := false
 
 	for _, override := range p.Pages {
 		if !override.MatchesPage(pageID, pagePath) {
@@ -187,7 +191,11 @@ func (p *TransformProfile) ResolvePageConfig(pageID int, pagePath string) (PageC
 		}
 
 		if override.Skip {
-			return result, true
+			return result, true, false
+		}
+
+		if override.SkipContent {
+			skipContent = true
 		}
 
 		if override.Format != "" {
@@ -207,7 +215,7 @@ func (p *TransformProfile) ResolvePageConfig(pageID int, pagePath string) (PageC
 		}
 	}
 
-	return result, false
+	return result, false, skipContent
 }
 
 // ResolveFlatten returns the effective flatten-leaf decision for a specific page.

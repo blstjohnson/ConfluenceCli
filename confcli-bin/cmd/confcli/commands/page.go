@@ -191,7 +191,7 @@ func newPageGetCmd() *cobra.Command {
 
 			// Apply transform pipeline if profile is set
 			if profile != nil {
-				pageCfg, _ := profile.ResolvePageConfig(id, "")
+				pageCfg, _, _ := profile.ResolvePageConfig(id, "")
 				if len(pageCfg.Transforms) > 0 {
 					reg := transforms.DefaultRegistry()
 					pipeline, pipeErr := transforms.BuildPipeline(pageCfg.Transforms, reg)
