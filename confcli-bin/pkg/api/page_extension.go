@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"confcli/pkg/models"
@@ -182,26 +183,61 @@ func (e *PageExtension) FetchPageChildren(ctx context.Context, req *FetchPageChi
 	path := fmt.Sprintf("%s/content/%d/child/page", e.client.APIPrefix, req.PageID)
 	params := url.Values{}
 	params.Add("expand", "ancestors")
-	resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
+	params.Add("limit", "100")
+
+	var allChildren []models.Page
+
+	for {
+		resp, err := e.client.MakeRequest(ctx, "GET", path, params, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var result struct {
+			Results []models.Page `json:"results"`
+			Links   struct {
+				Next string `json:"next"`
+			} `json:"_links"`
+			Size  int `json:"size"`
+			Limit int `json:"limit"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+
+		allChildren = append(allChildren, result.Results...)
+
+		if result.Links.Next == "" || result.Size < result.Limit {
+			break
+		}
+
+		// Update start for next page
+		params.Set("start", fmt.Sprintf("%d", result.Size+getPageStart(params)))
+	}
+
+	return &FetchPageChildrenResponse{Children: allChildren}, nil
+}
+
+// getPageStart extracts the current start value from params
+func getPageStart(params url.Values) int {
+	startStr := params.Get("start")
+	if startStr == "" {
+		return 0
+	}
+	start, err := strconv.Atoi(startStr)
 	if err != nil {
-		return nil, err
+		return 0
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var result struct {
-		Results []models.Page `json:"results"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, err
-	}
-
-	return &FetchPageChildrenResponse{Children: result.Results}, nil
+	return start
 }
 
 // CreatePageRequest represents a request to create a page
