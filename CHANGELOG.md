@@ -6,8 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.0.10] - 2026-04-16
+
 ### Added
 
+- HTTP client retry with exponential backoff: transient failures (timeouts, 5xx, connection reset) are retried up to 3 times with 1s/2s/4s backoff
+- Graceful degradation in batch page fetching: a single page failure no longer aborts the entire batch — failed pages are warned and skipped
+- Structured export failure report: lists each failed page ID, title, and error reason with success/fail/skip counts and ready-to-run retry commands
 - `preserve_content` parameter for `remove_macro` transform: preserves the content inside removed macros (e.g., expand macro content) instead of discarding it entirely
 - Language identifier fallback for code blocks: when no explicit language is set, macro name is used as a hint (e.g., `plantuml` macro → `plantuml` language identifier)
 

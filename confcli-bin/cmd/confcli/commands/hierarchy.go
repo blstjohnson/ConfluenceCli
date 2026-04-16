@@ -880,7 +880,13 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 	// Recursive function to save page and its children in hierarchy
 	// parentDir is the absolute directory of the parent page (or spaceDir for root pages)
 	var savePageWithChildren func(pageID int, parentDir string, currentDepth int, inheritedFlatten bool) error
-	var downloadErrors []string
+	type downloadFailure struct {
+		pageID int
+		title  string
+		reason string
+	}
+	var downloadFailures []downloadFailure
+	var successCount int
 	savePageWithChildren = func(pageID int, parentDir string, currentDepth int, inheritedFlatten bool) error {
 		page, exists := pageMap[pageID]
 		if !exists {
@@ -954,7 +960,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			if err := savePageMetadata(pageDir, page, sanitize, cleanNames); err != nil {
 				msg := fmt.Sprintf("Warning: failed to save metadata for page %d (%s): %v", pageID, page.Title, err)
 				fmt.Fprintln(os.Stderr, msg)
-				downloadErrors = append(downloadErrors, msg)
+				downloadFailures = append(downloadFailures, downloadFailure{pageID: pageID, title: page.Title, reason: fmt.Sprintf("metadata save: %v", err)})
 			}
 		}
 
@@ -973,7 +979,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				if verErr != nil {
 					msg := fmt.Sprintf("Warning: failed to get version history for page %d (%s), skipping: %v", pageID, page.Title, verErr)
 					fmt.Fprintln(os.Stderr, msg)
-					downloadErrors = append(downloadErrors, msg)
+					downloadFailures = append(downloadFailures, downloadFailure{pageID: pageID, title: page.Title, reason: fmt.Sprintf("version history: %v", verErr)})
 					downloadBar.Add(1)
 					childIDs := childrenMap[pageID]
 					for _, childID := range childIDs {
@@ -1036,7 +1042,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				if fetchErr != nil {
 					msg := fmt.Sprintf("Warning: failed to get content for page %d (%s), skipping: %v", pageID, page.Title, fetchErr)
 					fmt.Fprintln(os.Stderr, msg)
-					downloadErrors = append(downloadErrors, msg)
+					downloadFailures = append(downloadFailures, downloadFailure{pageID: pageID, title: page.Title, reason: fmt.Sprintf("content fetch: %v", fetchErr)})
 					downloadBar.Add(1)
 					childIDs := childrenMap[pageID]
 					for _, childID := range childIDs {
@@ -1072,7 +1078,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 					if pipeErr != nil {
 						msg := fmt.Sprintf("Warning: failed to build transform pipeline for page %d (%s): %v", pageID, page.Title, pipeErr)
 						fmt.Fprintln(os.Stderr, msg)
-						downloadErrors = append(downloadErrors, msg)
+						downloadFailures = append(downloadFailures, downloadFailure{pageID: pageID, title: page.Title, reason: fmt.Sprintf("transform pipeline: %v", pipeErr)})
 					} else {
 						tctx := &transforms.TransformContext{
 							PreContent: apiContent,
@@ -1083,7 +1089,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 						if err := pipeline.Run(tctx); err != nil {
 							msg := fmt.Sprintf("Warning: pre-transform failed for page %d (%s): %v", pageID, page.Title, err)
 							fmt.Fprintln(os.Stderr, msg)
-							downloadErrors = append(downloadErrors, msg)
+							downloadFailures = append(downloadFailures, downloadFailure{pageID: pageID, title: page.Title, reason: fmt.Sprintf("pre-transform: %v", err)})
 						} else {
 							apiContent = tctx.PreContent
 						}
@@ -1189,8 +1195,12 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			if writeErr := os.WriteFile(absFilePath, []byte(content), 0644); writeErr != nil {
 				msg := fmt.Sprintf("Warning: failed to write page %d (%s) to file: %v", pageID, page.Title, writeErr)
 				fmt.Fprintln(os.Stderr, msg)
-				downloadErrors = append(downloadErrors, msg)
+				downloadFailures = append(downloadFailures, downloadFailure{pageID: pageID, title: page.Title, reason: fmt.Sprintf("file write: %v", writeErr)})
+			} else {
+				successCount++
 			}
+		} else {
+			successCount++
 		}
 
 		downloadBar.Add(1)
@@ -1225,8 +1235,32 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 	downloadBar.Finish()
 	fmt.Fprintln(os.Stderr)
 
-	if len(downloadErrors) > 0 {
-		fmt.Fprintf(os.Stderr, "\n%d page(s) had errors during export (see warnings above)\n", len(downloadErrors))
+	skipCount := pageCount - successCount - len(downloadFailures)
+	if skipCount < 0 {
+		skipCount = 0
+	}
+	fmt.Fprintf(os.Stderr, "\nExport summary: %d success, %d failed, %d skipped (of %d total)\n", successCount, len(downloadFailures), skipCount, pageCount)
+
+	if len(downloadFailures) > 0 {
+		fmt.Fprintf(os.Stderr, "\nFailed pages:\n")
+		for _, f := range downloadFailures {
+			fmt.Fprintf(os.Stderr, "  Page %d (%s): %s\n", f.pageID, f.title, f.reason)
+		}
+
+		// Deduplicate page IDs (a page might fail at multiple stages)
+		seen := make(map[int]bool)
+		var uniqueFailedIDs []int
+		for _, f := range downloadFailures {
+			if !seen[f.pageID] {
+				seen[f.pageID] = true
+				uniqueFailedIDs = append(uniqueFailedIDs, f.pageID)
+			}
+		}
+
+		fmt.Fprintf(os.Stderr, "\nTo retry failed pages individually:\n")
+		for _, id := range uniqueFailedIDs {
+			fmt.Fprintf(os.Stderr, "  confcli hierarchy space --space %s --page-id %d --output-dir %s --format %s\n", space, id, outputDir, format)
+		}
 	}
 
 	// Write space metadata only when --save-metadata is set

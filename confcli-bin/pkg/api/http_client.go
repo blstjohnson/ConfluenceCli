@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httputil"
@@ -13,6 +15,7 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"confcli/pkg/logging"
@@ -103,7 +106,9 @@ func NewHTTPClient(options *ClientOptions) (*HTTPClient, error) {
 	return c, nil
 }
 
-// MakeRequest performs an HTTP request to the Confluence API
+// MakeRequest performs an HTTP request to the Confluence API with automatic
+// retry for transient failures (timeouts, 5xx, connection reset).
+// Up to 3 retries with exponential backoff (1s, 2s, 4s).
 func (c *HTTPClient) MakeRequest(ctx context.Context, method, path string, queryParams url.Values, body io.Reader) (*http.Response, error) {
 	// Construct the full URL with optional query parameters
 	var fullURL *url.URL
@@ -113,79 +118,148 @@ func (c *HTTPClient) MakeRequest(ctx context.Context, method, path string, query
 		fullURL = c.BaseURL.ResolveReference(&url.URL{Path: path})
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, fullURL.String(), body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Set headers
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	// Set authentication header
-	if err := c.setAuthHeader(req); err != nil {
-		return nil, err
-	}
-
-	// Check if this is a write operation and we's in read-only mode
+	// Check if this is a write operation and we're in read-only mode
 	if c.ReadOnly && (method == "POST" || method == "PUT" || method == "DELETE") {
 		return nil, fmt.Errorf("read-only mode enabled: cannot perform %s operation", method)
 	}
 
-	// For browser authentication, manually add cookies to the request
-	// since the cookie jar might not be working properly with the domain
-	if strings.ToLower(c.AuthType) == "browser" {
-		c.Logger.Debug("Browser auth detected, adding cookies to request")
-		var cookies []string
-		if c.SessionCookie != "" {
-			c.Logger.Debug("Adding session cookie: %s", c.SessionCookie)
-			cookies = append(cookies, c.SessionCookie)
-		}
-		if c.SAMLAuthCookie != "" && c.SAMLAuthCookie != c.SessionCookie {
-			c.Logger.Debug("Adding SAML auth cookie: %s", c.SAMLAuthCookie)
-			cookies = append(cookies, c.SAMLAuthCookie)
-		}
-
-		if len(cookies) > 0 {
-			cookieHeader := strings.Join(cookies, "; ")
-			c.Logger.Debug("Setting Cookie header: %s", cookieHeader)
-			req.Header.Set("Cookie", cookieHeader)
-		} else {
-			c.Logger.Debug("No cookies to add")
-		}
-	} else {
-		c.Logger.Debug("Auth type is %s, not browser auth", c.AuthType)
-	}
-
-	// Log the request if debug is enabled
-	if c.Logger.IsDebugEnabled() {
-		requestDump, err := httputil.DumpRequestOut(req, true)
+	// Buffer the body so it can be replayed on retries
+	hasBody := body != nil
+	var bodyBytes []byte
+	if hasBody {
+		var err error
+		bodyBytes, err = io.ReadAll(body)
 		if err != nil {
-			c.Logger.Debug("Failed to dump request: %v", err)
-		} else {
-			c.Logger.Debug("HTTP Request:\n%s", string(requestDump))
+			return nil, fmt.Errorf("failed to read request body: %w", err)
 		}
 	}
 
-	// Perform the request
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
+	const maxRetries = 3
 
-	// Log the response if debug is enabled
-	if c.Logger.IsDebugEnabled() {
-		responseDump, err := httputil.DumpResponse(resp, true)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			c.Logger.Debug("Retry %d/%d after %v for %s %s", attempt, maxRetries, backoff, method, fullURL.String())
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+
+		// Create a fresh body reader for this attempt
+		var bodyReader io.Reader
+		if hasBody {
+			bodyReader = bytes.NewReader(bodyBytes)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, fullURL.String(), bodyReader)
 		if err != nil {
-			c.Logger.Debug("Failed to dump response: %v", err)
-		} else {
-			c.Logger.Debug("HTTP Response:\n%s", string(responseDump))
+			return nil, err
 		}
+
+		// Set headers
+		req.Header.Set("Accept", "application/json")
+		if hasBody {
+			req.Header.Set("Content-Type", "application/json")
+		}
+
+		// Set authentication header
+		if err := c.setAuthHeader(req); err != nil {
+			return nil, err
+		}
+
+		// For browser authentication, manually add cookies to the request
+		// since the cookie jar might not be working properly with the domain
+		if strings.ToLower(c.AuthType) == "browser" {
+			c.Logger.Debug("Browser auth detected, adding cookies to request")
+			var cookies []string
+			if c.SessionCookie != "" {
+				c.Logger.Debug("Adding session cookie: %s", c.SessionCookie)
+				cookies = append(cookies, c.SessionCookie)
+			}
+			if c.SAMLAuthCookie != "" && c.SAMLAuthCookie != c.SessionCookie {
+				c.Logger.Debug("Adding SAML auth cookie: %s", c.SAMLAuthCookie)
+				cookies = append(cookies, c.SAMLAuthCookie)
+			}
+
+			if len(cookies) > 0 {
+				cookieHeader := strings.Join(cookies, "; ")
+				c.Logger.Debug("Setting Cookie header: %s", cookieHeader)
+				req.Header.Set("Cookie", cookieHeader)
+			} else {
+				c.Logger.Debug("No cookies to add")
+			}
+		} else {
+			c.Logger.Debug("Auth type is %s, not browser auth", c.AuthType)
+		}
+
+		// Log the request if debug is enabled
+		if c.Logger.IsDebugEnabled() {
+			requestDump, err := httputil.DumpRequestOut(req, true)
+			if err != nil {
+				c.Logger.Debug("Failed to dump request: %v", err)
+			} else {
+				c.Logger.Debug("HTTP Request:\n%s", string(requestDump))
+			}
+		}
+
+		// Perform the request
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			if isRetryableError(err) && attempt < maxRetries {
+				c.Logger.Debug("Retryable error on attempt %d: %v", attempt+1, err)
+				continue
+			}
+			return nil, err
+		}
+
+		// Log the response if debug is enabled
+		if c.Logger.IsDebugEnabled() {
+			responseDump, err := httputil.DumpResponse(resp, true)
+			if err != nil {
+				c.Logger.Debug("Failed to dump response: %v", err)
+			} else {
+				c.Logger.Debug("HTTP Response:\n%s", string(responseDump))
+			}
+		}
+
+		// Check for retryable status codes (5xx server errors)
+		if resp.StatusCode >= 500 && attempt < maxRetries {
+			c.Logger.Debug("Retryable status %d on attempt %d for %s %s", resp.StatusCode, attempt+1, method, fullURL.String())
+			resp.Body.Close()
+			continue
+		}
+
+		return resp, nil
 	}
 
-	return resp, nil
+	// Should not reach here, but guard against it
+	return nil, fmt.Errorf("request failed after %d retries for %s %s", maxRetries, method, path)
+}
+
+// isRetryableError checks if a network error is transient and worth retrying
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Context cancellation is not retryable
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	// Network timeout
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	// Connection reset / refused
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	// Fallback: check error message for common transient patterns
+	errStr := err.Error()
+	return strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "broken pipe")
 }
 
 // setAuthHeader sets the appropriate authentication header based on the auth type

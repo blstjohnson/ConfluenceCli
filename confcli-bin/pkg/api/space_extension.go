@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 
 	"confcli/pkg/models"
 )
@@ -61,13 +62,21 @@ type FetchAllPagesInSpaceRequest struct {
 	Expansions []string // Optional: expansions to fetch for each page (e.g., "body.storage", "version")
 }
 
+// FailedPage records a page that could not be fetched during a batch operation
+type FailedPage struct {
+	PageID int
+	Title  string
+	Err    error
+}
+
 // FetchAllPagesInSpaceResponse represents the response from fetching all pages in a space
 type FetchAllPagesInSpaceResponse struct {
-	Pages  []models.Page
-	Start  int
-	Limit  int
-	Size   int
-	HasMore bool
+	Pages       []models.Page
+	FailedPages []FailedPage
+	Start       int
+	Limit       int
+	Size        int
+	HasMore     bool
 }
 
 // FetchAllPagesInSpace fetches all pages in a space with pagination
@@ -122,6 +131,7 @@ func (e *SpaceExtension) FetchAllPagesInSpace(ctx context.Context, req *FetchAll
 	// Fetch full page content for each page using the page extension
 	pageExtension := NewPageExtension(e.client)
 	pages := make([]models.Page, 0, len(result.Page.Results))
+	var failedPages []FailedPage
 
 	for _, pageMeta := range result.Page.Results {
 		// Convert ID to int if possible
@@ -147,7 +157,9 @@ func (e *SpaceExtension) FetchAllPagesInSpace(ctx context.Context, req *FetchAll
 		}
 		fetchResp, err := pageExtension.FetchPage(ctx, fetchReq)
 		if err != nil {
-			return nil, fmt.Errorf("failed to fetch page %d: %w", pageID, err)
+			fmt.Fprintf(os.Stderr, "Warning: failed to fetch page %d (%s), skipping: %v\n", pageID, pageMeta.Title, err)
+			failedPages = append(failedPages, FailedPage{PageID: pageID, Title: pageMeta.Title, Err: err})
+			continue
 		}
 
 		pages = append(pages, *fetchResp.Page)
@@ -156,11 +168,12 @@ func (e *SpaceExtension) FetchAllPagesInSpace(ctx context.Context, req *FetchAll
 	hasMore := result.Page.Size == req.Limit
 
 	return &FetchAllPagesInSpaceResponse{
-		Pages:   pages,
-		Start:   result.Page.Start,
-		Limit:   result.Page.Limit,
-		Size:    result.Page.Size,
-		HasMore: hasMore,
+		Pages:       pages,
+		FailedPages: failedPages,
+		Start:       result.Page.Start,
+		Limit:       result.Page.Limit,
+		Size:        result.Page.Size,
+		HasMore:     hasMore,
 	}, nil
 }
 
