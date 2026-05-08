@@ -204,4 +204,11 @@ page:
 #     strip_toc: true
 #   - path: "*/Archive/*"
 #     skip: true
+#   - id: 67890
+#     flatten: true    # deep flatten: every descendant of this page (children,
+#                      # grandchildren, ...) is saved directly in this page's
+#                      # folder, with no nested directories. Internal links are
+#                      # rewritten to the new flat paths automatically.
+#                      # NOTE: differs from folder.flat_leaves, which only
+#                      # flattens leaf pages globally.
 `
