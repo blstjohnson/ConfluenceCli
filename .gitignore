@@ -35,3 +35,6 @@ __pycache__/
 
 # Gas Town (added by gt)
 state.json
+
+# bv (beads viewer) local config and caches
+.bv/
