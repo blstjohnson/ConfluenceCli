@@ -190,64 +190,53 @@ func newHierarchySpaceCmd() *cobra.Command {
 				// Apply package-level conversion settings (safe for CLI: single-threaded)
 				converters.DisableTOC = noTOC
 
-				// Scroll Versions: detect plugin and resolve version-filtered page IDs
+				// Scroll Versions: detect plugin and resolve version-filtered page IDs.
+				// We probe /versions directly rather than gating on /config, since
+				// /config requires AdministerSpace/ManageContent perms while /versions
+				// and /pagetree are accessible to ordinary readers.
 				var scrollPageIDs []int
-				if scrollVersion != "" || outputDir != "" {
-					svClient := apiClient.ScrollVersions()
-					svCfg, svErr := svClient.GetConfig(ctx, space)
-					if svErr != nil {
-						fmt.Fprintf(os.Stderr, "Warning: could not probe Scroll Versions plugin: %v\n", svErr)
-					}
-					if scrollVersion != "" && (svCfg == nil || !svCfg.EnableVersionManagement) {
-						return fmt.Errorf("scroll version %q requested but Scroll Versions is not enabled for space %q (plugin not installed, version management disabled, or you lack AdministerSpace/ManageContent permission)", scrollVersion, space)
-					}
-					if svCfg != nil && svCfg.EnableVersionManagement {
-						versions, vErr := svClient.GetVersions(ctx, space)
-						if vErr != nil {
-							fmt.Fprintf(os.Stderr, "Warning: could not list Scroll Versions: %v\n", vErr)
-						}
-						if len(versions) == 0 && scrollVersion != "" {
-							return fmt.Errorf("scroll version %q requested but no versions are defined (or accessible) in space %q", scrollVersion, space)
-						}
-						if len(versions) > 0 {
-							if scrollVersion != "" {
-								// Find the requested version by name
-								var targetVersion *models.ScrollVersion
-								for i := range versions {
-									if versions[i].Name == scrollVersion {
-										targetVersion = &versions[i]
-										break
-									}
-								}
-								if targetVersion == nil {
-									names := make([]string, len(versions))
-									for i, v := range versions {
-										names[i] = v.Name
-									}
-									return fmt.Errorf("scroll version %q not found; available versions: %s", scrollVersion, strings.Join(names, ", "))
-								}
-
-								// Walk the version-filtered page tree and resolve to Confluence page IDs
-								resolvedIDs, resolveErr := resolveScrollVersionPages(ctx, svClient, apiClient, space, targetVersion.ID)
-								if resolveErr != nil {
-									return fmt.Errorf("failed to resolve scroll version pages: %w", resolveErr)
-								}
-								scrollPageIDs = resolvedIDs
-								fmt.Fprintf(os.Stderr, "Scroll Versions: exporting version %q (%d pages)\n", scrollVersion, len(scrollPageIDs))
-							} else {
-								// No --scroll-version flag, but versions exist: inform the user
-								names := make([]string, len(versions))
-								for i, v := range versions {
-									suffix := ""
-									if v.Archived {
-										suffix = " (archived)"
-									}
-									names[i] = v.Name + suffix
-								}
-								fmt.Fprintf(os.Stderr, "Note: this space uses Scroll Versions. Available versions: %s\n", strings.Join(names, ", "))
-								fmt.Fprintf(os.Stderr, "Use --scroll-version=<name> to export a specific version.\n")
+				svClient := apiClient.ScrollVersions()
+				versions, vErr := svClient.GetVersions(ctx, space)
+				if vErr != nil {
+					fmt.Fprintf(os.Stderr, "Warning: could not list Scroll Versions: %v\n", vErr)
+				}
+				if scrollVersion != "" && len(versions) == 0 {
+					return fmt.Errorf("scroll version %q requested but Scroll Versions is not enabled (or no versions are accessible) for space %q", scrollVersion, space)
+				}
+				if len(versions) > 0 {
+					if scrollVersion != "" {
+						var targetVersion *models.ScrollVersion
+						for i := range versions {
+							if versions[i].Name == scrollVersion {
+								targetVersion = &versions[i]
+								break
 							}
 						}
+						if targetVersion == nil {
+							names := make([]string, len(versions))
+							for i, v := range versions {
+								names[i] = v.Name
+							}
+							return fmt.Errorf("scroll version %q not found; available versions: %s", scrollVersion, strings.Join(names, ", "))
+						}
+
+						resolvedIDs, resolveErr := resolveScrollVersionPages(ctx, svClient, apiClient, space, targetVersion.ID)
+						if resolveErr != nil {
+							return fmt.Errorf("failed to resolve scroll version pages: %w", resolveErr)
+						}
+						scrollPageIDs = resolvedIDs
+						fmt.Fprintf(os.Stderr, "Scroll Versions: exporting version %q (%d pages)\n", scrollVersion, len(scrollPageIDs))
+					} else {
+						names := make([]string, len(versions))
+						for i, v := range versions {
+							suffix := ""
+							if v.Archived {
+								suffix = " (archived)"
+							}
+							names[i] = v.Name + suffix
+						}
+						fmt.Fprintf(os.Stderr, "Note: this space uses Scroll Versions. Available versions: %s\n", strings.Join(names, ", "))
+						fmt.Fprintf(os.Stderr, "Use --scroll-version=<name> to export a specific version.\n")
 					}
 				}
 

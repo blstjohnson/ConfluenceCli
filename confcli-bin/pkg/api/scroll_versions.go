@@ -103,19 +103,24 @@ func (s *ScrollVersionsClient) GetPageTree(ctx context.Context, spaceKey, versio
 
 	// The API can return a single node or an array depending on the request.
 	// When requesting top-level with isShowToplevelPages=true, it typically
-	// returns a single root node whose children are the top-level pages.
+	// returns a single root container (id=0, type="container", no
+	// scrollPageId) whose children are the actual top-level pages.
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read pagetree response: %w", err)
 	}
 
-	// Try as single node first
 	var singleNode models.ScrollPageTreeNode
-	if err := json.Unmarshal(bodyBytes, &singleNode); err == nil && singleNode.ScrollPageID != "" {
-		return []models.ScrollPageTreeNode{singleNode}, nil
+	if err := json.Unmarshal(bodyBytes, &singleNode); err == nil {
+		// Root container wrapper: unwrap to its children.
+		if singleNode.ScrollPageID == "" && len(singleNode.Children) > 0 {
+			return singleNode.Children, nil
+		}
+		if singleNode.ScrollPageID != "" {
+			return []models.ScrollPageTreeNode{singleNode}, nil
+		}
 	}
 
-	// Try as array
 	var nodes []models.ScrollPageTreeNode
 	if err := json.Unmarshal(bodyBytes, &nodes); err != nil {
 		return nil, fmt.Errorf("failed to decode pagetree response: %w", err)
