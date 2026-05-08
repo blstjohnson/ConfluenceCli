@@ -789,11 +789,24 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				return
 			}
 
-			// Check skip/skip_content from transform profile
+			// Check skip/skip_content/skip_root from transform profile
 			if profile != nil {
 				_, skip, skipCont := profile.ResolvePageConfig(pageID, "")
 				if skip {
 					// Skip entire subtree: no file map entries for page or descendants
+					return
+				}
+				if profile.ResolveSkipRoot(pageID, "") {
+					// Transparent container: no entry for this page; recurse
+					// children into parentDir, propagating any flatten setting
+					// so subtree paths are computed correctly.
+					childFlatten := inheritedFlatten
+					if !inheritedFlatten {
+						childFlatten = profile.ResolveFlatten(pageID, "", flatLeaves)
+					}
+					for _, childID := range childrenMap[pageID] {
+						buildFileMap(childID, parentDir, childFlatten)
+					}
 					return
 				}
 				if skipCont {
@@ -909,6 +922,22 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 					return n
 				}
 				downloadBar.Add(countSubtree(pageID))
+				return nil
+			}
+			if profile.ResolveSkipRoot(pageID, "") {
+				// Transparent container: no folder, no .md for this page;
+				// children export into parentDir. Compose with flatten so
+				// flatten:true on the same page propagates to descendants.
+				downloadBar.Add(1)
+				childFlatten := inheritedFlatten
+				if !inheritedFlatten {
+					childFlatten = profile.ResolveFlatten(pageID, "", flatLeaves)
+				}
+				for _, childID := range childrenMap[pageID] {
+					if err := savePageWithChildren(childID, parentDir, currentDepth+1, childFlatten); err != nil {
+						return err
+					}
+				}
 				return nil
 			}
 			if skipCont {

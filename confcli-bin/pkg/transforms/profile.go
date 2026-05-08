@@ -44,6 +44,7 @@ type PageOverride struct {
 	SkipTransforms bool             `yaml:"skip_transforms,omitempty"`
 	Skip           bool             `yaml:"skip,omitempty"`
 	SkipContent    bool             `yaml:"skip_content,omitempty"`
+	SkipRoot       bool             `yaml:"skip_root,omitempty"`
 }
 
 // TransformSpec is a single transform entry in the YAML pipeline.
@@ -230,6 +231,22 @@ func (p *TransformProfile) ResolveFlatten(pageID int, pagePath string, globalFla
 		}
 	}
 	return globalFlatLeaves
+}
+
+// ResolveSkipRoot reports whether the page should be exported as a "transparent
+// container": no folder, no .md file for the page itself, with children
+// promoted into the parent directory. Returns true if any matching override
+// has skip_root: true.
+func (p *TransformProfile) ResolveSkipRoot(pageID int, pagePath string) bool {
+	for _, override := range p.Pages {
+		if !override.MatchesPage(pageID, pagePath) {
+			continue
+		}
+		if override.SkipRoot {
+			return true
+		}
+	}
+	return false
 }
 
 // ApplySetOverrides applies --set key=value overrides to a TransformProfile.

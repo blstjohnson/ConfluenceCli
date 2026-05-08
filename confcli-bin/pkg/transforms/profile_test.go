@@ -356,6 +356,65 @@ func TestResolveFlatten(t *testing.T) {
 	}
 }
 
+func TestResolveSkipRoot(t *testing.T) {
+	profile := &TransformProfile{
+		Pages: []PageOverride{
+			{ID: float64(42), SkipRoot: true},
+			{Path: "*/Containers/*", SkipRoot: true},
+			{ID: float64(99)}, // unrelated override, must not match
+		},
+	}
+
+	tests := []struct {
+		name     string
+		pageID   int
+		pagePath string
+		want     bool
+	}{
+		{name: "no override", pageID: 1, pagePath: "unmatched", want: false},
+		{name: "id override sets skip_root", pageID: 42, want: true},
+		{name: "path override sets skip_root", pageID: 1, pagePath: "space/Containers/foo", want: true},
+		{name: "matching override without skip_root", pageID: 99, want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := profile.ResolveSkipRoot(tc.pageID, tc.pagePath)
+			if got != tc.want {
+				t.Errorf("ResolveSkipRoot(%d, %q) = %v, want %v",
+					tc.pageID, tc.pagePath, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadProfileWithSkipRoot(t *testing.T) {
+	yaml := `
+pages:
+  - id: 12345
+    skip_root: true
+  - id: 67890
+    skip_root: false
+  - id: 11111
+`
+	p, err := LoadProfile([]byte(yaml))
+	if err != nil {
+		t.Fatalf("LoadProfile: %v", err)
+	}
+	if len(p.Pages) != 3 {
+		t.Fatalf("len(Pages) = %d, want 3", len(p.Pages))
+	}
+	if !p.Pages[0].SkipRoot {
+		t.Error("Pages[0].SkipRoot should be true")
+	}
+	if p.Pages[1].SkipRoot {
+		t.Error("Pages[1].SkipRoot should be false")
+	}
+	if p.Pages[2].SkipRoot {
+		t.Error("Pages[2].SkipRoot should be false (default)")
+	}
+}
+
 func TestLoadProfileWithFlatten(t *testing.T) {
 	yaml := `
 pages:
