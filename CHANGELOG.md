@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.0.11] - 2026-05-08
+
+### Added
+
+- `embed_plantuml_links` transform: rewrites markdown links targeting `.puml` / `.plantuml` files into image embeds so renderers with PlantUML preview can show the diagram inline. Strips surrounding `**` bold markers (a PlantUML link should not be bold) and skips links inside fenced code blocks
+- `skip_root` per-page override in transform profile YAML, reinstated alongside the `--skip-root` CLI flag
+
+### Changed
+
+- Verified and documented deep-flatten via per-page `flatten: true` profile override; README and `transform init` starter template now contrast the global `flat_leaves` (leaf-only) and per-page `flatten` (cascade to all descendants) modes
+
+### Fixed
+
+- Scroll Versions probe no longer prints a 403/404 warning when the user lacks plugin admin permission; a clear error is still shown when `--scroll-version` is requested but the plugin is unavailable
+- Cross-platform isolation in `pkg/config/config` tests: now sets both `HOME` (POSIX) and `USERPROFILE` (Windows) and resets viper between tests so test runs no longer leak into the user's real `~/.confcli/config.yaml`
+
 ## [v0.0.10] - 2026-04-16
 
 ### Added
@@ -18,7 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `skip_root` removed from transform profile YAML configuration; now available **only** as `--skip-root` CLI flag on `hierarchy space` command
+- `skip_root` (briefly) removed from transform profile YAML in this release in favour of the `--skip-root` CLI flag on `hierarchy space`; reinstated as a per-page override in v0.0.11
 - TOC stripping now uses HTML parser-based approach instead of regex for more reliable handling of deeply nested TOC macros
 - Empty folders are no longer created when pages are skipped via transform profile `skip: true`
 

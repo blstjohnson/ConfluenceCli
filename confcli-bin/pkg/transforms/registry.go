@@ -41,6 +41,7 @@ func DefaultRegistry() *Registry {
 	r.Register("rewrite_internal_links", buildRewriteInternalLinks)
 	r.Register("expand_tiny_urls", buildExpandTinyURLs)
 	r.Register("drop_table_column", buildDropTableColumn)
+	r.Register("embed_plantuml_links", buildEmbedPlantUMLLinks)
 
 	return r
 }
@@ -139,6 +140,10 @@ func buildExpandTinyURLs(params map[string]interface{}) (Transform, error) {
 	// Default to client-side decoding resolver when used from YAML profiles.
 	// The hierarchy export injects a smarter resolver at runtime.
 	return NewExpandTinyURLs(confBase, DecodingResolver()), nil
+}
+
+func buildEmbedPlantUMLLinks(_ map[string]interface{}) (Transform, error) {
+	return NewEmbedPlantUMLLinks(), nil
 }
 
 func buildDropTableColumn(params map[string]interface{}) (Transform, error) {

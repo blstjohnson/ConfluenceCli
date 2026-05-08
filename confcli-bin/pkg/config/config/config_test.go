@@ -4,12 +4,26 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/spf13/viper"
 )
+
+// isolateConfigDir points GetConfigDir() at tempDir on every platform and
+// resets viper's global state so package-level config tests don't leak into
+// each other.
+func isolateConfigDir(t *testing.T, tempDir string) {
+	t.Helper()
+	t.Setenv("HOME", tempDir)         // POSIX
+	t.Setenv("USERPROFILE", tempDir)  // Windows — os.UserHomeDir reads this
+	viper.Reset()
+	t.Cleanup(viper.Reset)
+}
 
 func TestLoadConfig(t *testing.T) {
 	// Create a temporary directory for testing
 	tempDir := t.TempDir()
-	
+	isolateConfigDir(t, tempDir)
+
 	// Create a mock config file
 	configPath := filepath.Join(tempDir, "config.yaml")
 	mockConfig := `current_profile: "test"
@@ -27,36 +41,29 @@ profiles:
     auth_type: "bearer"
     read_only: true
 `
-	
+
 	if err := os.WriteFile(configPath, []byte(mockConfig), 0644); err != nil {
 		t.Fatalf("Failed to write mock config: %v", err)
 	}
-	
-	// Temporarily change the config directory by setting the home directory
-	originalHome := os.Getenv("HOME")
-	t.Setenv("HOME", tempDir) // This will make GetConfigDir return tempDir/.confcli
-	
+
 	// Create the config directory
 	configDir := filepath.Join(tempDir, ".confcli")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatalf("Failed to create config dir: %v", err)
 	}
-	
+
 	// Move the config file to the expected location
 	expectedConfigPath := filepath.Join(configDir, "config.yaml")
 	if err := os.Rename(configPath, expectedConfigPath); err != nil {
 		t.Fatalf("Failed to move config file: %v", err)
 	}
-	
+
 	// Test loading the config
 	config, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
 	}
-	
-	// Restore original home
-	os.Setenv("HOME", originalHome)
-	
+
 	// Verify the loaded config
 	if config.CurrentProfile != "test" {
 		t.Errorf("Expected CurrentProfile to be 'test', got '%s'", config.CurrentProfile)
@@ -88,17 +95,14 @@ profiles:
 func TestSaveConfig(t *testing.T) {
 	// Create a temporary directory for testing
 	tempDir := t.TempDir()
-	
-	// Temporarily change the config directory by setting the home directory
-	originalHome := os.Getenv("HOME")
-	t.Setenv("HOME", tempDir) // This will make GetConfigDir return tempDir/.confcli
-	
+	isolateConfigDir(t, tempDir)
+
 	// Create the config directory
 	configDir := filepath.Join(tempDir, ".confcli")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatalf("Failed to create config dir: %v", err)
 	}
-	
+
 	// Create a config to save
 	config := &Config{
 		CurrentProfile: "test",
@@ -112,15 +116,12 @@ func TestSaveConfig(t *testing.T) {
 			},
 		},
 	}
-	
+
 	// Save the config
 	if err := SaveConfig(config); err != nil {
 		t.Fatalf("Failed to save config: %v", err)
 	}
-	
-	// Restore original home
-	os.Setenv("HOME", originalHome)
-	
+
 	// Verify the file was created
 	configPath := filepath.Join(configDir, "config.yaml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
