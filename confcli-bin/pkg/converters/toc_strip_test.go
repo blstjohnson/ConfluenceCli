@@ -93,3 +93,72 @@ func TestStripTOCMacro_RegexNotGreedy(t *testing.T) {
 		t.Errorf("info macro content lost: %s", got)
 	}
 }
+
+// renderedTOCFixture mirrors the shape Confluence emits in export_view HTML
+// for a `<ac:structured-macro ac:name="toc">`: a `<div class="toc-macro …">`
+// wrapping nested `<ul class="toc-indentation">` link lists.
+const renderedTOCFixture = `<p>Before</p>` +
+	`<div class='toc-macro rbtoc1778246001968'>` +
+	`<ul class='toc-indentation'>` +
+	`<li><span class='toc-item'><a href='#A'>A</a></span></li>` +
+	`<li><span class='toc-item'><a href='#B'>B</a></span>` +
+	`<ul class='toc-indentation'>` +
+	`<li><a href='#B-1'>B-1</a></li>` +
+	`</ul></li>` +
+	`</ul></div>` +
+	`<p>After</p>`
+
+func TestStripRenderedTOC_Removed(t *testing.T) {
+	got := stripRenderedTOC(renderedTOCFixture)
+	if strings.Contains(got, "toc-macro") || strings.Contains(got, "toc-indentation") {
+		t.Errorf("rendered TOC not stripped:\n%s", got)
+	}
+	if !strings.Contains(got, "Before") || !strings.Contains(got, "After") {
+		t.Errorf("surrounding content lost:\n%s", got)
+	}
+}
+
+func TestStripRenderedTOC_DoubleQuotedClass(t *testing.T) {
+	// Same shape but with double-quoted class — also seen in some renderings.
+	input := `<p>Before</p><div class="toc-macro rbtoc1"><ul class="toc-indentation"><li><a href="#x">x</a></li></ul></div><p>After</p>`
+	got := stripRenderedTOC(input)
+	if strings.Contains(got, "toc-macro") {
+		t.Errorf("double-quoted rendered TOC not stripped:\n%s", got)
+	}
+	if !strings.Contains(got, "Before") || !strings.Contains(got, "After") {
+		t.Errorf("surrounding content lost:\n%s", got)
+	}
+}
+
+func TestStripRenderedTOC_NestedInLayout(t *testing.T) {
+	// Real page 639964318 has the rendered TOC inside a layout cell.
+	input := `<ac:layout><ac:layout-section ac:type="two_right_sidebar"><ac:layout-cell>` +
+		`<div class='toc-macro rbtoc1'>` +
+		`<ul class='toc-indentation'><li><a href='#x'>x</a></li></ul>` +
+		`</div></ac:layout-cell><ac:layout-cell><p>Body</p></ac:layout-cell></ac:layout-section></ac:layout>`
+	got := stripRenderedTOC(input)
+	if strings.Contains(got, "toc-macro") {
+		t.Errorf("rendered TOC inside layout not stripped:\n%s", got)
+	}
+	if !strings.Contains(got, "Body") {
+		t.Errorf("non-TOC layout cell content lost:\n%s", got)
+	}
+}
+
+func TestStripRenderedTOC_NoTOCUnchanged(t *testing.T) {
+	// A regular div with a different class must not be touched.
+	input := `<div class="content">keep me</div>`
+	got := stripRenderedTOC(input)
+	if !strings.Contains(got, "keep me") || !strings.Contains(got, `class="content"`) {
+		t.Errorf("non-TOC div mistakenly altered:\n%s", got)
+	}
+}
+
+func TestStripRenderedTOC_PartialClassNotStripped(t *testing.T) {
+	// `toc-macro-helper` shares a prefix but isn't the TOC class — must be kept.
+	input := `<div class="toc-macro-helper">keep</div>`
+	got := stripRenderedTOC(input)
+	if !strings.Contains(got, "keep") {
+		t.Errorf("partial-class match incorrectly stripped non-TOC div:\n%s", got)
+	}
+}

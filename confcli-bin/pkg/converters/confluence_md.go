@@ -1612,6 +1612,16 @@ func preProcessHTML(htmlContent string) string {
 	// stripTOC() regex remains as a fallback safety net.
 	htmlContent = stripTOCMacro(htmlContent)
 
+	// When TOC is disabled, also strip Confluence's rendered TOC container
+	// (`<div class="toc-macro …">…</div>`) that appears in export_view HTML.
+	// Storage HTML never contains this — the macro is unrendered there and
+	// already handled above. We only do this under DisableTOC so the default
+	// path keeps emitting the bullet block that regenerateTOC rebuilds into a
+	// clean markdown TOC.
+	if DisableTOC {
+		htmlContent = stripRenderedTOC(htmlContent)
+	}
+
 	return htmlContent
 }
 
@@ -1679,6 +1689,111 @@ func stripTOCMacroRegex(htmlContent string) string {
 		`(?is)<ac:structured-macro[^>]*\bac:name\s*=\s*"toc"[^>]*>.*?</ac:structured-macro>`,
 	)
 	return tocMacroRe.ReplaceAllString(htmlContent, "")
+}
+
+// stripRenderedTOC removes Confluence's rendered TOC container from export_view
+// HTML. The TOC macro renders as `<div class="toc-macro rbtoc...">...</div>`,
+// so we walk the DOM and drop any element whose class list contains
+// `toc-macro`. Used only when DisableTOC is set — see preProcessHTML.
+func stripRenderedTOC(htmlContent string) string {
+	doc, err := html.Parse(strings.NewReader("<wrap>" + htmlContent + "</wrap>"))
+	if err != nil {
+		return stripRenderedTOCRegex(htmlContent)
+	}
+
+	var removeTOCs func(*html.Node)
+	removeTOCs = func(n *html.Node) {
+		for child := n.FirstChild; child != nil; {
+			next := child.NextSibling
+			if isRenderedTOC(child) {
+				n.RemoveChild(child)
+			} else {
+				removeTOCs(child)
+			}
+			child = next
+		}
+	}
+
+	removeTOCs(doc)
+
+	var buf strings.Builder
+	if err := html.Render(&buf, doc); err != nil {
+		return htmlContent
+	}
+
+	result := buf.String()
+	result = strings.TrimPrefix(result, "<html><head></head><body><wrap>")
+	result = strings.TrimSuffix(result, "</wrap></body></html>")
+	result = strings.TrimSuffix(result, "</wrap></body></html>\n")
+	return result
+}
+
+// isRenderedTOC reports whether n is an element with `toc-macro` in its class
+// list (i.e. the rendered output of Confluence's TOC macro in export_view).
+func isRenderedTOC(n *html.Node) bool {
+	if n.Type != html.ElementNode {
+		return false
+	}
+	for _, attr := range n.Attr {
+		if attr.Key != "class" {
+			continue
+		}
+		for _, cls := range strings.Fields(attr.Val) {
+			if cls == "toc-macro" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stripRenderedTOCRegex is a fallback regex-based stripper for the rendered
+// TOC container. Single or double quotes around the class attribute are both
+// accepted; balanced nesting of `<div>` tags inside the TOC is handled by a
+// non-greedy match of the immediate `<div ... class="...toc-macro...">` block
+// and walking forward to the matching close tag.
+func stripRenderedTOCRegex(htmlContent string) string {
+	openRe := regexp.MustCompile(`(?is)<div\b[^>]*\bclass\s*=\s*("[^"]*\btoc-macro\b[^"]*"|'[^']*\btoc-macro\b[^']*')[^>]*>`)
+	for {
+		loc := openRe.FindStringIndex(htmlContent)
+		if loc == nil {
+			return htmlContent
+		}
+		end := findMatchingCloseDiv(htmlContent, loc[1])
+		if end == -1 {
+			// No matching close — bail out to avoid corrupting input.
+			return htmlContent
+		}
+		htmlContent = htmlContent[:loc[0]] + htmlContent[end:]
+	}
+}
+
+// findMatchingCloseDiv scans htmlContent starting at start and returns the
+// index just past the </div> that closes the nesting depth opened before
+// start. Returns -1 if no match is found.
+func findMatchingCloseDiv(htmlContent string, start int) int {
+	depth := 1
+	openTag := regexp.MustCompile(`(?i)<div\b[^>]*>`)
+	closeTag := regexp.MustCompile(`(?i)</div\s*>`)
+	pos := start
+	for depth > 0 && pos < len(htmlContent) {
+		nextOpen := openTag.FindStringIndex(htmlContent[pos:])
+		nextClose := closeTag.FindStringIndex(htmlContent[pos:])
+		if nextClose == nil {
+			return -1
+		}
+		if nextOpen != nil && nextOpen[0] < nextClose[0] {
+			depth++
+			pos += nextOpen[1]
+			continue
+		}
+		depth--
+		pos += nextClose[1]
+	}
+	if depth != 0 {
+		return -1
+	}
+	return pos
 }
 
 // fixAdjacentEmphasis fixes adjacent bold/italic markers that run together
