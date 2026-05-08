@@ -245,6 +245,16 @@ func TestStripJunkImages(t *testing.T) {
 	if !strings.Contains(result3, "![file]") {
 		t.Errorf("expected attachment image preserved, got:\n%s", result3)
 	}
+
+	// THE END / THE-END separator comments injected by html-to-markdown
+	// between adjacent lists must be stripped in both spellings.
+	for _, marker := range []string{"<!--THE END-->", "<!-- THE END -->", "<!--THE-END-->", "<!-- THE-END -->"} {
+		in := "1. a\n\n" + marker + "\n\n1. b\n"
+		out := StripJunkImages(in)
+		if strings.Contains(out, "THE") {
+			t.Errorf("expected %q stripped, got:\n%s", marker, out)
+		}
+	}
 }
 
 func TestExportViewToMarkdownKeepImages(t *testing.T) {

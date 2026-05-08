@@ -1259,7 +1259,8 @@ var markdownImageRe = regexp.MustCompile(`!\[[^\]]*\]\([^()\s]*(?:\([^()]*\)[^()
 // Preserved: images whose URL contains /download/attachments/ (real Confluence
 // attachments, not thumbnails), and external http/https images.
 // After removal, runs of 3+ consecutive newlines are collapsed to 2, and
-// THE-END comments left behind are also stripped.
+// THE END / THE-END separator comments injected by html-to-markdown between
+// adjacent lists are also stripped.
 func stripJunkImages(markdown string) string {
 	result := markdownImageRe.ReplaceAllStringFunc(markdown, func(match string) string {
 		// Extract URL from ![alt](url)
@@ -1282,8 +1283,10 @@ func stripJunkImages(markdown string) string {
 	})
 	// Collapse large gaps left by removed images
 	result = regexp.MustCompile(`\n{3,}`).ReplaceAllString(result, "\n\n")
-	// Strip THE-END comments that may remain after image removal
-	result = regexp.MustCompile(`<!--\s*THE-END\s*-->`).ReplaceAllString(result, "")
+	// Strip THE END / THE-END separator comments injected by html-to-markdown
+	// between adjacent <ul>/<ol> lists (the library writes "THE END" with a
+	// space; older notes called it "THE-END" — match both defensively).
+	result = regexp.MustCompile(`<!--\s*THE[\s-]+END\s*-->`).ReplaceAllString(result, "")
 	return result
 }
 
