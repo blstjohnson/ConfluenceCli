@@ -198,11 +198,18 @@ func newHierarchySpaceCmd() *cobra.Command {
 					if svErr != nil {
 						fmt.Fprintf(os.Stderr, "Warning: could not probe Scroll Versions plugin: %v\n", svErr)
 					}
+					if scrollVersion != "" && (svCfg == nil || !svCfg.EnableVersionManagement) {
+						return fmt.Errorf("scroll version %q requested but Scroll Versions is not enabled for space %q (plugin not installed, version management disabled, or you lack AdministerSpace/ManageContent permission)", scrollVersion, space)
+					}
 					if svCfg != nil && svCfg.EnableVersionManagement {
 						versions, vErr := svClient.GetVersions(ctx, space)
 						if vErr != nil {
 							fmt.Fprintf(os.Stderr, "Warning: could not list Scroll Versions: %v\n", vErr)
-						} else if len(versions) > 0 {
+						}
+						if len(versions) == 0 && scrollVersion != "" {
+							return fmt.Errorf("scroll version %q requested but no versions are defined (or accessible) in space %q", scrollVersion, space)
+						}
+						if len(versions) > 0 {
 							if scrollVersion != "" {
 								// Find the requested version by name
 								var targetVersion *models.ScrollVersion

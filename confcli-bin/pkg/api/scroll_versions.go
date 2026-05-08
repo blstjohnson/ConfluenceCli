@@ -24,7 +24,10 @@ func NewScrollVersionsClient(httpClient *HTTPClient) *ScrollVersionsClient {
 }
 
 // GetConfig probes the Scroll Versions configuration for a space.
-// Returns nil (no error) when the plugin is not installed (404).
+// Returns nil (no error) when the plugin is not installed (404) or the
+// caller lacks AdministerSpace/ManageContent permission (403). The caller
+// cannot use SV-specific features in either case, so the two are
+// indistinguishable from the user's perspective.
 func (s *ScrollVersionsClient) GetConfig(ctx context.Context, spaceKey string) (*models.ScrollVersionsConfig, error) {
 	path := fmt.Sprintf("%s/config/%s", scrollVersionsAPIPrefix, spaceKey)
 	resp, err := s.http.MakeRequest(ctx, "GET", path, nil, nil)
@@ -33,8 +36,7 @@ func (s *ScrollVersionsClient) GetConfig(ctx context.Context, spaceKey string) (
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 404 {
-		// Plugin not installed or space not managed
+	if resp.StatusCode == 403 || resp.StatusCode == 404 {
 		return nil, nil
 	}
 	if resp.StatusCode != 200 {
@@ -49,7 +51,9 @@ func (s *ScrollVersionsClient) GetConfig(ctx context.Context, spaceKey string) (
 	return &cfg, nil
 }
 
-// GetVersions returns all defined versions for a space.
+// GetVersions returns all defined versions for a space. Returns an empty
+// slice (no error) when the plugin is not installed (404) or the caller
+// lacks the required permissions (403), mirroring GetConfig.
 func (s *ScrollVersionsClient) GetVersions(ctx context.Context, spaceKey string) ([]models.ScrollVersion, error) {
 	path := fmt.Sprintf("%s/versions/%s", scrollVersionsAPIPrefix, spaceKey)
 	resp, err := s.http.MakeRequest(ctx, "GET", path, nil, nil)
@@ -58,6 +62,9 @@ func (s *ScrollVersionsClient) GetVersions(ctx context.Context, spaceKey string)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == 403 || resp.StatusCode == 404 {
+		return nil, nil
+	}
 	if resp.StatusCode != 200 {
 		body, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("scroll versions list: unexpected status %d: %s", resp.StatusCode, string(body))
