@@ -74,6 +74,7 @@ It allows you to retrieve, search, and manage Confluence pages.`,
 	rootCmd.AddCommand(NewInstallCmd())
 	rootCmd.AddCommand(NewUpdateCmd())
 	rootCmd.AddCommand(NewTransformCmd())
+	rootCmd.AddCommand(NewSyncCmd())
 
 	// Add help-json command
 	rootCmd.AddCommand(&cobra.Command{

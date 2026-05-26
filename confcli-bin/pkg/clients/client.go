@@ -153,6 +153,11 @@ func (c *client) AddLabel(ctx context.Context, pageID int, labelName string) err
 	return c.pageService.AddLabel(ctx, pageID, labelName)
 }
 
+// RemoveLabel removes a label from a page
+func (c *client) RemoveLabel(ctx context.Context, pageID int, labelName string) error {
+	return c.pageService.RemoveLabel(ctx, pageID, labelName)
+}
+
 // AuthenticateViaBrowser opens the browser to authenticate the user and captures session cookies
 func (c *client) AuthenticateViaBrowser(ctx context.Context) error {
 	// This is a simplified implementation - in a real scenario, we'd need to implement

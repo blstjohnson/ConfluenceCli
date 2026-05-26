@@ -21,6 +21,7 @@ type PageRepository interface {
 	GetLabels(ctx context.Context, pageID int) ([]models.Label, error)
 	AddComment(ctx context.Context, pageID int, text string, parentCommentID *int) (*models.Comment, error)
 	AddLabel(ctx context.Context, pageID int, labelName string) error
+	RemoveLabel(ctx context.Context, pageID int, labelName string) error
 	GetPageVersions(ctx context.Context, pageID int) ([]models.Version, error)
 }
 

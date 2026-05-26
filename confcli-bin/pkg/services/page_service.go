@@ -23,6 +23,7 @@ type PageServiceInterface interface {
 	GetLabels(ctx context.Context, pageID int) ([]models.Label, error)
 	AddComment(ctx context.Context, pageID int, text string, parentCommentID *int) (*models.Comment, error)
 	AddLabel(ctx context.Context, pageID int, labelName string) error
+	RemoveLabel(ctx context.Context, pageID int, labelName string) error
 	GetPageVersions(ctx context.Context, pageID int) ([]models.Version, error)
 }
 
@@ -170,6 +171,17 @@ func (ps *PageService) AddLabel(ctx context.Context, pageID int, labelName strin
 		return fmt.Errorf("label name cannot be empty")
 	}
 	return ps.repository.AddLabel(ctx, pageID, labelName)
+}
+
+// RemoveLabel removes a label from a page with validation
+func (ps *PageService) RemoveLabel(ctx context.Context, pageID int, labelName string) error {
+	if pageID <= 0 {
+		return fmt.Errorf("invalid page ID: %d", pageID)
+	}
+	if labelName == "" {
+		return fmt.Errorf("label name cannot be empty")
+	}
+	return ps.repository.RemoveLabel(ctx, pageID, labelName)
 }
 
 // GetPageVersions retrieves the version history for a page with validation

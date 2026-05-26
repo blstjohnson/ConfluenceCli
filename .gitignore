@@ -38,3 +38,6 @@ state.json
 
 # bv (beads viewer) local config and caches
 .bv/
+# mini-rag (local RAG index)
+.rag/venv/
+.rag/db/

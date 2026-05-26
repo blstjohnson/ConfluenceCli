@@ -9,11 +9,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TransformProfile is the top-level YAML structure for a transform profile.
+// TransformProfile is the top-level YAML structure for an export transform
+// profile (Confluence → local files). An empty Kind is treated as "export" for
+// back-compat with profiles authored before the discriminator was introduced.
 type TransformProfile struct {
-	Folder  FolderConfig  `yaml:"folder"`
-	Page    PageConfig    `yaml:"page"`
-	Pages   []PageOverride `yaml:"pages"`
+	Kind   string         `yaml:"kind,omitempty"`
+	Folder FolderConfig   `yaml:"folder"`
+	Page   PageConfig     `yaml:"page"`
+	Pages  []PageOverride `yaml:"pages"`
 }
 
 // FolderConfig controls folder naming and structure.
@@ -117,13 +120,30 @@ func (o *PageOverride) matchesPath(pagePath string) bool {
 	return matched
 }
 
-// LoadProfile loads a TransformProfile from YAML bytes.
+// LoadProfile loads an export TransformProfile from YAML bytes. It rejects
+// profiles whose kind is anything other than "" (legacy) or "export".
 func LoadProfile(data []byte) (*TransformProfile, error) {
 	var p TransformProfile
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return nil, fmt.Errorf("parse transform profile: %w", err)
 	}
+	if p.Kind != "" && p.Kind != "export" {
+		return nil, fmt.Errorf("transform profile kind %q is not an export profile (use the import loader for kind: import)", p.Kind)
+	}
 	return &p, nil
+}
+
+// peekProfileKind extracts the top-level "kind:" field from raw YAML without
+// fully decoding the profile. Returns empty string if the field is absent.
+// Callers can use this to route a YAML file to the right loader.
+func peekProfileKind(data []byte) (string, error) {
+	var head struct {
+		Kind string `yaml:"kind"`
+	}
+	if err := yaml.Unmarshal(data, &head); err != nil {
+		return "", fmt.Errorf("parse profile kind: %w", err)
+	}
+	return head.Kind, nil
 }
 
 // LoadProfileFromFile loads a TransformProfile from a YAML file path.

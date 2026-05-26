@@ -39,6 +39,7 @@ func DefaultRegistry() *Registry {
 	r.Register("modify_content", buildModifyContent)
 	r.Register("rewrite_tfs_links", buildRewriteTFSLinks)
 	r.Register("rewrite_internal_links", buildRewriteInternalLinks)
+	r.Register("rewrite_md_links", buildRewriteMDLinks)
 	r.Register("expand_tiny_urls", buildExpandTinyURLs)
 	r.Register("drop_table_column", buildDropTableColumn)
 	r.Register("embed_plantuml_links", buildEmbedPlantUMLLinks)
@@ -130,6 +131,14 @@ func buildRewriteInternalLinks(params map[string]interface{}) (Transform, error)
 	}
 	// page_map is typically injected at runtime, not from YAML
 	return NewRewriteInternalLinks(nil, confBase, currentDir), nil
+}
+
+func buildRewriteMDLinks(params map[string]interface{}) (Transform, error) {
+	currentDir, _ := params["current_page_dir"].(string)
+	return &RewriteMarkdownLinks{
+		CurrentPageDir: currentDir,
+		// PathMap and Logger are runtime-injected by the sync engine.
+	}, nil
 }
 
 func buildExpandTinyURLs(params map[string]interface{}) (Transform, error) {

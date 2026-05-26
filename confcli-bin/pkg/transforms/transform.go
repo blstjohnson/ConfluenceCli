@@ -14,10 +14,14 @@ type Transform interface {
 
 // TransformContext holds all the data a transform may read or modify.
 type TransformContext struct {
-	// Content before format conversion (Confluence storage/export_view format).
+	// PreContent is the source content before format conversion.
+	// Export direction: Confluence storage/export_view XHTML.
+	// Import direction: markdown source.
 	PreContent string
 
-	// Content after format conversion (e.g. Markdown).
+	// PostContent is the result after format conversion.
+	// Export direction: markdown.
+	// Import direction: Confluence storage XHTML.
 	PostContent string
 
 	// Page metadata

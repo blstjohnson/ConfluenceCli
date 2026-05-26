@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"confcli/pkg/converters/md"
 )
 
 // StorageToMarkdown converts Confluence storage format to Markdown
@@ -200,14 +202,12 @@ func stripHTMLTags(content string) string {
 	return result
 }
 
-// MarkdownToStorage converts Markdown to Confluence storage format
+// MarkdownToStorage converts Markdown to Confluence storage format (XHTML).
+// Supports GFM (tables, strikethrough, task lists, autolink), GFM alerts
+// (rendered as Confluence panel macros), and fenced code blocks with
+// language tags (rendered as ac:structured-macro "code").
 func MarkdownToStorage(markdownContent string) (string, error) {
-	// This is a simplified implementation
-	// In a real implementation, we would use a proper Markdown to HTML converter
-	// and wrap it in Confluence storage format XML
-
-	// For now, we'll return the content as-is with a note
-	return fmt.Sprintf("Markdown to Storage conversion not fully implemented.\nOriginal content:\n%s", markdownContent), nil
+	return md.ToStorage([]byte(markdownContent))
 }
 
 // ExportViewToMarkdown converts Confluence export_view format to Markdown

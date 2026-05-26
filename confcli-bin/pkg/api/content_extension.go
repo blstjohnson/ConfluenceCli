@@ -193,6 +193,38 @@ func (e *ContentExtension) AddLabel(ctx context.Context, req *AddLabelRequest) e
 	return nil
 }
 
+// RemoveLabelRequest represents a request to remove a label from a page.
+type RemoveLabelRequest struct {
+	PageID    int
+	LabelName string
+}
+
+// RemoveLabel removes a global label from a page. Removing a label that
+// doesn't exist on the page returns a not-found error from the server; callers
+// that want idempotent behavior should ignore that case explicitly.
+func (e *ContentExtension) RemoveLabel(ctx context.Context, req *RemoveLabelRequest) error {
+	if e.client.ReadOnly {
+		return fmt.Errorf("read-only mode enabled: cannot remove label")
+	}
+
+	params := url.Values{}
+	params.Add("name", req.LabelName)
+
+	path := fmt.Sprintf("%s/content/%d/label", e.client.APIPrefix, req.PageID)
+	resp, err := e.client.MakeRequest(ctx, "DELETE", path, params, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
 // FetchPageWithExpansionsRequest represents a request to fetch a page with expansions
 type FetchPageWithExpansionsRequest struct {
 	PageID     interface{}

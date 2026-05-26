@@ -230,6 +230,15 @@ func (r *HTTPPageRepository) AddLabel(ctx context.Context, pageID int, labelName
 	})
 }
 
+// RemoveLabel removes a label from a page
+func (r *HTTPPageRepository) RemoveLabel(ctx context.Context, pageID int, labelName string) error {
+	contentExt := api.NewContentExtension(r.pageExtension.GetHTTPClient())
+	return contentExt.RemoveLabel(ctx, &api.RemoveLabelRequest{
+		PageID:    pageID,
+		LabelName: labelName,
+	})
+}
+
 // GetPageVersions retrieves the version history for a page
 func (r *HTTPPageRepository) GetPageVersions(ctx context.Context, pageID int) ([]models.Version, error) {
 	resp, err := r.pageExtension.FetchPageVersions(ctx, &api.FetchPageVersionsRequest{

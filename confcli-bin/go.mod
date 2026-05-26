@@ -4,13 +4,16 @@ go 1.25.6
 
 require (
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.4.0
+	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/gosimple/slug v1.15.0
 	github.com/schollz/progressbar/v3 v3.19.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/spf13/viper v1.21.0
 	github.com/xlab/treeprint v1.2.0
+	github.com/yuin/goldmark v1.8.2
 	golang.org/x/net v0.44.0
+	golang.org/x/text v0.29.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -31,5 +34,4 @@ require (
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.org/x/sys v0.36.0 // indirect
 	golang.org/x/term v0.35.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
 )
