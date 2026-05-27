@@ -183,7 +183,7 @@ func (e *Engine) walkDir(fsys fs.FS, dirPath string) (*dirNode, error) {
 		node.flatten = true
 	}
 
-	markerName := strings.ToLower(e.profile.Tree.FolderPage)
+	markerName := folderMarkerName(e.profile.Tree.FolderPage, dirPath)
 
 	for _, entry := range entries {
 		entryPath := joinPath(dirPath, entry.Name())
@@ -290,7 +290,7 @@ func (e *Engine) emitFile(
 		return fmt.Errorf("convert %q: %w", relPath, err)
 	}
 
-	title := titleFor(relPath)
+	title := e.profile.TitleFor(relPath)
 	idLabel := identity.BuildIDLabel(relPath)
 	newHash := identity.BuildHashLabel(title, storage)
 	seen[idLabel] = struct{}{}
@@ -352,17 +352,6 @@ func (e *Engine) emitFile(
 	return nil
 }
 
-// titleFor derives a page title from the file's basename. Stripping the
-// .md extension is the only transform here; richer rules (front-matter
-// title, first H1) can be layered on later without changing this signature.
-func titleFor(relPath string) string {
-	base := path.Base(relPath)
-	if i := strings.LastIndex(base, "."); i > 0 {
-		base = base[:i]
-	}
-	return base
-}
-
 func updateReason(oldHash string) string {
 	if oldHash == "" {
 		return "no hash label on existing page"
@@ -375,4 +364,26 @@ func joinPath(dir, name string) string {
 		return name
 	}
 	return dir + "/" + name
+}
+
+// folderMarkerName resolves the import-profile FolderPage template against a
+// directory path, returning the (lowercased) filename the walker treats as
+// the folder's marker. Supports the {dir} placeholder so profiles can use
+// the per-folder convention "{dir}.md" alongside the simple "README.md".
+//
+// The sync root (".") has no folder name to substitute — a template using
+// {dir} yields "" there, which simply means the root directory has no
+// marker (its children attach to rootPageID).
+func folderMarkerName(template, dirPath string) string {
+	if template == "" {
+		return ""
+	}
+	if !strings.Contains(template, "{dir}") {
+		return strings.ToLower(template)
+	}
+	if dirPath == "." || dirPath == "" {
+		return ""
+	}
+	dirName := path.Base(dirPath)
+	return strings.ToLower(strings.ReplaceAll(template, "{dir}", dirName))
 }

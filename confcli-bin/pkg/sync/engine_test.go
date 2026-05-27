@@ -260,6 +260,50 @@ func TestBuildPlan_SkipGlobsExcludeFilesAndFolders(t *testing.T) {
 	}
 }
 
+func TestBuildPlan_FolderPageDirPlaceholder(t *testing.T) {
+	// folder_page: "{dir}.md" picks <foldername>.md as the marker per folder.
+	// docs/docs.md -> "docs" page (parent: root)
+	// docs/intro.md -> child of docs
+	// docs/api/api.md -> "api" page (parent: docs)
+	// docs/api/auth.md -> child of api
+	fsys := fstest.MapFS{
+		"docs/docs.md":     {Data: []byte("# docs root")},
+		"docs/intro.md":    {Data: []byte("# intro")},
+		"docs/api/api.md":  {Data: []byte("# api root")},
+		"docs/api/auth.md": {Data: []byte("# auth")},
+	}
+	profile := &transforms.ImportProfile{Kind: "import"}
+	profile.Tree.FolderPage = "{dir}.md"
+
+	loc := &fakeLocator{pages: nil}
+	e := newEngine(t, profile, loc, nil)
+	plan, err := e.BuildPlan(context.Background(), fsys, "SPACE", 0)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+
+	if plan.Stats.Create != 4 {
+		t.Fatalf("create count = %d, want 4", plan.Stats.Create)
+	}
+
+	parents := map[string]string{}
+	for _, a := range plan.Actions {
+		parents[a.RelPath] = a.ParentRelPath
+	}
+	if parents["docs/docs.md"] != "" {
+		t.Errorf("docs/docs.md parent = %q, want \"\" (root)", parents["docs/docs.md"])
+	}
+	if parents["docs/intro.md"] != "docs/docs.md" {
+		t.Errorf("docs/intro.md parent = %q, want docs/docs.md", parents["docs/intro.md"])
+	}
+	if parents["docs/api/api.md"] != "docs/docs.md" {
+		t.Errorf("docs/api/api.md parent = %q, want docs/docs.md", parents["docs/api/api.md"])
+	}
+	if parents["docs/api/auth.md"] != "docs/api/api.md" {
+		t.Errorf("docs/api/auth.md parent = %q, want docs/api/api.md", parents["docs/api/auth.md"])
+	}
+}
+
 func TestBuildPlan_FlattenFolder(t *testing.T) {
 	// archive/ is flattened: its files attach to root instead of becoming
 	// children of a "archive" page.

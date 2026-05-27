@@ -208,6 +208,32 @@ func TestExecutor_UpdateRemovesOldHashOnlyIfDifferent(t *testing.T) {
 	}
 }
 
+func TestExecutor_SkipParentResolvesChildOnCreate(t *testing.T) {
+	// Regression: when a parent action is a skip (page already exists,
+	// hash unchanged), a child create action must still be able to
+	// resolve the parent's page id. The executor pre-populates the
+	// parent map from the plan, not just from successful creates.
+	fc := &execFakeClient{}
+	x := newExec(t, fc)
+
+	plan := &Plan{Actions: []Action{
+		{Kind: ActionSkip, RelPath: "docs/docs.md", PageID: 555, Title: "docs"},
+		{Kind: ActionCreate, RelPath: "docs/new.md",
+			ParentRelPath: "docs/docs.md",
+			Title:         "new", IDLabel: "id-new", NewHashLabel: "hash-new"},
+	}}
+	out := x.Apply(context.Background(), plan)
+	if out.Skipped != 1 || out.Created != 1 || len(out.Errors) != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if len(fc.createCalls) != 1 {
+		t.Fatalf("expected 1 create call, got %d", len(fc.createCalls))
+	}
+	if fc.createCalls[0].parentID == nil || *fc.createCalls[0].parentID != 555 {
+		t.Fatalf("child parent = %v, want pointer to 555 (skipped parent's id)", fc.createCalls[0].parentID)
+	}
+}
+
 func TestExecutor_SkipAndOrphanMakeNoAPICalls(t *testing.T) {
 	fc := &execFakeClient{}
 	x := newExec(t, fc)

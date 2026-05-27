@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.0.12] - 2026-05-27
+
+### Added
+
+- `confcli sync` command: single-run uploader from a local markdown tree to a Confluence page tree, anchored by `confcli-id-<sha>` labels. Builds a plan (create / update / skip / orphan) printable via `--dry-run`, then applies it (create/update pages, reparent under folder markers, update content-hash labels)
+- Import profile (`kind: import`): `tree.folder_page` (per-folder marker file), `tree.skip` / `tree.flatten` doublestar globs, per-path `overrides` for skipping a path or pinning it to a fixed `page_id`
+- `tree.title.rewrites` regex pipeline + `tree.title.trim` for deriving Confluence page titles from filenames (e.g. `getting_started.md` → `Getting Started`). Rewrites apply only to the basename stem so the identity label and forward-link resolution stay stable
+- `plantuml` and `git_files` profile sections: rewrite markdown links to `.puml` files and to non-md/non-puml repo files (yaml, json, sql, sh, …) into Confluence macros (typically `view-git-file`) so links resolve at Confluence render time instead of becoming broken relative hrefs
+- `git_files.mode: link | inline` (default `link`), `git_files.per_extension` per-extension overrides, and `git_files.inline.max_bytes` size cap. Inline mode reads the source file from `--from` at sync time and embeds its content in a Confluence `code` structured macro on the page
+
+### Changed
+
+- Forward-link rewriter and identity hashing now share `profile.TitleFor`, so any title transforms configured under `tree.title` propagate to both the rendered page title and `ac:link` targets without drift
+
 ## [v0.0.11] - 2026-05-08
 
 ### Added

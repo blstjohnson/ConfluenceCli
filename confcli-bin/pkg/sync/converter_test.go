@@ -51,7 +51,7 @@ func TestNewMarkdownConverter_RewritesLinkAndConverts(t *testing.T) {
 		t.Fatalf("BuildPathMap: %v", err)
 	}
 
-	conv := NewMarkdownConverter(pm, nil)
+	conv := NewMarkdownConverter(pm, nil, nil, nil)
 	out, err := conv(context.Background(), []byte("see [other](other.md)"), "src.md")
 	if err != nil {
 		t.Fatalf("convert: %v", err)
@@ -78,7 +78,7 @@ func TestNewMarkdownConverter_AcLinkSurvivesGoldmark(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPathMap: %v", err)
 	}
-	conv := NewMarkdownConverter(pm, nil)
+	conv := NewMarkdownConverter(pm, nil, nil, nil)
 	out, err := conv(context.Background(), []byte("see [Other](other.md) end"), "src.md")
 	if err != nil {
 		t.Fatalf("convert: %v", err)
@@ -92,8 +92,178 @@ func TestNewMarkdownConverter_AcLinkSurvivesGoldmark(t *testing.T) {
 	}
 }
 
+func TestNewMarkdownConverter_VoidTagsSelfClosed(t *testing.T) {
+	// User-authored <br> in a table cell (very common in Russian docs)
+	// must come out as <br /> so Confluence's strict XHTML parser accepts it.
+	src := []byte("| A | B |\n|---|---|\n| line1<br>line2 | x |\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if strings.Contains(out, "<br>") || strings.Contains(out, "<br >") {
+		t.Errorf("unclosed <br> in output: %s", out)
+	}
+	if !strings.Contains(out, "<br />") {
+		t.Errorf("expected <br /> in output: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_VoidTagsInsideCDATAPreserved(t *testing.T) {
+	// Code blocks become <ac:structured-macro><ac:plain-text-body>
+	// <![CDATA[...]]>. Literal <br> inside CDATA is user text and
+	// must not be rewritten.
+	src := []byte("```html\n<br>not a tag here\n```\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(out, "<br>not a tag here") {
+		t.Errorf("CDATA content was rewritten; got: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_UnknownTagsEscaped(t *testing.T) {
+	// CamelCase / unknown tag-looking text in user-authored markdown
+	// (e.g. API field-name placeholders) must be HTML-escaped so the
+	// Confluence storage parser doesn't reject the page.
+	src := []byte("Field: <FIWalletId> and <clientType>\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if strings.Contains(out, "<FIWalletId>") || strings.Contains(out, "<clientType>") {
+		t.Errorf("placeholder tags should be escaped: %s", out)
+	}
+	if !strings.Contains(out, "&lt;FIWalletId&gt;") {
+		t.Errorf("expected escaped form &lt;FIWalletId&gt;: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_MixedCaseLookalikesEscaped(t *testing.T) {
+	// Mixed-case names like <Object> and <Data> are placeholders even
+	// though "object" and "data" are valid HTML tags in lowercase.
+	// XHTML is case-sensitive; the lowercase forms are real tags, the
+	// mixed-case forms are user-authored literal text.
+	src := []byte("Type: <Object>, payload: <Data>\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if strings.Contains(out, "<Object>") || strings.Contains(out, "<Data>") {
+		t.Errorf("mixed-case placeholder tags must be escaped: %s", out)
+	}
+	if !strings.Contains(out, "&lt;Object&gt;") || !strings.Contains(out, "&lt;Data&gt;") {
+		t.Errorf("expected escaped forms in output: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_KnownHTMLTagsPreserved(t *testing.T) {
+	// Real HTML tags must continue to pass through unchanged so users
+	// can mix HTML when they need to.
+	src := []byte("inline <em>x</em> and <strong>y</strong>\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(out, "<em>") || !strings.Contains(out, "<strong>") {
+		t.Errorf("known HTML tags must not be escaped: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_NamespacedTagsPreserved(t *testing.T) {
+	// Confluence storage tags (<ac:link>, <ri:page>) must survive — the
+	// bare-tag regex only matches no-namespace tags, so they're skipped.
+	fsys := fstest.MapFS{
+		"src.md":   {Data: []byte("see [other](other.md)")},
+		"other.md": {Data: []byte("# other")},
+	}
+	pm, err := BuildPathMap(&transforms.ImportProfile{Kind: "import"}, fsys)
+	if err != nil {
+		t.Fatalf("BuildPathMap: %v", err)
+	}
+	conv := NewMarkdownConverter(pm, nil, nil, nil)
+	out, err := conv(context.Background(), []byte("see [other](other.md)"), "src.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(out, "<ac:link>") || !strings.Contains(out, "<ri:page") {
+		t.Errorf("namespaced storage tags must not be escaped: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_UnknownTagsInsideCDATAPreserved(t *testing.T) {
+	// Code blocks → CDATA. The escaper must skip CDATA so code samples
+	// containing <Tag>-style placeholders survive verbatim.
+	src := []byte("```xml\n<FIWalletId>123</FIWalletId>\n```\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(out, "<FIWalletId>123</FIWalletId>") {
+		t.Errorf("CDATA content was rewritten; got: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_EmptyInputBecomesPlaceholder(t *testing.T) {
+	// Empty marker files should still produce a non-empty page so the
+	// folder gets a parent stub on Confluence.
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), []byte(""), "marker.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Errorf("expected non-empty placeholder, got %q", out)
+	}
+}
+
+func TestNewMarkdownConverter_WhitespaceOnlyBecomesPlaceholder(t *testing.T) {
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), []byte("   \n\n  \n"), "marker.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if strings.TrimSpace(out) == "" {
+		t.Errorf("expected placeholder for whitespace-only input, got %q", out)
+	}
+}
+
+func TestNewMarkdownConverter_PlantUMLMacroSurvivesGoldmark(t *testing.T) {
+	// End-to-end: pass a plantuml rewriter into the converter, feed a
+	// markdown link to a .puml file, and verify the rendered storage
+	// contains the intact <ac:structured-macro> XML.
+	puml := &transforms.RewritePlantUMLLinks{
+		Macro: "view-git-file",
+		Parameters: map[string]string{
+			"path":   "{path}",
+			"branch": "refs/remotes/origin/{branch}",
+		},
+		Branch:          "main",
+		SyncRootRelRepo: "Docs/requirements",
+	}
+	conv := NewMarkdownConverter(nil, puml, nil, nil)
+	out, err := conv(context.Background(),
+		[]byte("see **[foo.puml](../Diagrams/foo.puml)**"),
+		"Client_Workflow_Diagrams.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(out, `<ac:structured-macro ac:name="view-git-file"`) {
+		t.Errorf("macro should survive goldmark intact:\n%s", out)
+	}
+	if strings.Contains(out, "&lt;ac:structured-macro") {
+		t.Errorf("macro tags must not be HTML-escaped:\n%s", out)
+	}
+}
+
 func TestNewMarkdownConverter_NilPathMapPassesLinksThrough(t *testing.T) {
-	conv := NewMarkdownConverter(nil, nil)
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
 	out, err := conv(context.Background(), []byte("see [x](x.md)"), "a.md")
 	if err != nil {
 		t.Fatalf("convert: %v", err)

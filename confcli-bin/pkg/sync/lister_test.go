@@ -11,33 +11,29 @@ import (
 )
 
 // listerFakeClient is a minimal api.Client for testing APILister. Its
-// GetDescendants returns a fixed slice; GetPageWithExpansions returns the
-// labels recorded in labelsByID.
+// GetDescendants returns a fixed slice; GetLabels returns the labels
+// recorded in labelsByID.
 type listerFakeClient struct {
 	api.Client
 
 	descendants    []models.Page
 	descendantsErr error
 
-	labelsByID map[int][]models.Label
-	expandErr  error
-	expandHits int
+	labelsByID    map[int][]models.Label
+	getLabelsErr  error
+	getLabelsHits int
 }
 
 func (f *listerFakeClient) GetDescendants(_ context.Context, _ int, _ int) ([]models.Page, error) {
 	return f.descendants, f.descendantsErr
 }
 
-func (f *listerFakeClient) GetPageWithExpansions(_ context.Context, id interface{}, _ []string) (*models.Page, error) {
-	f.expandHits++
-	if f.expandErr != nil {
-		return nil, f.expandErr
+func (f *listerFakeClient) GetLabels(_ context.Context, pageID int) ([]models.Label, error) {
+	f.getLabelsHits++
+	if f.getLabelsErr != nil {
+		return nil, f.getLabelsErr
 	}
-	intID, _ := id.(int)
-	return &models.Page{
-		ID:     models.PageID{Value: intID},
-		Labels: f.labelsByID[intID],
-	}, nil
+	return f.labelsByID[pageID], nil
 }
 
 func TestAPILister_ListManaged_FiltersAndExtractsIDLabel(t *testing.T) {
@@ -79,8 +75,8 @@ func TestAPILister_ListManaged_FiltersAndExtractsIDLabel(t *testing.T) {
 
 func TestAPILister_ListManaged_SkipsPagesWithLabelFetchError(t *testing.T) {
 	fc := &listerFakeClient{
-		descendants: []models.Page{{ID: models.PageID{Value: 1}, Title: "a"}},
-		expandErr:   errors.New("network blip"),
+		descendants:  []models.Page{{ID: models.PageID{Value: 1}, Title: "a"}},
+		getLabelsErr: errors.New("network blip"),
 	}
 	l := NewAPILister(fc, nil)
 	got, err := l.ListManaged(context.Background(), "SP", 99)
@@ -109,8 +105,8 @@ func TestAPILister_ListManaged_UsesEmbeddedLabelsWhenPresent(t *testing.T) {
 	if len(got) != 1 || got[0].IDLabel != idA {
 		t.Fatalf("got = %+v", got)
 	}
-	if fc.expandHits != 0 {
-		t.Errorf("must not re-fetch labels when already present; expandHits = %d", fc.expandHits)
+	if fc.getLabelsHits != 0 {
+		t.Errorf("must not re-fetch labels when already present; getLabelsHits = %d", fc.getLabelsHits)
 	}
 }
 

@@ -3,7 +3,10 @@ package transforms
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"gopkg.in/yaml.v3"
@@ -22,6 +25,123 @@ type ImportProfile struct {
 	Tree       TreeConfig      `yaml:"tree"`
 	Transforms []TransformSpec `yaml:"transforms"`
 	Overrides  []PathOverride  `yaml:"overrides"`
+	PlantUML   PlantUMLConfig  `yaml:"plantuml"`
+	GitFiles   GitFilesConfig  `yaml:"git_files"`
+
+	// titleRegex is index-aligned with Tree.Title.Rewrites and holds the
+	// compiled patterns. Populated by validate (or lazily by TitleFor when
+	// the profile was constructed directly without going through Load*).
+	titleRegex []*regexp.Regexp
+}
+
+// PlantUMLConfig controls how markdown links to .puml files are
+// rewritten into Confluence macros at sync time. When Macro or
+// Parameters is empty the rewriter is disabled and .puml links stay
+// as plain text links.
+//
+// The shape is intentionally generic: different Confluence plugins
+// take different macro and parameter names (the "View Git File"
+// plugin uses macro="view-git-file" with parameters like path,
+// branch, repository-id, renderpuml; a URL-based PlantUML plugin
+// might use macro="plantuml" with just a "url" parameter). Each
+// parameter value supports two placeholders that the rewriter
+// substitutes per .puml link:
+//
+//	{path}   — repo-root-relative slash path of the .puml file
+//	{branch} — git branch name (no encoding; wrap in your own
+//	           refs/remotes/origin/{branch} if the plugin expects
+//	           the full ref form)
+//
+// Static parameters (no placeholders) are emitted verbatim, useful
+// for things like repository-id, renderpuml, renderpanel toggles.
+type PlantUMLConfig struct {
+	// Macro is the Confluence macro name written into the ac:name
+	// attribute (e.g. "view-git-file", "plantuml").
+	Macro string `yaml:"macro"`
+
+	// Parameters maps ac:parameter names to value templates. Values
+	// may reference {path} and {branch}; any other text is verbatim.
+	Parameters map[string]string `yaml:"parameters"`
+
+	// Branch overrides the git branch auto-detected from .git/HEAD.
+	// Useful for pinning rendered diagrams to a release branch.
+	Branch string `yaml:"branch"`
+
+	// RepoRoot overrides the git repo root auto-detected by walking up
+	// from --from. Absolute path, or path relative to --from. Set this
+	// when the sync source is not inside a git working tree.
+	RepoRoot string `yaml:"repo_root"`
+}
+
+// GitFilesConfig rewrites links to non-markdown files in the repo into
+// the same kind of Confluence macro PlantUMLConfig uses — typically
+// view-git-file without the renderpuml flag, so the file is displayed
+// as source rather than rendered. Catches whatever the .md and .puml
+// rewriters did not, e.g. *.yaml, *.json, *.sql references.
+//
+// Skipped (passed through unchanged):
+//   - image embeds (![alt](href))
+//   - external URLs (containing ://) and mailto:/tel:/#anchor
+//   - .md, .markdown, .puml, .plantuml — handled by the other rewriters
+//   - image extensions (.png, .jpg, .jpeg, .gif, .svg, .webp, .bmp,
+//     .ico) — rendering an image as a code panel would be unhelpful
+//
+// Same {path} / {branch} placeholder rules as PlantUMLConfig. The
+// shared Branch and RepoRoot from PlantUMLConfig apply here too; the
+// fields below override when set.
+type GitFilesConfig struct {
+	Macro      string            `yaml:"macro"`
+	Parameters map[string]string `yaml:"parameters"`
+	Branch     string            `yaml:"branch"`
+	RepoRoot   string            `yaml:"repo_root"`
+	// Extensions optionally restricts which file extensions the
+	// rewriter handles. Empty = catch-all (everything not excluded
+	// by the rules above). Case-insensitive, with or without leading
+	// dot: ["yaml", ".json"] both work.
+	Extensions []string `yaml:"extensions"`
+
+	// Mode picks how matched file links are rewritten:
+	//   "link"   (default) — wrap the href in the configured view-git-file
+	//                        macro. The file stays in git; Confluence
+	//                        fetches it at render time.
+	//   "inline" —          read the file from --from at sync time and
+	//                        embed its contents in a Confluence "code"
+	//                        macro on the page.
+	Mode string `yaml:"mode"`
+
+	// PerExtension overrides Mode for specific extensions (lowercased,
+	// with or without leading dot). Useful when most files should link
+	// but a few configuration formats should inline (or vice versa).
+	PerExtension map[string]string `yaml:"per_extension"`
+
+	// Inline tunes the inline-mode emitter.
+	Inline GitFilesInlineConfig `yaml:"inline"`
+}
+
+// GitFilesInlineConfig configures inline-mode emission for GitFilesConfig.
+type GitFilesInlineConfig struct {
+	// MaxBytes caps the source file size that may be inlined. Files
+	// larger than this fall back to link mode (with a warning). Zero or
+	// negative means no cap.
+	MaxBytes int64 `yaml:"max_bytes"`
+}
+
+var validGitFilesModes = map[string]struct{}{
+	"":       {},
+	"link":   {},
+	"inline": {},
+}
+
+func (c *GitFilesConfig) validate() error {
+	if _, ok := validGitFilesModes[c.Mode]; !ok {
+		return fmt.Errorf("git_files.mode: must be one of link|inline (got %q)", c.Mode)
+	}
+	for ext, mode := range c.PerExtension {
+		if _, ok := validGitFilesModes[mode]; !ok || mode == "" {
+			return fmt.Errorf("git_files.per_extension[%q]: must be link|inline (got %q)", ext, mode)
+		}
+	}
+	return nil
 }
 
 // TreeConfig controls how a folder tree is projected onto a Confluence page
@@ -40,6 +160,28 @@ type TreeConfig struct {
 	// are not created as their own pages — their child pages are promoted
 	// into the parent folder's page.
 	Flatten []string `yaml:"flatten"`
+
+	// Title controls how page titles are derived from filenames.
+	Title TitleConfig `yaml:"title"`
+}
+
+// TitleConfig drives the file-name → Confluence-page-title rewrite that
+// runs after the .md extension is stripped. The rewrites apply only to
+// the basename stem; the relative path used for identity and forward-link
+// resolution is not touched.
+type TitleConfig struct {
+	// Rewrites are applied in order to the stem. Each entry is a Go RE2
+	// regex; references like $1 in the replacement work as ReplaceAllString.
+	Rewrites []TitleRewrite `yaml:"rewrites"`
+
+	// Trim collapses surrounding whitespace after the rewrites apply.
+	Trim bool `yaml:"trim"`
+}
+
+// TitleRewrite is one regex/replacement pair for TitleConfig.Rewrites.
+type TitleRewrite struct {
+	Pattern     string `yaml:"pattern"`
+	Replacement string `yaml:"replacement"`
 }
 
 // PathOverride applies per-path settings during sync. The Path is a
@@ -126,7 +268,75 @@ func (p *ImportProfile) validate() error {
 			return fmt.Errorf("overrides[%d]: skip and page_id are mutually exclusive", i)
 		}
 	}
+	if err := p.compileTitleRewrites(); err != nil {
+		return err
+	}
+	if err := p.GitFiles.validate(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// compileTitleRewrites compiles every Tree.Title.Rewrites pattern and
+// caches the result on the profile. Returns the first compile error.
+func (p *ImportProfile) compileTitleRewrites() error {
+	if len(p.Tree.Title.Rewrites) == 0 {
+		p.titleRegex = nil
+		return nil
+	}
+	compiled := make([]*regexp.Regexp, len(p.Tree.Title.Rewrites))
+	for i, rw := range p.Tree.Title.Rewrites {
+		if rw.Pattern == "" {
+			return fmt.Errorf("tree.title.rewrites[%d]: pattern is required", i)
+		}
+		re, err := regexp.Compile(rw.Pattern)
+		if err != nil {
+			return fmt.Errorf("tree.title.rewrites[%d]: invalid regex %q: %w", i, rw.Pattern, err)
+		}
+		compiled[i] = re
+	}
+	p.titleRegex = compiled
+	return nil
+}
+
+// TitleFor derives the Confluence page title from a sync-root-relative
+// markdown path. It strips the .md extension, then applies any configured
+// title.rewrites in order, then optionally trims surrounding whitespace.
+//
+// When called on a profile that bypassed validate (e.g. constructed inline
+// in a test), the rewrites are compiled lazily on first call. Patterns
+// that fail to compile are silently skipped — validate catches them up
+// front for the normal load path.
+func (p *ImportProfile) TitleFor(relPath string) string {
+	base := path.Base(relPath)
+	if i := strings.LastIndex(base, "."); i > 0 {
+		base = base[:i]
+	}
+	rewrites := p.Tree.Title.Rewrites
+	if len(rewrites) > 0 {
+		if len(p.titleRegex) != len(rewrites) {
+			compiled := make([]*regexp.Regexp, len(rewrites))
+			for i, rw := range rewrites {
+				if rw.Pattern == "" {
+					continue
+				}
+				if re, err := regexp.Compile(rw.Pattern); err == nil {
+					compiled[i] = re
+				}
+			}
+			p.titleRegex = compiled
+		}
+		for i, re := range p.titleRegex {
+			if re == nil {
+				continue
+			}
+			base = re.ReplaceAllString(base, rewrites[i].Replacement)
+		}
+	}
+	if p.Tree.Title.Trim {
+		base = strings.TrimSpace(base)
+	}
+	return base
 }
 
 // MatchesSkip reports whether path matches any tree.skip glob.

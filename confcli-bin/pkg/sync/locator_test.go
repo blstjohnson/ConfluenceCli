@@ -27,6 +27,9 @@ type fakeClient struct {
 	expandExpansions []string
 	expandPage       *models.Page
 	expandErr        error
+
+	getLabelsByID map[int][]models.Label
+	getLabelsErr  error
 }
 
 func (f *fakeClient) Search(_ context.Context, cql string, _ int) ([]models.SearchResult, error) {
@@ -38,6 +41,13 @@ func (f *fakeClient) GetPageWithExpansions(_ context.Context, id interface{}, ex
 	f.expandID = id
 	f.expandExpansions = expansions
 	return f.expandPage, f.expandErr
+}
+
+func (f *fakeClient) GetLabels(_ context.Context, pageID int) ([]models.Label, error) {
+	if f.getLabelsErr != nil {
+		return nil, f.getLabelsErr
+	}
+	return f.getLabelsByID[pageID], nil
 }
 
 func pageWithID(id int) models.Page {
@@ -61,12 +71,17 @@ func TestLocator_FindByPath_NotFound(t *testing.T) {
 }
 
 func TestLocator_FindByPath_OneMatch(t *testing.T) {
+	idLabel := identity.BuildIDLabel("docs/a.md")
 	fc := &fakeClient{
 		searchResult: []models.SearchResult{{Content: pageWithID(42)}},
 		expandPage: &models.Page{
-			ID:     models.PageID{Value: 42},
-			Title:  "Hello",
-			Labels: []models.Label{{Name: identity.BuildIDLabel("docs/a.md")}},
+			ID:    models.PageID{Value: 42},
+			Title: "Hello",
+		},
+		// Labels come from the dedicated label endpoint, not the page
+		// expansion — see locator.go comment for why.
+		getLabelsByID: map[int][]models.Label{
+			42: {{Name: idLabel}},
 		},
 	}
 	l := NewLocator(fc, nil)
@@ -78,17 +93,19 @@ func TestLocator_FindByPath_OneMatch(t *testing.T) {
 	if got == nil || got.Title != "Hello" {
 		t.Fatalf("expected page Hello, got %+v", got)
 	}
-	// Must request both labels and version so the engine can decide skip vs update.
-	wantExp := map[string]bool{"metadata.labels": false, "version": false}
+	// version must be expanded so the engine can pass it to UpdatePage.
+	versionAsked := false
 	for _, e := range fc.expandExpansions {
-		if _, ok := wantExp[e]; ok {
-			wantExp[e] = true
+		if e == "version" {
+			versionAsked = true
 		}
 	}
-	for k, v := range wantExp {
-		if !v {
-			t.Fatalf("expansion %q not requested; got %v", k, fc.expandExpansions)
-		}
+	if !versionAsked {
+		t.Fatalf("version expansion not requested; got %v", fc.expandExpansions)
+	}
+	// Labels must be populated via GetLabels.
+	if identity.ExtractIDLabel(got.Labels) != idLabel {
+		t.Fatalf("returned page missing id label; got labels %+v", got.Labels)
 	}
 }
 

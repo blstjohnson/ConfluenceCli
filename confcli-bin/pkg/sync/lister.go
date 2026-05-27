@@ -50,19 +50,20 @@ func (l *APILister) ListManaged(ctx context.Context, spaceKey string, rootPageID
 			continue
 		}
 
+		// metadata.labels expansion doesn't deserialize into Page.Labels
+		// (response nests under metadata.labels.results; the JSON tag is
+		// just "labels"). Always use the dedicated label endpoint, which
+		// the API client correctly maps.
 		labels := page.Labels
 		if len(labels) == 0 {
-			full, err := l.client.GetPageWithExpansions(ctx, page.ID.IntOrString(), []string{"metadata.labels"})
+			fetched, err := l.client.GetLabels(ctx, pageID)
 			if err != nil {
 				if l.logger != nil {
 					l.logger.Printf("lister: fetch labels for page %d (%q): %v — skipping", pageID, page.Title, err)
 				}
 				continue
 			}
-			labels = full.Labels
-			if page.Title == "" {
-				page.Title = full.Title
-			}
+			labels = fetched
 		}
 
 		idLabel := identity.ExtractIDLabel(labels)

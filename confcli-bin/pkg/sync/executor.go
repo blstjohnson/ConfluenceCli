@@ -90,7 +90,17 @@ func (e ActionError) Error() string {
 // errors (the parent has no ID to attach to).
 func (x *Executor) Apply(ctx context.Context, plan *Plan) *Outcome {
 	out := &Outcome{}
+
+	// Pre-populate the parent-resolution map with every page the engine
+	// already located on the server. Without this, a child whose parent
+	// is a skip-action (existing, unchanged) would fail with "parent has
+	// no page id" — the skip branch wouldn't have added it.
 	pageIDs := map[string]int{} // relPath → pageID
+	for _, a := range plan.Actions {
+		if a.RelPath != "" && a.PageID != 0 {
+			pageIDs[a.RelPath] = a.PageID
+		}
+	}
 
 	for _, action := range plan.Actions {
 		switch action.Kind {

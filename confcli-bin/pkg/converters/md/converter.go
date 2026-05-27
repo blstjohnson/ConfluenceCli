@@ -30,6 +30,10 @@ var defaultMarkdown = goldmark.New(
 	),
 	goldmark.WithRendererOptions(
 		html.WithUnsafe(),
+		// Confluence storage format is XHTML-strict and rejects HTML5
+		// void tags like <hr> or <br>. WithXHTML emits the self-closing
+		// form (<hr />, <br />, <img ... />) the parser expects.
+		html.WithXHTML(),
 	),
 )
 

@@ -232,6 +232,92 @@ confcli hierarchy space --space DEV --output-dir ./export --scroll-version "Rele
 | `--set` | Переопределить параметры профиля трансформации (например, `--set page.format=html`) |
 | `--scroll-version` | Экспортировать конкретную версию Scroll Versions (требуется плагин Scroll Versions) |
 
+## Загрузка markdown-дерева в Confluence (`confcli sync`)
+
+Команда `confcli sync` синхронизирует локальное дерево markdown-файлов с деревом страниц Confluence — это обратное направление к `hierarchy space`. Поведением управляет **импорт-профиль** (`kind: import`) в `~/.confcli/transformations/`.
+
+Каждая загруженная страница помечается лейблами `confcli-id-<sha>` (привязка к исходному файлу) и `confcli-hash-<sha>` (хеш контента), что позволяет последующим запускам определить, какие страницы создать, обновить, пропустить или пометить как «осиротевшие» (orphan — больше нет исходного файла).
+
+```bash
+# Сухой прогон: построить и распечатать план, ничего не применяя
+confcli sync --profile docs --from ./docs --space ENG --root 12345 --dry-run
+
+# Применить план
+confcli sync --profile docs --from ./docs --space ENG --root 12345
+```
+
+### Флаги
+
+| Флаг | Описание |
+|------|----------|
+| `--profile` | Имя или путь импорт-профиля (обязательно) |
+| `--from` | Локальная директория с markdown-файлами (обязательно) |
+| `--space` | Ключ пространства Confluence (обязательно) |
+| `--root` | ID корневой страницы Confluence (обязательно) |
+| `--dry-run` | Построить и распечатать план, не применяя изменения |
+
+Глобальный флаг `--read-only` неявно включает `--dry-run`.
+
+### Импорт-профиль
+
+```yaml
+kind: import
+
+tree:
+  folder_page: README.md      # файл-маркер: его контент становится родительской страницей папки
+  # folder_page: "{dir}.md"   # альтернатива: одноимённый файл (docs/docs.md → страница «docs»)
+  skip:
+    - "**/node_modules/**"
+    - "_drafts/**"
+  flatten:                    # папки, не превращающиеся в собственную страницу — их дети поднимаются к родителю
+    - "appendix/**"
+
+  title:                      # как превращать имя файла в заголовок страницы Confluence
+    rewrites:                 # применяются по порядку к stem-имени (без .md)
+      - { pattern: "_",            replacement: " " }
+      - { pattern: '^\d+[-_. ]+',  replacement: "" }    # снять «01-» / «03_» префиксы
+      - { pattern: '\s+',          replacement: " " }
+    trim: true
+
+overrides:                    # доступные per-path переопределения (по doublestar-маске)
+  - path: "draft/**"
+    skip: true
+  - path: "docs/onboarding.md"
+    page_id: 12345            # пин к существующей странице, в обход поиска по id-лейблу
+
+plantuml:                     # ссылки на .puml/.plantuml → макрос Confluence (например, view-git-file)
+  macro: view-git-file
+  parameters:
+    path: "{path}"
+    branch: "refs/remotes/origin/{branch}"
+    repository-id: "6"
+    renderpuml: "true"
+
+git_files:                    # catch-all: ссылки на не-md/не-puml файлы (yaml, json, sql, sh, ...)
+  macro: view-git-file
+  parameters:
+    path: "{path}"
+    branch: "refs/remotes/origin/{branch}"
+    repository-id: "6"
+  mode: link                  # link (по умолчанию) | inline
+  per_extension:              # переопределение режима для конкретных расширений
+    yaml: inline
+    sql: inline
+  inline:
+    max_bytes: 200000         # файлы крупнее этого размера откатываются на link-режим
+```
+
+#### Заголовки страниц (`tree.title`)
+
+`rewrites` — это упорядоченный список пар «regex → замена», применяемых к имени файла после удаления расширения `.md`. Поддерживаются ссылки на захваты (`$1`, `$2`). Преобразования влияют **только на заголовок страницы Confluence**; путь, по которому идёт привязка через `confcli-id-` лейбл и резолв forward-ссылок, не трогается. Это значит, что переименование заголовка в профиле не «теряет» уже загруженные страницы.
+
+#### Режимы для не-markdown файлов (`git_files.mode`)
+
+- **`link`** (по умолчанию) — ссылка оборачивается в макрос (обычно `view-git-file`), Confluence подтягивает содержимое из git при рендере страницы
+- **`inline`** — файл читается из `--from` во время синхронизации и вставляется в страницу как Confluence-макрос `code` с подсветкой по расширению. Если файл недоступен, превышает `inline.max_bytes`, или выходит за пределы `--from`, происходит откат на `link`-режим (с предупреждением в stderr)
+
+Per-extension переопределения позволяют смешивать режимы — например, инлайнить yaml/sql, но оставлять ссылками pdf и большие дампы.
+
 ## Профили трансформации
 
 Профили трансформации позволяют задать набор правил обработки контента при экспорте: удаление макросов, замена ссылок, модификация текста и другие преобразования. Профили описываются в формате YAML.

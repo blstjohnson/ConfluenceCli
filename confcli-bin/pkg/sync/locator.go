@@ -54,9 +54,20 @@ func (l *Locator) FindByPath(ctx context.Context, spaceKey, relPath string) (*mo
 		return nil, fmt.Errorf("locator: search result for %q has empty page ID", relPath)
 	}
 
-	page, err := l.client.GetPageWithExpansions(ctx, id, []string{"metadata.labels", "version"})
+	page, err := l.client.GetPageWithExpansions(ctx, id, []string{"version"})
 	if err != nil {
-		return nil, fmt.Errorf("locator: fetch page %v with labels: %w", id, err)
+		return nil, fmt.Errorf("locator: fetch page %v: %w", id, err)
+	}
+	// The metadata.labels expansion returns labels under metadata.labels.results,
+	// which doesn't match the top-level "labels" JSON tag on models.Page — the
+	// field stays empty. Use the dedicated label endpoint instead, which the API
+	// client correctly deserializes.
+	if pageIDInt, ok := page.ID.Int(); ok {
+		labels, err := l.client.GetLabels(ctx, pageIDInt)
+		if err != nil {
+			return nil, fmt.Errorf("locator: fetch labels for page %d: %w", pageIDInt, err)
+		}
+		page.Labels = labels
 	}
 	return page, nil
 }

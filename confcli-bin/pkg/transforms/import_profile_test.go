@@ -249,6 +249,183 @@ func TestLoadProfileAcceptsExplicitExportKind(t *testing.T) {
 	}
 }
 
+func TestImportProfileTitleFor_Default(t *testing.T) {
+	p := &ImportProfile{Kind: "import"}
+	cases := map[string]string{
+		"intro.md":              "intro",
+		"docs/getting_started.md": "getting_started",
+		"docs/api/auth.md":      "auth",
+		"no-extension":          "no-extension",
+	}
+	for in, want := range cases {
+		if got := p.TitleFor(in); got != want {
+			t.Errorf("TitleFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestImportProfileTitleFor_UnderscoreToSpace(t *testing.T) {
+	p := &ImportProfile{Kind: "import"}
+	p.Tree.Title.Rewrites = []TitleRewrite{
+		{Pattern: "_", Replacement: " "},
+	}
+	cases := map[string]string{
+		"getting_started.md":    "getting started",
+		"docs/api_v2_notes.md":  "api v2 notes",
+		"plain.md":              "plain",
+	}
+	for in, want := range cases {
+		if got := p.TitleFor(in); got != want {
+			t.Errorf("TitleFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestImportProfileTitleFor_OrderedRewritesAndTrim(t *testing.T) {
+	// Rewrites apply in order: strip leading "01-" prefix, then _→ space,
+	// then collapse multiple spaces. Trim cleans up the edges.
+	p := &ImportProfile{Kind: "import"}
+	p.Tree.Title.Rewrites = []TitleRewrite{
+		{Pattern: `^\d+[-_. ]+`, Replacement: ""},
+		{Pattern: "_", Replacement: " "},
+		{Pattern: `\s+`, Replacement: " "},
+	}
+	p.Tree.Title.Trim = true
+	cases := map[string]string{
+		"01-getting_started.md":   "getting started",
+		"03___onboarding.md":       "onboarding",
+		"plain_title.md":          "plain title",
+	}
+	for in, want := range cases {
+		if got := p.TitleFor(in); got != want {
+			t.Errorf("TitleFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestImportProfileTitleFor_RegexCaptureGroups(t *testing.T) {
+	// Capture-group references in the replacement work as ReplaceAllString.
+	p := &ImportProfile{Kind: "import"}
+	p.Tree.Title.Rewrites = []TitleRewrite{
+		{Pattern: `^(\d+)-(.+)$`, Replacement: "$2 (chapter $1)"},
+	}
+	if got := p.TitleFor("07-intro.md"); got != "intro (chapter 07)" {
+		t.Errorf("TitleFor = %q, want %q", got, "intro (chapter 07)")
+	}
+}
+
+func TestImportProfileTitleFor_RewritesAppliedViaLoad(t *testing.T) {
+	yaml := `
+kind: import
+tree:
+  title:
+    rewrites:
+      - pattern: "_"
+        replacement: " "
+    trim: true
+`
+	p, err := LoadImportProfile([]byte(yaml))
+	if err != nil {
+		t.Fatalf("LoadImportProfile: %v", err)
+	}
+	if got := p.TitleFor("getting_started.md"); got != "getting started" {
+		t.Errorf("TitleFor = %q, want %q", got, "getting started")
+	}
+}
+
+func TestLoadImportProfileRejectsBadTitleRegex(t *testing.T) {
+	yaml := `
+kind: import
+tree:
+  title:
+    rewrites:
+      - pattern: "[unterminated"
+        replacement: ""
+`
+	_, err := LoadImportProfile([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for invalid regex, got nil")
+	}
+	if !strings.Contains(err.Error(), "tree.title.rewrites[0]") {
+		t.Errorf("error %q should mention tree.title.rewrites[0]", err.Error())
+	}
+}
+
+func TestLoadImportProfileRejectsEmptyTitlePattern(t *testing.T) {
+	yaml := `
+kind: import
+tree:
+  title:
+    rewrites:
+      - pattern: ""
+        replacement: " "
+`
+	_, err := LoadImportProfile([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for empty pattern, got nil")
+	}
+	if !strings.Contains(err.Error(), "pattern is required") {
+		t.Errorf("error %q should mention pattern is required", err.Error())
+	}
+}
+
+func TestLoadImportProfileRejectsBadGitFilesMode(t *testing.T) {
+	yaml := `
+kind: import
+git_files:
+  mode: maybe
+`
+	_, err := LoadImportProfile([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for bad mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "git_files.mode") {
+		t.Errorf("error %q should mention git_files.mode", err.Error())
+	}
+}
+
+func TestLoadImportProfileRejectsBadPerExtension(t *testing.T) {
+	yaml := `
+kind: import
+git_files:
+  per_extension:
+    sql: nope
+`
+	_, err := LoadImportProfile([]byte(yaml))
+	if err == nil {
+		t.Fatal("expected error for bad per_extension value, got nil")
+	}
+	if !strings.Contains(err.Error(), "per_extension") {
+		t.Errorf("error %q should mention per_extension", err.Error())
+	}
+}
+
+func TestLoadImportProfileAcceptsInlineMode(t *testing.T) {
+	yaml := `
+kind: import
+git_files:
+  mode: inline
+  per_extension:
+    sql: link
+    yaml: inline
+  inline:
+    max_bytes: 4096
+`
+	p, err := LoadImportProfile([]byte(yaml))
+	if err != nil {
+		t.Fatalf("LoadImportProfile: %v", err)
+	}
+	if p.GitFiles.Mode != "inline" {
+		t.Errorf("Mode = %q, want inline", p.GitFiles.Mode)
+	}
+	if p.GitFiles.Inline.MaxBytes != 4096 {
+		t.Errorf("Inline.MaxBytes = %d, want 4096", p.GitFiles.Inline.MaxBytes)
+	}
+	if p.GitFiles.PerExtension["sql"] != "link" || p.GitFiles.PerExtension["yaml"] != "inline" {
+		t.Errorf("PerExtension = %v, want sql=link yaml=inline", p.GitFiles.PerExtension)
+	}
+}
+
 func TestPeekProfileKind(t *testing.T) {
 	cases := []struct {
 		yaml string

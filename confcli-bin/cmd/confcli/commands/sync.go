@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -88,11 +90,21 @@ Example:
 				return fmt.Errorf("build path map: %w", err)
 			}
 
+			plantumlRewriter, err := buildPlantUMLRewriter(profile, absFrom, stderr)
+			if err != nil {
+				return fmt.Errorf("plantuml setup: %w", err)
+			}
+
+			gitFilesRewriter, err := buildGitFilesRewriter(profile, absFrom, fsys, stderr)
+			if err != nil {
+				return fmt.Errorf("git_files setup: %w", err)
+			}
+
 			engine, err := sync.New(sync.Options{
 				Profile: profile,
 				Locator: sync.NewLocator(client, stderr),
 				Lister:  sync.NewAPILister(client, stderr),
-				Convert: sync.NewMarkdownConverter(pathMap, stderr),
+				Convert: sync.NewMarkdownConverter(pathMap, plantumlRewriter, gitFilesRewriter, stderr),
 				Logger:  stderr,
 			})
 			if err != nil {
@@ -135,6 +147,105 @@ Example:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Compute and print the plan without applying it")
 
 	return cmd
+}
+
+// buildPlantUMLRewriter assembles a RewritePlantUMLLinks from the
+// import profile's plantuml section. Macro and Parameters must be set
+// explicitly; branch and repo root are auto-detected from .git unless
+// overridden in the profile.
+//
+// Returns (nil, nil) — no rewriter — when Macro or Parameters is
+// empty, since the rewriter is opt-in.
+func buildPlantUMLRewriter(profile *transforms.ImportProfile, absFrom string, logger *log.Logger) (*transforms.RewritePlantUMLLinks, error) {
+	cfg := profile.PlantUML
+	if cfg.Macro == "" || len(cfg.Parameters) == 0 {
+		return nil, nil
+	}
+	branch, syncRel, err := resolveGitContext(absFrom, cfg.Branch, cfg.RepoRoot, "plantuml")
+	if err != nil {
+		return nil, err
+	}
+	return &transforms.RewritePlantUMLLinks{
+		Macro:           cfg.Macro,
+		Parameters:      cfg.Parameters,
+		Branch:          branch,
+		SyncRootRelRepo: syncRel,
+		Logger:          logger,
+	}, nil
+}
+
+// buildGitFilesRewriter is the catch-all companion to
+// buildPlantUMLRewriter: it wraps non-md, non-puml file references
+// (yaml, json, sql, ...) in the same view-git-file macro without the
+// PlantUML renderpuml flag, so they show as source panels instead of
+// turning into broken relative hrefs on the Confluence page.
+//
+// fsys is the sync source filesystem (rooted at --from) — only needed
+// when inline mode is configured, but always passed so the rewriter can
+// fall back gracefully when individual files trigger inline emission.
+func buildGitFilesRewriter(profile *transforms.ImportProfile, absFrom string, fsys fs.FS, logger *log.Logger) (*transforms.RewriteGitFileLinks, error) {
+	cfg := profile.GitFiles
+	if cfg.Macro == "" || len(cfg.Parameters) == 0 {
+		return nil, nil
+	}
+	branch, syncRel, err := resolveGitContext(absFrom, cfg.Branch, cfg.RepoRoot, "git_files")
+	if err != nil {
+		return nil, err
+	}
+	return &transforms.RewriteGitFileLinks{
+		Macro:           cfg.Macro,
+		Parameters:      cfg.Parameters,
+		Branch:          branch,
+		SyncRootRelRepo: syncRel,
+		Extensions:      cfg.Extensions,
+		Logger:          logger,
+		Mode:            cfg.Mode,
+		PerExtension:    cfg.PerExtension,
+		InlineMaxBytes:  cfg.Inline.MaxBytes,
+		FSys:            fsys,
+	}, nil
+}
+
+// resolveGitContext returns the branch and sync-root-relative-repo
+// path that the plantuml / git_files rewriters need. branchOverride and
+// rootOverride come from the corresponding profile section; when empty
+// we walk up from absFrom to find .git and read HEAD + origin.
+//
+// configSection is "plantuml" or "git_files" purely for error message
+// hints (so the user knows which section to set the override in).
+func resolveGitContext(absFrom, branchOverride, rootOverride, configSection string) (branch, syncRel string, err error) {
+	info, gitErr := sync.FindGitInfo(absFrom)
+
+	branch = branchOverride
+	if branch == "" {
+		if info == nil {
+			return "", "", fmt.Errorf("auto-detect branch failed (%v); set %s.branch in profile", gitErr, configSection)
+		}
+		branch = info.Branch
+		if branch == "" {
+			return "", "", fmt.Errorf("git HEAD is detached; set %s.branch in profile to pin a branch", configSection)
+		}
+	}
+
+	repoRoot := rootOverride
+	if repoRoot == "" {
+		if info == nil {
+			return "", "", fmt.Errorf("auto-detect repo root failed (%v); set %s.repo_root in profile", gitErr, configSection)
+		}
+		repoRoot = info.Root
+	}
+	if !filepath.IsAbs(repoRoot) {
+		repoRoot = filepath.Join(absFrom, repoRoot)
+	}
+
+	rel, err := filepath.Rel(repoRoot, absFrom)
+	if err != nil {
+		return "", "", fmt.Errorf("compute --from path relative to repo root %q: %w", repoRoot, err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		return "", "", fmt.Errorf("--from %q is outside repo root %q", absFrom, repoRoot)
+	}
+	return branch, filepath.ToSlash(rel), nil
 }
 
 // outcomeFromStats maps planned counts into the Outcome shape so the
