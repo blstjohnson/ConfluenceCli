@@ -798,12 +798,9 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				}
 				if profile.ResolveSkipRoot(pageID, "") {
 					// Transparent container: no entry for this page; recurse
-					// children into parentDir, propagating any flatten setting
-					// so subtree paths are computed correctly.
-					childFlatten := inheritedFlatten
-					if !inheritedFlatten {
-						childFlatten = profile.ResolveFlatten(pageID, "", flatLeaves)
-					}
+					// children into parentDir, composing with per-page flatten
+					// so flatten:true on the same page propagates to descendants.
+					childFlatten := inheritedFlatten || profile.ResolveFlatten(pageID, "", false)
 					for _, childID := range childrenMap[pageID] {
 						buildFileMap(childID, parentDir, childFlatten)
 					}
@@ -814,25 +811,19 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 					childIDs := childrenMap[pageID]
 					if len(childIDs) > 0 {
 						pgDir := filepath.Join(parentDir, getFolderName(pageID))
+						childFlatten := inheritedFlatten || profile.ResolveFlatten(pageID, "", false)
 						for _, childID := range childIDs {
-							buildFileMap(childID, pgDir, inheritedFlatten)
+							buildFileMap(childID, pgDir, childFlatten)
 						}
 					}
 					return
 				}
 			}
 
-			// Hierarchical flatten: if inherited, all descendants go into parentDir.
-			// Only check profile/flatLeaves when not already inherited.
-			effectiveFlatten := inheritedFlatten
-			if !inheritedFlatten {
-				effectiveFlatten = flatLeaves
-				if profile != nil {
-					effectiveFlatten = profile.ResolveFlatten(pageID, "", flatLeaves)
-				}
-			}
+			isLeaf := len(childrenMap[pageID]) == 0
+			flattenThisPage, childInheritedFlatten := profile.ResolveFlattenDecision(pageID, "", isLeaf, flatLeaves, inheritedFlatten)
 			var pageDir string
-			if effectiveFlatten {
+			if flattenThisPage {
 				pageDir = parentDir
 			} else {
 				pageDir = filepath.Join(parentDir, getFolderName(pageID))
@@ -846,7 +837,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			pageFileMap[pageID] = filepath.ToSlash(filepath.Join(pageDir, filename))
 
 			for _, childID := range childrenMap[pageID] {
-				buildFileMap(childID, pageDir, effectiveFlatten)
+				buildFileMap(childID, pageDir, childInheritedFlatten)
 			}
 		}
 		for _, rootID := range rootPageIDs {
@@ -926,13 +917,10 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			}
 			if profile.ResolveSkipRoot(pageID, "") {
 				// Transparent container: no folder, no .md for this page;
-				// children export into parentDir. Compose with flatten so
-				// flatten:true on the same page propagates to descendants.
+				// children export into parentDir. Compose with per-page flatten
+				// so flatten:true on the same page propagates to descendants.
 				downloadBar.Add(1)
-				childFlatten := inheritedFlatten
-				if !inheritedFlatten {
-					childFlatten = profile.ResolveFlatten(pageID, "", flatLeaves)
-				}
+				childFlatten := inheritedFlatten || profile.ResolveFlatten(pageID, "", false)
 				for _, childID := range childrenMap[pageID] {
 					if err := savePageWithChildren(childID, parentDir, currentDepth+1, childFlatten); err != nil {
 						return err
@@ -950,8 +938,9 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 					if err := os.MkdirAll(pgDir, 0755); err != nil {
 						return fmt.Errorf("failed to create directory for page %d: %w", pageID, err)
 					}
+					childFlatten := inheritedFlatten || profile.ResolveFlatten(pageID, "", false)
 					for _, childID := range childIDs {
-						if err := savePageWithChildren(childID, pgDir, currentDepth+1, inheritedFlatten); err != nil {
+						if err := savePageWithChildren(childID, pgDir, currentDepth+1, childFlatten); err != nil {
 							return err
 						}
 					}
@@ -960,17 +949,10 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			}
 		}
 
-		// Hierarchical flatten: if inherited, all descendants go into parentDir.
-		// Only check profile/flatLeaves when not already inherited.
-		effectiveFlatten := inheritedFlatten
-		if !inheritedFlatten {
-			effectiveFlatten = flatLeaves
-			if profile != nil {
-				effectiveFlatten = profile.ResolveFlatten(pageID, "", flatLeaves)
-			}
-		}
+		isLeaf := len(childrenMap[pageID]) == 0
+		flattenThisPage, childInheritedFlatten := profile.ResolveFlattenDecision(pageID, "", isLeaf, flatLeaves, inheritedFlatten)
 		var pageDir string
-		if effectiveFlatten {
+		if flattenThisPage {
 			// parentDir already exists (created by the parent's MkdirAll, or is spaceDir).
 			pageDir = parentDir
 		} else {
@@ -1008,7 +990,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 					downloadBar.Add(1)
 					childIDs := childrenMap[pageID]
 					for _, childID := range childIDs {
-						if err := savePageWithChildren(childID, pageDir, currentDepth+1, effectiveFlatten); err != nil {
+						if err := savePageWithChildren(childID, pageDir, currentDepth+1, childInheritedFlatten); err != nil {
 							return err
 						}
 					}
@@ -1020,7 +1002,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 					// Skip to children
 					childIDs := childrenMap[pageID]
 					for _, childID := range childIDs {
-						if err := savePageWithChildren(childID, pageDir, currentDepth+1, effectiveFlatten); err != nil {
+						if err := savePageWithChildren(childID, pageDir, currentDepth+1, childInheritedFlatten); err != nil {
 							return err
 						}
 					}
@@ -1071,7 +1053,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 					downloadBar.Add(1)
 					childIDs := childrenMap[pageID]
 					for _, childID := range childIDs {
-						if err := savePageWithChildren(childID, pageDir, currentDepth+1, effectiveFlatten); err != nil {
+						if err := savePageWithChildren(childID, pageDir, currentDepth+1, childInheritedFlatten); err != nil {
 							return err
 						}
 					}
@@ -1233,7 +1215,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 		// Recursively save children
 		childIDs := childrenMap[pageID]
 		for _, childID := range childIDs {
-			if err := savePageWithChildren(childID, pageDir, currentDepth+1, effectiveFlatten); err != nil {
+			if err := savePageWithChildren(childID, pageDir, currentDepth+1, childInheritedFlatten); err != nil {
 				return err
 			}
 		}

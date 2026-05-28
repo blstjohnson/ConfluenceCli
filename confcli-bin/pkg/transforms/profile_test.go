@@ -356,6 +356,147 @@ func TestResolveFlatten(t *testing.T) {
 	}
 }
 
+func TestResolveFlattenDecision(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	// Anchor page 100 has per-page flatten:true; page 200 has flatten:false (explicit opt-out).
+	profile := &TransformProfile{
+		Pages: []PageOverride{
+			{ID: float64(100), Flatten: boolPtr(true)},
+			{ID: float64(200), Flatten: boolPtr(false)},
+		},
+	}
+
+	tests := []struct {
+		name                string
+		profile             *TransformProfile
+		pageID              int
+		isLeaf              bool
+		globalFlatLeaves    bool
+		inheritedFlatten    bool
+		wantFlattenThisPage bool
+		wantChildInherit    bool
+	}{
+		// --- global flat_leaves is leaf-only and non-cascading ---
+		{
+			name:                "flat_leaves=true, non-leaf parent: keep folder, do not cascade",
+			profile:             profile,
+			pageID:              1,
+			isLeaf:              false,
+			globalFlatLeaves:    true,
+			inheritedFlatten:    false,
+			wantFlattenThisPage: false,
+			wantChildInherit:    false,
+		},
+		{
+			name:                "flat_leaves=true, leaf: flatten this page",
+			profile:             profile,
+			pageID:              1,
+			isLeaf:              true,
+			globalFlatLeaves:    true,
+			inheritedFlatten:    false,
+			wantFlattenThisPage: true,
+			wantChildInherit:    false,
+		},
+		{
+			name:                "flat_leaves=false, leaf: do not flatten",
+			profile:             profile,
+			pageID:              1,
+			isLeaf:              true,
+			globalFlatLeaves:    false,
+			inheritedFlatten:    false,
+			wantFlattenThisPage: false,
+			wantChildInherit:    false,
+		},
+
+		// --- per-page flatten:true is a deep-flatten anchor ---
+		{
+			name:                "per-page flatten anchor (non-leaf): keep own folder, cascade to descendants",
+			profile:             profile,
+			pageID:              100,
+			isLeaf:              false,
+			globalFlatLeaves:    false,
+			inheritedFlatten:    false,
+			wantFlattenThisPage: false, // anchor keeps its own folder
+			wantChildInherit:    true,  // but descendants land flat in it
+		},
+		{
+			name:                "per-page flatten anchor (leaf): flatten this page",
+			profile:             profile,
+			pageID:              100,
+			isLeaf:              true,
+			globalFlatLeaves:    false,
+			inheritedFlatten:    false,
+			wantFlattenThisPage: true,
+			wantChildInherit:    true,
+		},
+		{
+			name:                "inside anchor's subtree: flatten this page, propagate",
+			profile:             profile,
+			pageID:              1,
+			isLeaf:              false,
+			globalFlatLeaves:    false,
+			inheritedFlatten:    true,
+			wantFlattenThisPage: true,
+			wantChildInherit:    true,
+		},
+		{
+			name:                "explicit flatten:false override blocks global flat_leaves on leaf",
+			profile:             profile,
+			pageID:              200,
+			isLeaf:              true,
+			globalFlatLeaves:    true,
+			inheritedFlatten:    false,
+			wantFlattenThisPage: true, // still leaf-flattened by global flat_leaves
+			wantChildInherit:    false,
+		},
+
+		// --- nil receiver ---
+		{
+			name:                "nil profile, flat_leaves=true, non-leaf: do not flatten",
+			profile:             nil,
+			pageID:              1,
+			isLeaf:              false,
+			globalFlatLeaves:    true,
+			inheritedFlatten:    false,
+			wantFlattenThisPage: false,
+			wantChildInherit:    false,
+		},
+		{
+			name:                "nil profile, flat_leaves=true, leaf: flatten",
+			profile:             nil,
+			pageID:              1,
+			isLeaf:              true,
+			globalFlatLeaves:    true,
+			inheritedFlatten:    false,
+			wantFlattenThisPage: true,
+			wantChildInherit:    false,
+		},
+		{
+			name:                "nil profile, inheritedFlatten=true: flatten and propagate",
+			profile:             nil,
+			pageID:              1,
+			isLeaf:              false,
+			globalFlatLeaves:    false,
+			inheritedFlatten:    true,
+			wantFlattenThisPage: true,
+			wantChildInherit:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotFlatten, gotChild := tc.profile.ResolveFlattenDecision(tc.pageID, "", tc.isLeaf, tc.globalFlatLeaves, tc.inheritedFlatten)
+			if gotFlatten != tc.wantFlattenThisPage {
+				t.Errorf("flattenThisPage = %v, want %v", gotFlatten, tc.wantFlattenThisPage)
+			}
+			if gotChild != tc.wantChildInherit {
+				t.Errorf("childInheritedFlatten = %v, want %v", gotChild, tc.wantChildInherit)
+			}
+		})
+	}
+}
+
 func TestResolveSkipRoot(t *testing.T) {
 	profile := &TransformProfile{
 		Pages: []PageOverride{

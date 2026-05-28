@@ -253,6 +253,36 @@ func (p *TransformProfile) ResolveFlatten(pageID int, pagePath string, globalFla
 	return globalFlatLeaves
 }
 
+// ResolveFlattenDecision computes how a page should be placed in the export
+// tree. It encapsulates the interaction between three settings:
+//
+//   - folder.flat_leaves (globalFlatLeaves): when true, LEAF pages (no
+//     children) have their content file written directly into the parent
+//     directory rather than getting their own subfolder. Non-leaf pages keep
+//     their folder. This setting does NOT cascade.
+//   - per-page flatten: true (matched via overrides): the page is a
+//     deep-flatten ANCHOR. The anchor itself keeps its own folder; its
+//     descendants at any depth land flat as siblings inside that folder.
+//   - inheritedFlatten: true when an ancestor was a deep-flatten anchor, so
+//     this page lives inside such an anchor's subtree.
+//
+// Returns:
+//   - flattenThisPage: when true, the page's content file goes into parentDir
+//     and no folder is created for it.
+//   - childInheritedFlatten: the value to pass as inheritedFlatten when
+//     recursing into descendants.
+//
+// Safe to call on a nil receiver.
+func (p *TransformProfile) ResolveFlattenDecision(pageID int, pagePath string, isLeaf, globalFlatLeaves, inheritedFlatten bool) (flattenThisPage bool, childInheritedFlatten bool) {
+	perPageFlatten := false
+	if p != nil {
+		perPageFlatten = p.ResolveFlatten(pageID, pagePath, false)
+	}
+	flattenThisPage = inheritedFlatten || (isLeaf && (globalFlatLeaves || perPageFlatten))
+	childInheritedFlatten = inheritedFlatten || perPageFlatten
+	return
+}
+
 // ResolveSkipRoot reports whether the page should be exported as a "transparent
 // container": no folder, no .md file for the page itself, with children
 // promoted into the parent directory. Returns true if any matching override
