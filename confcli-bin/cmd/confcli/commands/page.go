@@ -160,30 +160,15 @@ func newPageGetCmd() *cobra.Command {
 					transformedContent = resp.Content
 				}
 			} else if format == "export" {
-				// export_view is already clean HTML, convert to markdown
+				// export_view is already clean HTML, convert to markdown.
+				// PlantUML images are replaced with source from storage (walking
+				// include macros to pick up transcluded diagrams).
 				baseURL := viper.GetString("url")
-				if converters.HasPlantUMLImages(resp.Content) {
-					// Dual fetch: get storage format for PlantUML source code
-					storageContent, storageErr := apiClient.GetPageContent(ctx, id, "storage", version)
-					if storageErr == nil {
-						blocks := converters.ExtractPlantUMLBlocks(storageContent)
-						if len(blocks) > 0 {
-							md, mdErr := converters.ExportViewToMarkdownKeepImages(resp.Content, baseURL)
-							if mdErr == nil {
-								md = converters.ReplacePlantUMLImages(md, blocks)
-								transformedContent = converters.StripJunkImages(md)
-								err = nil
-							} else {
-								err = mdErr
-							}
-						}
-					}
-					if transformedContent == "" {
-						transformedContent, err = converters.ExportViewToMarkdown(resp.Content, baseURL)
-					}
-				} else {
-					transformedContent, err = converters.ExportViewToMarkdown(resp.Content, baseURL)
-				}
+				fetcher := newPlantUMLIncludeFetcher(ctx, apiClient)
+				transformedContent, err = renderExportWithPlantUML(
+					ctx, apiClient, id, resp.Content, baseURL,
+					"", version, resp.Page.Space.Key, fetcher,
+				)
 				if err != nil {
 					return fmt.Errorf("failed to convert export_view to markdown: %w", err)
 				}
@@ -291,6 +276,7 @@ func newPageGetCmd() *cobra.Command {
 
 						descendants := make([]map[string]interface{}, 0, len(hierResp.Descendants))
 						baseURL := viper.GetString("url")
+						descFetcher := newPlantUMLIncludeFetcher(ctx, apiClient)
 						for _, desc := range hierResp.Descendants {
 							descEntry := map[string]interface{}{
 								"page_id":    desc.ID.String(),
@@ -305,26 +291,14 @@ func newPageGetCmd() *cobra.Command {
 								if ok {
 									descContent, descErr := apiClient.GetPageContent(ctx, descID, "export_view", 0)
 									if descErr == nil {
-										var md string
-										var mdErr error
-										if converters.HasPlantUMLImages(descContent) {
-											storageCnt, sErr := apiClient.GetPageContent(ctx, descID, "storage", 0)
-											if sErr == nil {
-												blocks := converters.ExtractPlantUMLBlocks(storageCnt)
-												if len(blocks) > 0 {
-													md, mdErr = converters.ExportViewToMarkdownKeepImages(descContent, baseURL)
-													if mdErr == nil {
-														md = converters.ReplacePlantUMLImages(md, blocks)
-														md = converters.StripJunkImages(md)
-													}
-												}
-											}
-											if md == "" {
-												md, mdErr = converters.ExportViewToMarkdown(descContent, baseURL)
-											}
-										} else {
-											md, mdErr = converters.ExportViewToMarkdown(descContent, baseURL)
+										defaultSpace := desc.Space.Key
+										if defaultSpace == "" {
+											defaultSpace = resp.Page.Space.Key
 										}
+										md, mdErr := renderExportWithPlantUML(
+											ctx, apiClient, descID, descContent, baseURL,
+											"", 0, defaultSpace, descFetcher,
+										)
 										if mdErr == nil {
 											descEntry["content"] = md
 										}

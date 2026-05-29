@@ -1957,8 +1957,9 @@ func StripJunkImages(markdown string) string {
 
 // plantumlImgRe matches <img> tags whose src contains "plantuml" (case-insensitive).
 // Confluence export_view renders PlantUML macros as <img> pointing to the
-// PlantUML servlet or plugin endpoint.
-var plantumlImgRe = regexp.MustCompile(`(?i)<img[^>]+src\s*=\s*"[^"]*plantuml[^"]*"[^>]*/?>`)
+// PlantUML servlet or plugin endpoint. Handles both double- and single-quoted
+// src attributes — Confluence in practice emits single quotes for these.
+var plantumlImgRe = regexp.MustCompile(`(?i)<img[^>]+src\s*=\s*(?:"[^"]*plantuml[^"]*"|'[^']*plantuml[^']*')[^>]*/?>`)
 
 // HasPlantUMLImages reports whether export_view HTML contains rendered PlantUML
 // images that should be replaced with source code from the storage format.

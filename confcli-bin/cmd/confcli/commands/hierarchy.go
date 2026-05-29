@@ -877,6 +877,11 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 		progressbar.OptionSetPredictTime(true),
 	)
 
+	// Shared PlantUML include-resolver across the whole export so that
+	// transcluded template pages are fetched once and reused for every page
+	// that includes them.
+	plantumlFetcher := newPlantUMLIncludeFetcher(ctx, apiClient)
+
 	// Recursive function to save page and its children in hierarchy
 	// parentDir is the absolute directory of the parent page (or spaceDir for root pages)
 	var savePageWithChildren func(pageID int, parentDir string, currentDepth int, inheritedFlatten bool) error
@@ -1108,28 +1113,14 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			var convertErr error
 			// For export/export_view format, convert to markdown
 			if normalizedFormat == "export" {
-				// Check for PlantUML images and dual-fetch storage format if needed
-				if converters.HasPlantUMLImages(apiContent) {
-					storageContent, storageErr := apiClient.GetPageContent(context.Background(), page.ID.IntOrString(), "storage", fetchVersion)
-					if storageErr == nil {
-						blocks := converters.ExtractPlantUMLBlocks(storageContent)
-						if len(blocks) > 0 {
-							md, mdErr := converters.ExportViewToMarkdownKeepImages(apiContent, baseURL)
-							if mdErr == nil {
-								md = converters.ReplacePlantUMLImages(md, blocks)
-								content = converters.StripJunkImages(md)
-								convertErr = nil
-							} else {
-								convertErr = mdErr
-							}
-						}
-					}
-					if content == "" {
-						content, convertErr = converters.ExportViewToMarkdown(apiContent, baseURL)
-					}
-				} else {
-					content, convertErr = converters.ExportViewToMarkdown(apiContent, baseURL)
+				defaultSpace := page.Space.Key
+				if defaultSpace == "" {
+					defaultSpace = space
 				}
+				content, convertErr = renderExportWithPlantUML(
+					context.Background(), apiClient, pageID, apiContent, baseURL,
+					"", fetchVersion, defaultSpace, plantumlFetcher,
+				)
 				if convertErr != nil {
 					content = apiContent
 				}
