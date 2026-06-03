@@ -51,8 +51,8 @@ func TestBuildIDLabelDistinct(t *testing.T) {
 }
 
 func TestBuildHashLabel(t *testing.T) {
-	h1 := BuildHashLabel("Title", "<p>body</p>")
-	h2 := BuildHashLabel("Title", "<p>body</p>")
+	h1 := BuildHashLabel("Title", "<p>body</p>", "")
+	h2 := BuildHashLabel("Title", "<p>body</p>", "")
 	if h1 != h2 {
 		t.Fatalf("hash must be deterministic, got %q vs %q", h1, h2)
 	}
@@ -61,19 +61,23 @@ func TestBuildHashLabel(t *testing.T) {
 	}
 
 	// Title change → different hash.
-	if BuildHashLabel("Title", "<p>body</p>") == BuildHashLabel("Title2", "<p>body</p>") {
+	if BuildHashLabel("Title", "<p>body</p>", "") == BuildHashLabel("Title2", "<p>body</p>", "") {
 		t.Fatalf("title change must change hash")
 	}
 	// Payload change → different hash.
-	if BuildHashLabel("Title", "<p>body</p>") == BuildHashLabel("Title", "<p>body2</p>") {
+	if BuildHashLabel("Title", "<p>body</p>", "") == BuildHashLabel("Title", "<p>body2</p>", "") {
 		t.Fatalf("payload change must change hash")
+	}
+	// Image-fingerprint change → different hash (image-only edit re-syncs).
+	if BuildHashLabel("Title", "<p>body</p>", "img-a") == BuildHashLabel("Title", "<p>body</p>", "img-b") {
+		t.Fatalf("image fingerprint change must change hash")
 	}
 }
 
 func TestHashLabelBoundaryDisambiguation(t *testing.T) {
 	// Without a NUL separator, ("foo","bar") and ("foob","ar") would collide.
-	a := BuildHashLabel("foo", "bar")
-	b := BuildHashLabel("foob", "ar")
+	a := BuildHashLabel("foo", "bar", "")
+	b := BuildHashLabel("foob", "ar", "")
 	if a == b {
 		t.Fatalf("title/payload boundary ambiguity: %q == %q", a, b)
 	}

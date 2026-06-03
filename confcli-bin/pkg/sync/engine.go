@@ -290,9 +290,17 @@ func (e *Engine) emitFile(
 		return fmt.Errorf("convert %q: %w", relPath, err)
 	}
 
+	// Rewrite local <img> references into Confluence attachment macros and
+	// collect the images so the executor can upload them. The image bytes are
+	// folded into the content hash below so an image-only edit re-syncs.
+	storage, images, err := rewriteImages(storage, relPath, fsys, e.logger)
+	if err != nil {
+		return fmt.Errorf("rewrite images %q: %w", relPath, err)
+	}
+
 	title := e.profile.TitleFor(relPath)
 	idLabel := identity.BuildIDLabel(relPath)
-	newHash := identity.BuildHashLabel(title, storage)
+	newHash := identity.BuildHashLabel(title, storage, imageFingerprint(images))
 	seen[idLabel] = struct{}{}
 
 	existing, err := e.locator.FindByPath(ctx, spaceKey, relPath)
@@ -309,9 +317,11 @@ func (e *Engine) emitFile(
 			IDLabel:       idLabel,
 			NewHashLabel:  newHash,
 			Storage:       storage,
+			Images:        images,
 			Reason:        "no page with this id label",
 		})
 		plan.Stats.add(ActionCreate)
+		plan.Stats.Images += len(images)
 		return nil
 	}
 
@@ -346,9 +356,11 @@ func (e *Engine) emitFile(
 		OldHashLabel:  oldHash,
 		NewHashLabel:  newHash,
 		Storage:       storage,
+		Images:        images,
 		Reason:        updateReason(oldHash),
 	})
 	plan.Stats.add(ActionUpdate)
+	plan.Stats.Images += len(images)
 	return nil
 }
 

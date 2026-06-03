@@ -252,10 +252,11 @@ func resolveGitContext(absFrom, branchOverride, rootOverride, configSection stri
 // dry-run report uses the same renderer as the post-apply report.
 func outcomeFromStats(s sync.PlanStats) *sync.Outcome {
 	return &sync.Outcome{
-		Created:  s.Create,
-		Updated:  s.Update,
-		Skipped:  s.Skip,
-		Orphaned: s.Orphan,
+		Created:        s.Create,
+		Updated:        s.Update,
+		Skipped:        s.Skip,
+		Orphaned:       s.Orphan,
+		ImagesUploaded: s.Images,
 	}
 }
 
@@ -288,10 +289,15 @@ func printSyncReport(w io.Writer, plan *sync.Plan, outcome *sync.Outcome, dryRun
 		}
 	}
 
+	imageLabel := "images:"
+	if dryRun {
+		imageLabel = "images (to upload):"
+	}
 	fmt.Fprintf(w, "created:  %d\n", outcome.Created)
 	fmt.Fprintf(w, "updated:  %d\n", outcome.Updated)
 	fmt.Fprintf(w, "skipped:  %d\n", outcome.Skipped)
 	fmt.Fprintf(w, "orphaned: %d\n", outcome.Orphaned)
+	fmt.Fprintf(w, "%-9s %d\n", imageLabel, outcome.ImagesUploaded)
 	fmt.Fprintf(w, "errors:   %d\n", len(outcome.Errors))
 
 	for _, e := range outcome.Errors {

@@ -52,14 +52,20 @@ func BuildIDLabel(relPath string) string {
 }
 
 // BuildHashLabel returns the confcli-hash label for a page that would be
-// published with the given title and storage-format payload. The hash is
-// computed over title and payload joined by a NUL byte to avoid boundary
-// ambiguity (no payload can legitimately contain a NUL).
-func BuildHashLabel(title, storagePayload string) string {
+// published with the given title, storage-format payload, and image
+// fingerprint. The components are joined by NUL bytes to avoid boundary
+// ambiguity (no component can legitimately contain a NUL).
+//
+// imageFingerprint folds the bytes of the page's local images into the hash
+// so that editing an image (without touching the markdown) still changes the
+// page hash and triggers a re-sync. Pass "" for pages with no local images.
+func BuildHashLabel(title, storagePayload, imageFingerprint string) string {
 	h := sha1.New()
 	h.Write([]byte(title))
 	h.Write([]byte{0})
 	h.Write([]byte(storagePayload))
+	h.Write([]byte{0})
+	h.Write([]byte(imageFingerprint))
 	return HashLabelPrefix + hex.EncodeToString(h.Sum(nil))
 }
 

@@ -109,7 +109,27 @@ func NewHTTPClient(options *ClientOptions) (*HTTPClient, error) {
 // MakeRequest performs an HTTP request to the Confluence API with automatic
 // retry for transient failures (timeouts, 5xx, connection reset).
 // Up to 3 retries with exponential backoff (1s, 2s, 4s).
+//
+// JSON-bodied requests go through here; for multipart uploads (attachments)
+// use MakeMultipartRequest, which shares the same auth/cookie/retry path.
 func (c *HTTPClient) MakeRequest(ctx context.Context, method, path string, queryParams url.Values, body io.Reader) (*http.Response, error) {
+	return c.makeRequest(ctx, method, path, queryParams, body, "application/json", nil)
+}
+
+// MakeMultipartRequest performs a multipart/form-data request, used for
+// attachment uploads. contentType must carry the multipart boundary (obtain
+// it from multipart.Writer.FormDataContentType()). The Confluence-required
+// "X-Atlassian-Token: no-check" header is added automatically.
+func (c *HTTPClient) MakeMultipartRequest(ctx context.Context, method, path string, queryParams url.Values, body io.Reader, contentType string) (*http.Response, error) {
+	return c.makeRequest(ctx, method, path, queryParams, body, contentType, map[string]string{
+		"X-Atlassian-Token": "no-check",
+	})
+}
+
+// makeRequest is the shared core for MakeRequest and MakeMultipartRequest.
+// bodyContentType is applied as the Content-Type header when a body is
+// present; extraHeaders (may be nil) are layered on top.
+func (c *HTTPClient) makeRequest(ctx context.Context, method, path string, queryParams url.Values, body io.Reader, bodyContentType string, extraHeaders map[string]string) (*http.Response, error) {
 	// Construct the full URL with optional query parameters
 	var fullURL *url.URL
 	if len(queryParams) > 0 {
@@ -161,7 +181,10 @@ func (c *HTTPClient) MakeRequest(ctx context.Context, method, path string, query
 		// Set headers
 		req.Header.Set("Accept", "application/json")
 		if hasBody {
-			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Content-Type", bodyContentType)
+		}
+		for k, v := range extraHeaders {
+			req.Header.Set(k, v)
 		}
 
 		// Set authentication header

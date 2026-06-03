@@ -312,6 +312,10 @@ type UpdatePageRequest struct {
 	Format           string // Content format: storage, editor, etc.
 	Title            string // Optional: if not provided, will fetch current title
 	SkipFetchCurrent bool   // If true, assumes caller provides correct title
+	// ParentID, when non-nil, reparents the page under the given ancestor as
+	// part of the same update (atomic with the version bump). Nil leaves the
+	// page where it is.
+	ParentID *int
 }
 
 // UpdatePageResponse represents the response from updating a page
@@ -360,6 +364,15 @@ func (e *PageExtension) UpdatePage(ctx context.Context, req *UpdatePageRequest) 
 				"representation": format,
 			},
 		},
+	}
+
+	// Reparent in the same update when a target ancestor is given. Confluence
+	// honors `ancestors` on PUT /content/{id}; omitting it leaves the page
+	// under its current parent.
+	if req.ParentID != nil {
+		pageData["ancestors"] = []map[string]interface{}{
+			{"id": fmt.Sprintf("%d", *req.ParentID)},
+		}
 	}
 
 	jsonData, err := json.Marshal(pageData)

@@ -68,6 +68,11 @@ type Action struct {
 	// / update only).
 	Storage string
 
+	// Images are the local images referenced by this page, resolved to their
+	// bytes. The executor uploads them as attachments after the page is
+	// created or updated (create / update only).
+	Images []ImageRef
+
 	// Reason is a short human-readable explanation, e.g.
 	// "no page with this id label" or "hash matches existing page".
 	Reason string
@@ -88,6 +93,9 @@ type PlanStats struct {
 	Update int
 	Skip   int
 	Orphan int
+	// Images is the total number of local images referenced across all
+	// create/update actions — the number the executor would upload.
+	Images int
 }
 
 func (s *PlanStats) add(kind ActionKind) {

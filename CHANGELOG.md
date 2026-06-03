@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `confcli sync` now reparents pages under `--root` on update, so `--root` is authoritative. Previously a page that already existed (created before `--root` was used, created by hand, or moved) was updated in place and never pulled under the sync root, making it look like `--root` was ignored. Reparenting rides along on the same update request (no extra call); if the target parent failed to create earlier in the run, the content update still happens and reparenting resolves on the next sync
+
+### Added
+
+- `confcli sync` now uploads local images. Markdown image references (`![alt](path.png)`) to on-disk files are rewritten into Confluence `<ac:image><ri:attachment ri:filename="…"/></ac:image>` macros and the image is uploaded as a page attachment after the page is created/updated. Always-on; supports png/jpg/jpeg/gif/svg/webp/bmp. Remote images (`http(s)://`, protocol-relative, `data:`) and unreadable/unsupported references are left untouched. Attachments are keyed by basename and upserted (re-upload replaces existing data)
+- Image bytes are folded into the page content hash, so editing an image (without changing the markdown) triggers a re-sync. The sync report gains an `images` line (shown as `images (to upload)` under `--dry-run`)
+- `api.Client.UploadAttachment` — multipart attachment upload (`POST /content/{id}/child/attachment`, with `X-Atlassian-Token: no-check`), upserting by filename
+
 ## [v0.0.12] - 2026-05-27
 
 ### Added

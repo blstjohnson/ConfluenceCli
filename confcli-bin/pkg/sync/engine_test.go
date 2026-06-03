@@ -82,9 +82,9 @@ func TestBuildPlan_CreateUpdateSkip(t *testing.T) {
 	}
 
 	// Seed locator: changed.md and same.md exist on the server already.
-	oldChangedHash := identity.BuildHashLabel("changed", "# changed v1")
+	oldChangedHash := identity.BuildHashLabel("changed", "# changed v1", "")
 	sameStorage := "# unchanged"
-	sameHash := identity.BuildHashLabel("same", sameStorage)
+	sameHash := identity.BuildHashLabel("same", sameStorage, "")
 
 	loc := &fakeLocator{pages: map[string]*models.Page{
 		"changed.md": pageWithLabels(101, "changed", 3,
@@ -135,7 +135,7 @@ func TestBuildPlan_OrphanDetection(t *testing.T) {
 	keepLabel := identity.BuildIDLabel("keep.md")
 	loc := &fakeLocator{pages: map[string]*models.Page{
 		"keep.md": pageWithLabels(1, "keep", 1, keepLabel,
-			identity.BuildHashLabel("keep", "# keep")),
+			identity.BuildHashLabel("keep", "# keep", "")),
 	}}
 	lister := &fakeLister{pages: []ManagedPage{
 		{PageID: 1, Title: "keep", IDLabel: keepLabel},
@@ -168,6 +168,61 @@ func TestBuildPlan_OrphanDetection(t *testing.T) {
 	// Orphan must come after the create/skip actions (executor order).
 	if plan.Actions[len(plan.Actions)-1].Kind != ActionOrphan {
 		t.Errorf("orphans should be appended at the end; got order %v", kinds(plan.Actions))
+	}
+}
+
+func TestBuildPlan_ImagesCollectedAndFoldedIntoHash(t *testing.T) {
+	// End-to-end through the real markdown converter: a page that embeds a
+	// local image yields an <ac:image> macro, collects the image bytes, and
+	// re-syncs (different hash) when only the image bytes change.
+	mkFS := func(png string) fstest.MapFS {
+		return fstest.MapFS{
+			"page.md":     {Data: []byte("![d](d.png)")},
+			"d.png":       {Data: []byte(png)},
+		}
+	}
+	mkEngine := func() *Engine {
+		e, err := New(Options{
+			Profile: basicProfile(),
+			Locator: &fakeLocator{pages: nil},
+			Convert: NewMarkdownConverter(nil, nil, nil, nil),
+		})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return e
+	}
+
+	fsys := mkFS("PNGv1")
+	plan, err := mkEngine().BuildPlan(context.Background(), fsys, "SPACE", 0)
+	if err != nil {
+		t.Fatalf("BuildPlan: %v", err)
+	}
+	if len(plan.Actions) != 1 {
+		t.Fatalf("actions = %d, want 1", len(plan.Actions))
+	}
+	a := plan.Actions[0]
+	if !strings.Contains(a.Storage, `<ri:attachment ri:filename="d.png" />`) {
+		t.Errorf("storage missing attachment macro: %s", a.Storage)
+	}
+	if strings.Contains(a.Storage, "<img") {
+		t.Errorf("raw <img> should be rewritten: %s", a.Storage)
+	}
+	if len(a.Images) != 1 || a.Images[0].Filename != "d.png" || string(a.Images[0].Data) != "PNGv1" {
+		t.Fatalf("images = %+v, want one d.png/PNGv1", a.Images)
+	}
+	if plan.Stats.Images != 1 {
+		t.Errorf("stats.Images = %d, want 1", plan.Stats.Images)
+	}
+
+	// Same markdown, different image bytes → different content hash.
+	fsys2 := mkFS("PNGv2")
+	plan2, err := mkEngine().BuildPlan(context.Background(), fsys2, "SPACE", 0)
+	if err != nil {
+		t.Fatalf("BuildPlan v2: %v", err)
+	}
+	if plan.Actions[0].NewHashLabel == plan2.Actions[0].NewHashLabel {
+		t.Errorf("image-only change must change the page hash")
 	}
 }
 

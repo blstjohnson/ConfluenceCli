@@ -20,12 +20,21 @@ type execFakeClient struct {
 	updateCalls []updateCall
 	addLabel    []labelCall
 	removeLabel []labelCall
+	uploads     []uploadCall
 
 	createErr error
 	updateErr error
 	labelErr  error
+	uploadErr error
 
 	nextPageID int
+}
+
+type uploadCall struct {
+	pageID   int
+	filename string
+	data     []byte
+	mime     string
 }
 
 type createCall struct {
@@ -37,10 +46,11 @@ type createCall struct {
 }
 
 type updateCall struct {
-	id      int
-	content string
-	comment string
-	format  string
+	id       int
+	content  string
+	comment  string
+	format   string
+	parentID *int
 }
 
 type labelCall struct {
@@ -57,12 +67,17 @@ func (f *execFakeClient) CreatePage(_ context.Context, spaceKey string, parentID
 	return &models.Page{ID: models.PageID{Value: f.nextPageID + 1000}, Title: title}, nil
 }
 
-func (f *execFakeClient) UpdatePage(_ context.Context, id int, content, comment, format string) (*models.Page, error) {
-	f.updateCalls = append(f.updateCalls, updateCall{id, content, comment, format})
+func (f *execFakeClient) UpdatePage(_ context.Context, id int, content, comment, format string, parentID *int) (*models.Page, error) {
+	f.updateCalls = append(f.updateCalls, updateCall{id, content, comment, format, parentID})
 	if f.updateErr != nil {
 		return nil, f.updateErr
 	}
 	return &models.Page{ID: models.PageID{Value: id}}, nil
+}
+
+func (f *execFakeClient) UploadAttachment(_ context.Context, pageID int, filename string, data []byte, mime string) error {
+	f.uploads = append(f.uploads, uploadCall{pageID, filename, data, mime})
+	return f.uploadErr
 }
 
 func (f *execFakeClient) AddLabel(_ context.Context, pageID int, name string) error {
@@ -208,6 +223,81 @@ func TestExecutor_UpdateRemovesOldHashOnlyIfDifferent(t *testing.T) {
 	}
 }
 
+func TestExecutor_UpdateReparentsTopLevelUnderRoot(t *testing.T) {
+	// Regression for the "--root ignored" bug: an existing top-level page is
+	// reparented under the sync root on update, so a page that predates --root
+	// (or drifted to the space root) is pulled back under the tree.
+	fc := &execFakeClient{}
+	x := newExec(t, fc) // root = 7
+
+	plan := &Plan{Actions: []Action{
+		{
+			Kind: ActionUpdate, RelPath: "a.md", Title: "a", PageID: 42, Version: 2,
+			IDLabel: "id", OldHashLabel: "old", NewHashLabel: "new", Storage: "<p>x</p>",
+		},
+	}}
+	out := x.Apply(context.Background(), plan)
+	if out.Updated != 1 || len(out.Errors) != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if len(fc.updateCalls) != 1 {
+		t.Fatalf("update calls = %d, want 1", len(fc.updateCalls))
+	}
+	if u := fc.updateCalls[0]; u.parentID == nil || *u.parentID != 7 {
+		t.Errorf("update parent = %v, want pointer to 7 (root)", u.parentID)
+	}
+}
+
+func TestExecutor_UpdateReparentsUnderResolvedParent(t *testing.T) {
+	// A nested page is reparented under its (already-existing) folder-marker
+	// parent, resolved from the plan's pre-populated id map.
+	fc := &execFakeClient{}
+	x := newExec(t, fc)
+
+	plan := &Plan{Actions: []Action{
+		{Kind: ActionSkip, RelPath: "docs/README.md", PageID: 555, Title: "docs"},
+		{
+			Kind: ActionUpdate, RelPath: "docs/intro.md", ParentRelPath: "docs/README.md",
+			PageID: 600, Version: 1, IDLabel: "id2", OldHashLabel: "o", NewHashLabel: "n",
+			Storage: "<p>i</p>",
+		},
+	}}
+	out := x.Apply(context.Background(), plan)
+	if out.Updated != 1 || out.Skipped != 1 || len(out.Errors) != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if u := fc.updateCalls[0]; u.id != 600 || u.parentID == nil || *u.parentID != 555 {
+		t.Errorf("update = %+v, want id=600 parent=555", u)
+	}
+}
+
+func TestExecutor_UpdateWithUnresolvedParentUpdatesContentOnly(t *testing.T) {
+	// When the parent's create fails earlier in the run, the child's content
+	// update must still happen (parent omitted) rather than being blocked.
+	fc := &execFakeClient{createErr: errors.New("boom")}
+	x := newExec(t, fc)
+
+	plan := &Plan{Actions: []Action{
+		{Kind: ActionCreate, RelPath: "docs/README.md", Title: "docs", IDLabel: "id1", NewHashLabel: "h1"},
+		{
+			Kind: ActionUpdate, RelPath: "docs/intro.md", ParentRelPath: "docs/README.md",
+			PageID: 600, Version: 1, IDLabel: "id2", OldHashLabel: "o", NewHashLabel: "n",
+			Storage: "<p>i</p>",
+		},
+	}}
+	out := x.Apply(context.Background(), plan)
+	// Parent create failed (1 error); child content still updated.
+	if out.Updated != 1 {
+		t.Errorf("Updated = %d, want 1", out.Updated)
+	}
+	if len(out.Errors) != 1 {
+		t.Fatalf("Errors = %d, want 1 (the failed parent create)", len(out.Errors))
+	}
+	if u := fc.updateCalls[0]; u.id != 600 || u.parentID != nil {
+		t.Errorf("update = %+v, want id=600 with nil parent (no reparent)", u)
+	}
+}
+
 func TestExecutor_SkipParentResolvesChildOnCreate(t *testing.T) {
 	// Regression: when a parent action is a skip (page already exists,
 	// hash unchanged), a child create action must still be able to
@@ -231,6 +321,64 @@ func TestExecutor_SkipParentResolvesChildOnCreate(t *testing.T) {
 	}
 	if fc.createCalls[0].parentID == nil || *fc.createCalls[0].parentID != 555 {
 		t.Fatalf("child parent = %v, want pointer to 555 (skipped parent's id)", fc.createCalls[0].parentID)
+	}
+}
+
+func TestExecutor_CreateUploadsImagesToNewPage(t *testing.T) {
+	fc := &execFakeClient{}
+	x := newExec(t, fc)
+
+	plan := &Plan{Actions: []Action{
+		{
+			Kind:         ActionCreate,
+			RelPath:      "a.md",
+			Title:        "a",
+			IDLabel:      "id",
+			NewHashLabel: "hash",
+			Storage:      `<ac:image><ri:attachment ri:filename="d.png" /></ac:image>`,
+			Images:       []ImageRef{{Filename: "d.png", Data: []byte("PNG")}},
+		},
+	}}
+	out := x.Apply(context.Background(), plan)
+	if out.Created != 1 || out.ImagesUploaded != 1 || len(out.Errors) != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if len(fc.uploads) != 1 {
+		t.Fatalf("upload calls = %d, want 1", len(fc.uploads))
+	}
+	u := fc.uploads[0]
+	// The image must be uploaded to the freshly-created page id (1001), not root.
+	if u.pageID != 1001 || u.filename != "d.png" || string(u.data) != "PNG" {
+		t.Errorf("upload = %+v, want pageID=1001 d.png/PNG", u)
+	}
+	if u.mime != "image/png" {
+		t.Errorf("mime = %q, want image/png", u.mime)
+	}
+}
+
+func TestExecutor_ImageUploadFailureDoesNotAbortPage(t *testing.T) {
+	fc := &execFakeClient{uploadErr: errors.New("attach boom")}
+	x := newExec(t, fc)
+
+	plan := &Plan{Actions: []Action{
+		{
+			Kind: ActionUpdate, RelPath: "a.md", Title: "a", PageID: 42, Version: 1,
+			IDLabel: "id", OldHashLabel: "old", NewHashLabel: "new",
+			Storage: "<p>x</p>",
+			Images:  []ImageRef{{Filename: "d.png", Data: []byte("PNG")}},
+		},
+	}}
+	out := x.Apply(context.Background(), plan)
+	// Page update still counts as success; the image error is surfaced but
+	// does not roll back the page.
+	if out.Updated != 1 {
+		t.Errorf("Updated = %d, want 1", out.Updated)
+	}
+	if out.ImagesUploaded != 0 {
+		t.Errorf("ImagesUploaded = %d, want 0", out.ImagesUploaded)
+	}
+	if len(out.Errors) != 1 || !strings.Contains(out.Errors[0].Err.Error(), "upload image") {
+		t.Errorf("expected one upload-image error, got %+v", out.Errors)
 	}
 }
 

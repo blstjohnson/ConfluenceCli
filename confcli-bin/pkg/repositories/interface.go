@@ -15,8 +15,9 @@ type PageRepository interface {
 	GetPageWithExpansions(ctx context.Context, id interface{}, expansions []string) (*models.Page, error)
 	GetDescendants(ctx context.Context, id int, depth int) ([]models.Page, error)
 	CreatePage(ctx context.Context, spaceKey string, parentID *int, title string, content string, format string) (*models.Page, error)
-	UpdatePage(ctx context.Context, id int, content string, versionComment string, format string) (*models.Page, error)
+	UpdatePage(ctx context.Context, id int, content string, versionComment string, format string, parentID *int) (*models.Page, error)
 	DeletePage(ctx context.Context, id int) error
+	UploadAttachment(ctx context.Context, pageID int, filename string, data []byte, mimeType string) error
 	GetComments(ctx context.Context, pageID int) ([]models.Comment, error)
 	GetLabels(ctx context.Context, pageID int) ([]models.Label, error)
 	AddComment(ctx context.Context, pageID int, text string, parentCommentID *int) (*models.Comment, error)

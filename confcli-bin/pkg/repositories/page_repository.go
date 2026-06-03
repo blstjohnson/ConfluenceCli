@@ -162,10 +162,16 @@ func (r *HTTPPageRepository) CreatePage(ctx context.Context, spaceKey string, pa
 	return resp.Page, nil
 }
 
+// UploadAttachment uploads (or replaces) a page attachment.
+func (r *HTTPPageRepository) UploadAttachment(ctx context.Context, pageID int, filename string, data []byte, mimeType string) error {
+	return r.pageExtension.UploadAttachment(ctx, pageID, filename, data, mimeType)
+}
+
 // UpdatePage updates an existing page
-func (r *HTTPPageRepository) UpdatePage(ctx context.Context, id int, content string, versionComment string, format string) (*models.Page, error) {
+func (r *HTTPPageRepository) UpdatePage(ctx context.Context, id int, content string, versionComment string, format string, parentID *int) (*models.Page, error) {
 	resp, err := r.pageExtension.UpdatePage(ctx, &api.UpdatePageRequest{
 		PageID:         id,
+		ParentID:       parentID,
 		Content:        content,
 		VersionComment: versionComment,
 		Format:         format,

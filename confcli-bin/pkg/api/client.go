@@ -16,8 +16,11 @@ type Client interface {
 	GetDescendants(ctx context.Context, id int, depth int) ([]models.Page, error)
 	GetPageWithExpansions(ctx context.Context, id interface{}, expansions []string) (*models.Page, error)
 	CreatePage(ctx context.Context, spaceKey string, parentID *int, title string, content string, format string) (*models.Page, error)
-	UpdatePage(ctx context.Context, id int, content string, versionComment string, format string) (*models.Page, error)
+	UpdatePage(ctx context.Context, id int, content string, versionComment string, format string, parentID *int) (*models.Page, error)
 	DeletePage(ctx context.Context, id int) error
+
+	// Attachment operations
+	UploadAttachment(ctx context.Context, pageID int, filename string, data []byte, mimeType string) error
 
 	// Space operations
 	GetSpace(ctx context.Context, key string) (*models.Space, error)

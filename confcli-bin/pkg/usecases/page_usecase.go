@@ -243,7 +243,8 @@ func (uc *pageUseCase) CreatePageWithValidation(ctx context.Context, req *Create
 
 // UpdatePageWithVersion updates a page handling version management
 func (uc *pageUseCase) UpdatePageWithVersion(ctx context.Context, req *UpdatePageWithVersionRequest) (*UpdatePageWithVersionResponse, error) {
-	page, err := uc.apiClient.UpdatePage(ctx, req.PageID, req.Content, req.VersionComment, req.Format)
+	// nil parent: a generic content update preserves the page's location.
+	page, err := uc.apiClient.UpdatePage(ctx, req.PageID, req.Content, req.VersionComment, req.Format, nil)
 	if err != nil {
 		return nil, err
 	}

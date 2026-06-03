@@ -133,14 +133,21 @@ func (c *client) CreatePage(ctx context.Context, spaceKey string, parentID *int,
 	return c.pageService.CreatePage(ctx, spaceKey, parentID, title, content, format)
 }
 
-// UpdatePage updates an existing page
-func (c *client) UpdatePage(ctx context.Context, id int, content string, versionComment string, format string) (*models.Page, error) {
-	return c.pageService.UpdatePage(ctx, id, content, versionComment, format)
+// UpdatePage updates an existing page. parentID, when non-nil, reparents the
+// page under the given ancestor as part of the same update; nil leaves it in
+// place.
+func (c *client) UpdatePage(ctx context.Context, id int, content string, versionComment string, format string, parentID *int) (*models.Page, error) {
+	return c.pageService.UpdatePage(ctx, id, content, versionComment, format, parentID)
 }
 
 // DeletePage deletes a page
 func (c *client) DeletePage(ctx context.Context, id int) error {
 	return c.pageService.DeletePage(ctx, id)
+}
+
+// UploadAttachment uploads (or replaces) a page attachment.
+func (c *client) UploadAttachment(ctx context.Context, pageID int, filename string, data []byte, mimeType string) error {
+	return c.pageService.UploadAttachment(ctx, pageID, filename, data, mimeType)
 }
 
 // AddComment adds a comment to a page
