@@ -13,7 +13,7 @@ func TestRewriteImages_LocalImageBecomesAttachmentMacro(t *testing.T) {
 	}
 	storage := `<p><img src="img/diagram.png" alt="a diagram" /></p>`
 
-	out, images, err := rewriteImages(storage, "docs/page.md", fsys, nil)
+	out, images, err := rewriteImages(storage, "docs/page.md", fsys, nil, "", nil)
 	if err != nil {
 		t.Fatalf("rewriteImages: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestRewriteImages_RemoteImageUntouched(t *testing.T) {
 	fsys := fstest.MapFS{}
 	storage := `<p><img src="https://example.com/x.png" alt="x" /></p>`
 
-	out, images, err := rewriteImages(storage, "page.md", fsys, nil)
+	out, images, err := rewriteImages(storage, "page.md", fsys, nil, "", nil)
 	if err != nil {
 		t.Fatalf("rewriteImages: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestRewriteImages_MissingFileLeftAsIs(t *testing.T) {
 	fsys := fstest.MapFS{}
 	storage := `<p><img src="missing.png" alt="m" /></p>`
 
-	out, images, err := rewriteImages(storage, "page.md", fsys, nil)
+	out, images, err := rewriteImages(storage, "page.md", fsys, nil, "", nil)
 	if err != nil {
 		t.Fatalf("rewriteImages: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestRewriteImages_UnsupportedExtensionLeftAsIs(t *testing.T) {
 	fsys := fstest.MapFS{"weird.tiff": {Data: []byte("x")}}
 	storage := `<p><img src="weird.tiff" /></p>`
 
-	out, images, err := rewriteImages(storage, "page.md", fsys, nil)
+	out, images, err := rewriteImages(storage, "page.md", fsys, nil, "", nil)
 	if err != nil {
 		t.Fatalf("rewriteImages: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestRewriteImages_CDATAPreserved(t *testing.T) {
 	// An <img> inside a code-block CDATA body is literal text, not an image.
 	storage := `<ac:plain-text-body><![CDATA[<img src="x.png" />]]></ac:plain-text-body>`
 
-	out, images, err := rewriteImages(storage, "page.md", fsys, nil)
+	out, images, err := rewriteImages(storage, "page.md", fsys, nil, "", nil)
 	if err != nil {
 		t.Fatalf("rewriteImages: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRewriteImages_RelativeParentPath(t *testing.T) {
 	}
 	storage := `<img src="../assets/p.png" />`
 
-	out, images, err := rewriteImages(storage, "docs/sub/page.md", fsys, nil)
+	out, images, err := rewriteImages(storage, "docs/sub/page.md", fsys, nil, "", nil)
 	if err != nil {
 		t.Fatalf("rewriteImages: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestRewriteImages_DedupesByBasename(t *testing.T) {
 	fsys := fstest.MapFS{"a.png": {Data: []byte("A")}}
 	storage := `<img src="a.png" /> and again <img src="a.png" />`
 
-	out, images, err := rewriteImages(storage, "page.md", fsys, nil)
+	out, images, err := rewriteImages(storage, "page.md", fsys, nil, "", nil)
 	if err != nil {
 		t.Fatalf("rewriteImages: %v", err)
 	}
@@ -125,6 +125,103 @@ func TestRewriteImages_DedupesByBasename(t *testing.T) {
 	}
 	if len(images) != 1 {
 		t.Errorf("same basename must be collected once, got %d", len(images))
+	}
+}
+
+func TestRewriteImages_PlainLinkBecomesAttachmentDownload(t *testing.T) {
+	// A plain link [text](x.svg) renders as <a href=...>; it should become an
+	// attachment download link and the file should be uploaded.
+	fsys := fstest.MapFS{
+		"page.md":     {Data: []byte("[a diagram](diagram.svg)")},
+		"diagram.svg": {Data: []byte("<svg/>")},
+	}
+	storage := `<p><a href="diagram.svg">a diagram</a></p>`
+
+	out, images, err := rewriteImages(storage, "page.md", fsys, nil, "", nil)
+	if err != nil {
+		t.Fatalf("rewriteImages: %v", err)
+	}
+	if strings.Contains(out, "<a ") {
+		t.Errorf("raw <a> link should be gone: %s", out)
+	}
+	want := `<ac:link><ri:attachment ri:filename="diagram.svg" /><ac:plain-text-link-body><![CDATA[a diagram]]></ac:plain-text-link-body></ac:link>`
+	if !strings.Contains(out, want) {
+		t.Errorf("expected attachment download link\n got %s\nwant %s", out, want)
+	}
+	if len(images) != 1 || images[0].Filename != "diagram.svg" {
+		t.Fatalf("expected diagram.svg uploaded, got %+v", images)
+	}
+}
+
+func TestRewriteImages_PlainLinkToNonImageLeftAsIs(t *testing.T) {
+	fsys := fstest.MapFS{"page.md": {Data: []byte("x")}, "spec.sql": {Data: []byte("SELECT 1")}}
+	storage := `<p><a href="spec.sql">spec</a></p>`
+
+	out, images, err := rewriteImages(storage, "page.md", fsys, nil, "", nil)
+	if err != nil {
+		t.Fatalf("rewriteImages: %v", err)
+	}
+	if out != storage {
+		t.Errorf("link to non-image file should be untouched, got: %s", out)
+	}
+	if len(images) != 0 {
+		t.Errorf("non-image link must not be collected: %+v", images)
+	}
+}
+
+func TestRewriteImages_ExternalLinkUntouched(t *testing.T) {
+	fsys := fstest.MapFS{}
+	storage := `<p><a href="https://example.com/x.svg">x</a></p>`
+
+	out, _, err := rewriteImages(storage, "page.md", fsys, nil, "", nil)
+	if err != nil {
+		t.Fatalf("rewriteImages: %v", err)
+	}
+	if out != storage {
+		t.Errorf("external link should be left untouched, got: %s", out)
+	}
+}
+
+func TestRewriteImages_ResolvesOutsideFromViaRepoFS(t *testing.T) {
+	// The image escapes --from (../diagrams) but lives inside the repo; it is
+	// unreachable via the --from fsys and must be read through repoFS using
+	// the sync-root-relative-to-repo prefix.
+	fromFS := fstest.MapFS{"page.md": {Data: []byte("x")}}
+	repoFS := fstest.MapFS{"docs/diagrams/component/intl.svg": {Data: []byte("<svg/>")}}
+	storage := `<p><img src="../diagrams/component/intl.svg" alt="intl" /></p>`
+
+	out, images, err := rewriteImages(storage, "page.md", fromFS, repoFS, "docs/sub", nil)
+	if err != nil {
+		t.Fatalf("rewriteImages: %v", err)
+	}
+	if strings.Contains(out, "<img") {
+		t.Errorf("image escaping --from should still be rewritten via repoFS: %s", out)
+	}
+	if !strings.Contains(out, `<ri:attachment ri:filename="intl.svg" />`) {
+		t.Errorf("expected intl.svg attachment, got: %s", out)
+	}
+	if len(images) != 1 || images[0].Filename != "intl.svg" || string(images[0].Data) != "<svg/>" {
+		t.Fatalf("expected intl.svg resolved via repoFS, got %+v", images)
+	}
+}
+
+func TestRewriteImages_LinkAndEmbedShareSingleUpload(t *testing.T) {
+	// The same file referenced both as a link and an embed must upload once.
+	fsys := fstest.MapFS{
+		"page.md": {Data: []byte("x")},
+		"d.svg":   {Data: []byte("<svg/>")},
+	}
+	storage := `<a href="d.svg">link</a> and <img src="d.svg" alt="embed" />`
+
+	out, images, err := rewriteImages(storage, "page.md", fsys, nil, "", nil)
+	if err != nil {
+		t.Fatalf("rewriteImages: %v", err)
+	}
+	if !strings.Contains(out, "<ac:link>") || !strings.Contains(out, "<ac:image") {
+		t.Errorf("expected both a link and an image macro: %s", out)
+	}
+	if len(images) != 1 {
+		t.Fatalf("link+embed of same file must collect once, got %d", len(images))
 	}
 }
 

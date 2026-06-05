@@ -48,9 +48,10 @@ type ImportProfile struct {
 // substitutes per .puml link:
 //
 //	{path}   — repo-root-relative slash path of the .puml file
-//	{branch} — git branch name (no encoding; wrap in your own
-//	           refs/remotes/origin/{branch} if the plugin expects
-//	           the full ref form)
+//	{branch} — git branch name. By default the short name (e.g.
+//	           "feature/x"); set branch_ref: remote|local to expand it
+//	           to the full ref form (refs/remotes/origin/feature/x) that
+//	           the view-git-file plugin requires.
 //
 // Static parameters (no placeholders) are emitted verbatim, useful
 // for things like repository-id, renderpuml, renderpanel toggles.
@@ -71,6 +72,16 @@ type PlantUMLConfig struct {
 	// from --from. Absolute path, or path relative to --from. Set this
 	// when the sync source is not inside a git working tree.
 	RepoRoot string `yaml:"repo_root"`
+
+	// BranchRef expands a bare {branch} value to the full git ref form the
+	// Confluence git plugin expects (the view-git-file plugin errors on a
+	// bare short name). One of:
+	//   ""/"short" — leave {branch} as the short name (default)
+	//   "remote"   — refs/remotes/origin/<branch>
+	//   "local"    — refs/heads/<branch>
+	// A {branch} value already in refs/... form is left untouched, so the
+	// expansion is idempotent.
+	BranchRef string `yaml:"branch_ref"`
 }
 
 // GitFilesConfig rewrites links to non-markdown files in the repo into
@@ -109,6 +120,10 @@ type GitFilesConfig struct {
 	//                        macro on the page.
 	Mode string `yaml:"mode"`
 
+	// BranchRef expands a bare {branch} value to a full git ref, exactly as
+	// PlantUMLConfig.BranchRef does. See that field for the accepted values.
+	BranchRef string `yaml:"branch_ref"`
+
 	// PerExtension overrides Mode for specific extensions (lowercased,
 	// with or without leading dot). Useful when most files should link
 	// but a few configuration formats should inline (or vice versa).
@@ -130,6 +145,45 @@ var validGitFilesModes = map[string]struct{}{
 	"":       {},
 	"link":   {},
 	"inline": {},
+}
+
+// BranchRefPrefix returns the git ref prefix for a branch_ref mode, and
+// whether expansion is enabled. Unknown/empty modes disable expansion.
+// "origin" is accepted as an alias for "remote".
+func BranchRefPrefix(mode string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "remote", "origin":
+		return "refs/remotes/origin/", true
+	case "local":
+		return "refs/heads/", true
+	default:
+		return "", false
+	}
+}
+
+// ExpandBranchRef applies a branch_ref mode to a branch name. An empty
+// branch, a branch already in refs/... form, or a disabled mode is returned
+// unchanged, making the expansion idempotent and safe to re-run.
+func ExpandBranchRef(branch, mode string) string {
+	if branch == "" || strings.HasPrefix(branch, "refs/") {
+		return branch
+	}
+	prefix, ok := BranchRefPrefix(mode)
+	if !ok {
+		return branch
+	}
+	return prefix + branch
+}
+
+var validBranchRefs = map[string]struct{}{
+	"": {}, "short": {}, "remote": {}, "origin": {}, "local": {},
+}
+
+func validateBranchRef(section, v string) error {
+	if _, ok := validBranchRefs[strings.ToLower(strings.TrimSpace(v))]; !ok {
+		return fmt.Errorf("%s.branch_ref: must be one of short|remote|local (got %q)", section, v)
+	}
+	return nil
 }
 
 func (c *GitFilesConfig) validate() error {
@@ -272,6 +326,12 @@ func (p *ImportProfile) validate() error {
 		return err
 	}
 	if err := p.GitFiles.validate(); err != nil {
+		return err
+	}
+	if err := validateBranchRef("plantuml", p.PlantUML.BranchRef); err != nil {
+		return err
+	}
+	if err := validateBranchRef("git_files", p.GitFiles.BranchRef); err != nil {
 		return err
 	}
 	return nil

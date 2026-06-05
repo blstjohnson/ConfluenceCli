@@ -107,15 +107,20 @@ func TestRewritePlantUMLLinks_XMLEscapingInParamValues(t *testing.T) {
 	}
 }
 
-func TestRewritePlantUMLLinks_ImageEmbedSkipped(t *testing.T) {
+func TestRewritePlantUMLLinks_ImageEmbedRendered(t *testing.T) {
+	// ![alt](x.puml) means "render this diagram", same as [alt](x.puml); the
+	// leading "!" is dropped and the macro emitted (leaving a raster <img
+	// src=.puml> would just be broken).
 	r := newViewGitFileRewriter()
-	src := "![alt](sibling.puml)"
-	ctx := &TransformContext{PreContent: src, PagePath: "a.md"}
+	ctx := &TransformContext{PreContent: "![alt](sibling.puml)", PagePath: "a.md"}
 	if err := r.Apply(ctx); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
-	if ctx.PreContent != src {
-		t.Errorf("image embed must be left alone; got %q", ctx.PreContent)
+	if strings.Contains(ctx.PreContent, "![alt]") || strings.Contains(ctx.PreContent, "<img") {
+		t.Errorf("puml image-embed must become a macro, not stay an image; got %q", ctx.PreContent)
+	}
+	if !strings.Contains(ctx.PreContent, `ac:name="view-git-file"`) {
+		t.Errorf("expected view-git-file macro; got %q", ctx.PreContent)
 	}
 }
 

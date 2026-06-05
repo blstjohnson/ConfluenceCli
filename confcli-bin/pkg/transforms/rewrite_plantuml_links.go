@@ -15,8 +15,10 @@ import (
 // from the repository at view time. The source stays in git and updates
 // flow without re-syncing.
 //
-// Runs pre-conversion on PreContent. Skips:
-//   - image embeds (![text](file.puml))
+// Runs pre-conversion on PreContent. Both link forms — [text](x.puml)
+// and the image-embed form ![text](x.puml) — are rewritten to the macro,
+// since "!" here means "render the diagram", not "embed a raster image".
+// Skips:
 //   - links inside fenced code blocks
 //   - links whose target resolves outside the repo root (logged)
 //
@@ -103,9 +105,10 @@ func (r *RewritePlantUMLLinks) Apply(ctx *TransformContext) error {
 			if len(sub) < 6 {
 				return match
 			}
-			if sub[1] == "!" {
-				return match
-			}
+			// Both [text](x.puml) and the image-embed form ![text](x.puml)
+			// mean "render this diagram here"; the leading "!" (sub[1]) is
+			// dropped either way since the macro renders inline. Treating
+			// "!" as a raster-image embed would leave a broken <img src=.puml>.
 			href := sub[4]
 			leading := sub[2]
 			trailing := sub[5]

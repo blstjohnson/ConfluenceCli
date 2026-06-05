@@ -32,11 +32,14 @@ type PageRef struct {
 //     ac:anchor. The anchor is URL-decoded before being emitted.
 //   - Cross-space links emit ri:space-key; same-space links omit it.
 //
+// Both [text](page.md) and the embed form ![text](page.md) are rewritten
+// to a page link (the leading "!" is dropped) — an image-embed of a .md
+// file is meaningless as a raster image.
+//
 // Skipped (left untouched):
 //   - external URLs (anything with "://" or mailto:/tel:)
 //   - in-page anchor-only links (#section)
 //   - non-.md hrefs (images, code files, etc.)
-//   - image links (![alt](path))
 //
 // Unresolved internal .md links — target is in the repo path namespace but
 // not in PathMap — are warned to the logger and reduced to the link text.
@@ -87,13 +90,13 @@ func (r *RewriteMarkdownLinks) Apply(ctx *TransformContext) error {
 		if len(sub) < 4 {
 			return match
 		}
-		bang := sub[1]
 		text := sub[2]
 		href := sub[3]
 
-		if bang == "!" {
-			return match
-		}
+		// Both [text](page.md) and the embed form ![text](page.md) become a
+		// page link; the leading "!" (sub[1]) is dropped. An image-embed of a
+		// markdown file is meaningless as a raster <img>, so treat it as a
+		// cross-page reference rather than leaving a broken <img src=page.md>.
 		if !isInternalMDLink(href) {
 			return match
 		}

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -100,12 +101,20 @@ Example:
 				return fmt.Errorf("git_files setup: %w", err)
 			}
 
+			// Resolve a repo-root filesystem so image/attachment references
+			// that escape --from but stay inside the repo (../../diagrams/x.svg)
+			// can still be read and uploaded. Best-effort: a non-git tree just
+			// restricts resolution to --from.
+			repoFS, repoRel := resolveImageRepoFS(absFrom, stderr)
+
 			engine, err := sync.New(sync.Options{
 				Profile: profile,
 				Locator: sync.NewLocator(client, stderr),
 				Lister:  sync.NewAPILister(client, stderr),
 				Convert: sync.NewMarkdownConverter(pathMap, plantumlRewriter, gitFilesRewriter, stderr),
 				Logger:  stderr,
+				RepoFS:  repoFS,
+				RepoRel: repoRel,
 			})
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
@@ -165,6 +174,8 @@ func buildPlantUMLRewriter(profile *transforms.ImportProfile, absFrom string, lo
 	if err != nil {
 		return nil, err
 	}
+	branch = transforms.ExpandBranchRef(branch, cfg.BranchRef)
+	warnMacroParams(logger, "plantuml", cfg.Macro, cfg.Parameters, branch)
 	return &transforms.RewritePlantUMLLinks{
 		Macro:           cfg.Macro,
 		Parameters:      cfg.Parameters,
@@ -192,6 +203,8 @@ func buildGitFilesRewriter(profile *transforms.ImportProfile, absFrom string, fs
 	if err != nil {
 		return nil, err
 	}
+	branch = transforms.ExpandBranchRef(branch, cfg.BranchRef)
+	warnMacroParams(logger, "git_files", cfg.Macro, cfg.Parameters, branch)
 	return &transforms.RewriteGitFileLinks{
 		Macro:           cfg.Macro,
 		Parameters:      cfg.Parameters,
@@ -204,6 +217,59 @@ func buildGitFilesRewriter(profile *transforms.ImportProfile, absFrom string, fs
 		InlineMaxBytes:  cfg.Inline.MaxBytes,
 		FSys:            fsys,
 	}, nil
+}
+
+// warnMacroParams logs non-fatal hints for macro parameter values that will
+// almost certainly fail to render, so the user catches them before the page
+// is uploaded rather than as an opaque Confluence error:
+//
+//   - any parameter value still containing "?" — an unfilled placeholder
+//     (e.g. the repository-id "?" shipped in the example profile);
+//   - a view-git-file branch that resolves to a bare short name — the plugin
+//     throws "unexpected exception" unless the branch is a full ref.
+//
+// resolvedBranch is the post-expansion {branch} substitution value.
+func warnMacroParams(logger *log.Logger, section, macro string, params map[string]string, resolvedBranch string) {
+	if logger == nil {
+		return
+	}
+	names := make([]string, 0, len(params))
+	for n := range params {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	for _, n := range names {
+		if strings.Contains(params[n], "?") {
+			logger.Printf("sync: %s.parameters.%s = %q looks like an unfilled placeholder; the %q macro will not render until it is set to a real value", section, n, params[n], macro)
+		}
+	}
+
+	if macro != "view-git-file" {
+		return
+	}
+
+	// Work out the branch value the macro will actually emit: a "{branch}"
+	// parameter takes the resolved (already branch_ref-expanded) value; a
+	// literal value is emitted verbatim.
+	var branchParam string
+	for _, n := range names {
+		if strings.EqualFold(n, "branch") {
+			branchParam = params[n]
+			break
+		}
+	}
+	if branchParam == "" {
+		return
+	}
+	effective := branchParam
+	if strings.Contains(branchParam, "{branch}") {
+		effective = strings.ReplaceAll(branchParam, "{branch}", resolvedBranch)
+	}
+	if effective == "" || strings.HasPrefix(effective, "refs/") {
+		return
+	}
+	logger.Printf("sync: %s branch resolves to %q, a bare name; view-git-file needs a full ref like refs/remotes/origin/%s — set %s.branch_ref: remote with branch: \"{branch}\" to expand it automatically", section, effective, effective, section)
 }
 
 // resolveGitContext returns the branch and sync-root-relative-repo
@@ -246,6 +312,27 @@ func resolveGitContext(absFrom, branchOverride, rootOverride, configSection stri
 		return "", "", fmt.Errorf("--from %q is outside repo root %q", absFrom, repoRoot)
 	}
 	return branch, filepath.ToSlash(rel), nil
+}
+
+// resolveImageRepoFS returns a filesystem rooted at the git repository
+// containing absFrom, plus the slash path from that root down to absFrom.
+// It lets the sync engine resolve image/attachment references that point
+// outside --from but still inside the repo. Best-effort: when absFrom is
+// not inside a git repo (or the relative path can't be computed), it
+// returns (nil, "") and image resolution falls back to the --from tree.
+func resolveImageRepoFS(absFrom string, logger *log.Logger) (fs.FS, string) {
+	info, err := sync.FindGitInfo(absFrom)
+	if err != nil || info == nil || info.Root == "" {
+		return nil, ""
+	}
+	rel, err := filepath.Rel(info.Root, absFrom)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		if logger != nil {
+			logger.Printf("sync: --from is outside detected repo root %q; image refs outside --from won't resolve", info.Root)
+		}
+		return nil, ""
+	}
+	return os.DirFS(info.Root), filepath.ToSlash(rel)
 }
 
 // outcomeFromStats maps planned counts into the Outcome shape so the

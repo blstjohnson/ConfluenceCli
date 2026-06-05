@@ -94,14 +94,17 @@ func TestRewriteMarkdownLinksUnresolved(t *testing.T) {
 	}
 }
 
-func TestRewriteMarkdownLinksImageSkipped(t *testing.T) {
+func TestRewriteMarkdownLinksImageEmbedBecomesPageLink(t *testing.T) {
+	// An image-embed of a .md file (![alt](page.md)) is meaningless as a
+	// raster image; it should become a page link, the same as [alt](page.md).
 	r := NewRewriteMarkdownLinks(map[string]PageRef{"img.md": {Title: "X"}}, "")
 	ctx := &TransformContext{PreContent: "![alt](img.md)"}
 	if err := r.Apply(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if ctx.PreContent != "![alt](img.md)" {
-		t.Errorf("image should not be rewritten, got %q", ctx.PreContent)
+	want := `<ac:link><ri:page ri:content-title="X" /><ac:plain-text-link-body><![CDATA[alt]]></ac:plain-text-link-body></ac:link>`
+	if ctx.PreContent != want {
+		t.Errorf("md image-embed should become a page link\n got %q\nwant %q", ctx.PreContent, want)
 	}
 }
 
@@ -256,8 +259,10 @@ func TestRewriteMarkdownLinksMixedScenario(t *testing.T) {
 	if strings.Contains(got, `[missing]`) {
 		t.Errorf("unresolved link should be reduced to text: %s", got)
 	}
-	if !strings.Contains(got, `![img](img.md)`) {
-		t.Errorf("image should remain: %s", got)
+	// ![img](img.md) is treated as a page reference too; img.md isn't in the
+	// map, so it reduces to its link text rather than staying a literal embed.
+	if strings.Contains(got, `![img](img.md)`) {
+		t.Errorf("md image-embed should be processed, not left literal: %s", got)
 	}
 }
 

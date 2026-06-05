@@ -51,6 +51,8 @@ type Engine struct {
 	lister  ManagedPageLister
 	convert Converter
 	logger  *log.Logger
+	repoFS  fs.FS
+	repoRel string
 }
 
 // Options bundles Engine constructor arguments.
@@ -60,6 +62,15 @@ type Options struct {
 	Lister  ManagedPageLister // optional; nil disables orphan detection
 	Convert Converter         // required
 	Logger  *log.Logger       // optional; nil silences warnings
+
+	// RepoFS is a filesystem rooted at the git repository root, used to
+	// resolve image/attachment references that escape the --from root but
+	// stay inside the repo (e.g. ../../diagrams/x.svg). Optional; nil
+	// restricts image resolution to the --from filesystem.
+	RepoFS fs.FS
+	// RepoRel is the slash path from the repo root to the --from root
+	// (the sync-root-relative-to-repo path). Empty means --from == repo root.
+	RepoRel string
 }
 
 // New constructs an Engine. Profile, Locator and Convert are required.
@@ -79,6 +90,8 @@ func New(opts Options) (*Engine, error) {
 		lister:  opts.Lister,
 		convert: opts.Convert,
 		logger:  opts.Logger,
+		repoFS:  opts.RepoFS,
+		repoRel: opts.RepoRel,
 	}, nil
 }
 
@@ -293,7 +306,7 @@ func (e *Engine) emitFile(
 	// Rewrite local <img> references into Confluence attachment macros and
 	// collect the images so the executor can upload them. The image bytes are
 	// folded into the content hash below so an image-only edit re-syncs.
-	storage, images, err := rewriteImages(storage, relPath, fsys, e.logger)
+	storage, images, err := rewriteImages(storage, relPath, fsys, e.repoFS, e.repoRel, e.logger)
 	if err != nil {
 		return fmt.Errorf("rewrite images %q: %w", relPath, err)
 	}
