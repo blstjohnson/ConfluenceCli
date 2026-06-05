@@ -94,17 +94,28 @@ func TestRewriteMarkdownLinksUnresolved(t *testing.T) {
 	}
 }
 
-func TestRewriteMarkdownLinksImageEmbedBecomesPageLink(t *testing.T) {
-	// An image-embed of a .md file (![alt](page.md)) is meaningless as a
-	// raster image; it should become a page link, the same as [alt](page.md).
+func TestRewriteMarkdownLinksEmbedBecomesIncludeMacro(t *testing.T) {
+	// The embed form ![alt](page.md) transcludes the target page via the
+	// Confluence "include" macro; the plain form stays a link.
 	r := NewRewriteMarkdownLinks(map[string]PageRef{"img.md": {Title: "X"}}, "")
 	ctx := &TransformContext{PreContent: "![alt](img.md)"}
 	if err := r.Apply(ctx); err != nil {
 		t.Fatal(err)
 	}
-	want := `<ac:link><ri:page ri:content-title="X" /><ac:plain-text-link-body><![CDATA[alt]]></ac:plain-text-link-body></ac:link>`
+	want := `<ac:structured-macro ac:name="include" ac:schema-version="1"><ac:parameter ac:name=""><ac:link><ri:page ri:content-title="X" /></ac:link></ac:parameter></ac:structured-macro>`
 	if ctx.PreContent != want {
-		t.Errorf("md image-embed should become a page link\n got %q\nwant %q", ctx.PreContent, want)
+		t.Errorf("md embed should become an include macro\n got %q\nwant %q", ctx.PreContent, want)
+	}
+}
+
+func TestRewriteMarkdownLinksEmbedCrossSpaceInclude(t *testing.T) {
+	r := NewRewriteMarkdownLinks(map[string]PageRef{"p.md": {Title: "P", SpaceKey: "DEV"}}, "")
+	ctx := &TransformContext{PreContent: "![p](p.md)"}
+	if err := r.Apply(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(ctx.PreContent, `ri:space-key="DEV"`) || !strings.Contains(ctx.PreContent, `ac:name="include"`) {
+		t.Errorf("cross-space embed should include space key: %q", ctx.PreContent)
 	}
 }
 

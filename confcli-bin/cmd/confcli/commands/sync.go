@@ -175,14 +175,35 @@ func buildPlantUMLRewriter(profile *transforms.ImportProfile, absFrom string, lo
 		return nil, err
 	}
 	branch = transforms.ExpandBranchRef(branch, cfg.BranchRef)
-	warnMacroParams(logger, "plantuml", cfg.Macro, cfg.Parameters, branch)
+	params := sanitizeBranchParams(cfg.Parameters, cfg.BranchRef)
+	warnMacroParams(logger, "plantuml", cfg.Macro, params, branch)
 	return &transforms.RewritePlantUMLLinks{
 		Macro:           cfg.Macro,
-		Parameters:      cfg.Parameters,
+		Parameters:      params,
 		Branch:          branch,
 		SyncRootRelRepo: syncRel,
 		Logger:          logger,
 	}, nil
+}
+
+// sanitizeBranchParams returns a copy of params with a literal "branch"
+// parameter value expanded via branch_ref. A value using the {branch}
+// placeholder is left untouched — that path is expanded through the
+// rewriter's already-expanded Branch field — so this only catches the
+// common case of a hard-coded short branch name (branch: "feature/C2B")
+// that branch_ref would otherwise miss.
+func sanitizeBranchParams(params map[string]string, mode string) map[string]string {
+	if len(params) == 0 {
+		return params
+	}
+	out := make(map[string]string, len(params))
+	for k, v := range params {
+		if strings.EqualFold(strings.TrimSpace(k), "branch") && !strings.Contains(v, "{branch}") {
+			v = transforms.ExpandBranchRef(v, mode)
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // buildGitFilesRewriter is the catch-all companion to
@@ -204,10 +225,11 @@ func buildGitFilesRewriter(profile *transforms.ImportProfile, absFrom string, fs
 		return nil, err
 	}
 	branch = transforms.ExpandBranchRef(branch, cfg.BranchRef)
-	warnMacroParams(logger, "git_files", cfg.Macro, cfg.Parameters, branch)
+	params := sanitizeBranchParams(cfg.Parameters, cfg.BranchRef)
+	warnMacroParams(logger, "git_files", cfg.Macro, params, branch)
 	return &transforms.RewriteGitFileLinks{
 		Macro:           cfg.Macro,
-		Parameters:      cfg.Parameters,
+		Parameters:      params,
 		Branch:          branch,
 		SyncRootRelRepo: syncRel,
 		Extensions:      cfg.Extensions,

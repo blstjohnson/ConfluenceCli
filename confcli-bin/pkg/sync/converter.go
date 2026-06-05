@@ -242,9 +242,17 @@ func selfCloseVoidTags(s string) string {
 //
 // Add to this list any new rewriter that emits Confluence-namespaced
 // tags into PreContent.
+//
+// Order matters: structured-macro is stashed before ac:link so a macro that
+// *contains* an ac:link (e.g. the "include" macro's <ac:parameter><ac:link>
+// …</ac:link></ac:parameter>) is captured whole. If ac:link ran first it
+// would stash the inner link separately, and the restore (which replaces in
+// index order) would leave the inner placeholder un-restored. This assumes
+// macros are not nested within each other, which holds for everything the
+// rewriters emit today.
 var opaqueXMLRes = []*regexp.Regexp{
-	regexp.MustCompile(`<ac:link[\s\S]*?</ac:link>`),
 	regexp.MustCompile(`<ac:structured-macro[\s\S]*?</ac:structured-macro>`),
+	regexp.MustCompile(`<ac:link[\s\S]*?</ac:link>`),
 }
 
 // stashAcLinks replaces every opaque Confluence XML block in src with

@@ -32,9 +32,10 @@ type PageRef struct {
 //     ac:anchor. The anchor is URL-decoded before being emitted.
 //   - Cross-space links emit ri:space-key; same-space links omit it.
 //
-// Both [text](page.md) and the embed form ![text](page.md) are rewritten
-// to a page link (the leading "!" is dropped) — an image-embed of a .md
-// file is meaningless as a raster image.
+// Link forms by leading marker:
+//   - [text](page.md)  → <ac:link> cross-page link (anchors preserved)
+//   - ![text](page.md) → <ac:structured-macro ac:name="include"> that
+//     transcludes the target page's content into the current page
 //
 // Skipped (left untouched):
 //   - external URLs (anything with "://" or mailto:/tel:)
@@ -90,13 +91,10 @@ func (r *RewriteMarkdownLinks) Apply(ctx *TransformContext) error {
 		if len(sub) < 4 {
 			return match
 		}
+		bang := sub[1]
 		text := sub[2]
 		href := sub[3]
 
-		// Both [text](page.md) and the embed form ![text](page.md) become a
-		// page link; the leading "!" (sub[1]) is dropped. An image-embed of a
-		// markdown file is meaningless as a raster <img>, so treat it as a
-		// cross-page reference rather than leaving a broken <img src=page.md>.
 		if !isInternalMDLink(href) {
 			return match
 		}
@@ -114,6 +112,13 @@ func (r *RewriteMarkdownLinks) Apply(ctx *TransformContext) error {
 			return text
 		}
 
+		// The embed form ![text](page.md) transcludes the target page's
+		// content via the Confluence "include" macro; the plain form
+		// [text](page.md) becomes a cross-page link. (An anchor is dropped
+		// for the include — it transcludes the whole page.)
+		if bang == "!" {
+			return buildIncludeMacro(ref)
+		}
 		return buildAcLink(ref, anchor, text)
 	})
 	return nil
@@ -185,6 +190,31 @@ func buildAcLink(ref PageRef, anchor, text string) string {
 	b.WriteString(cdataSafe(text))
 	b.WriteString(`]]></ac:plain-text-link-body>`)
 	b.WriteString("</ac:link>")
+	return b.String()
+}
+
+// buildIncludeMacro emits a Confluence "include" macro that transcludes the
+// referenced page's content into the current page. The page is identified by
+// title (and space key for cross-space refs) inside the macro's default
+// parameter, matching the storage form Confluence's editor produces. The
+// ac:macro-id is omitted — Confluence assigns one on save.
+func buildIncludeMacro(ref PageRef) string {
+	var b strings.Builder
+	b.WriteString(`<ac:structured-macro ac:name="include" ac:schema-version="1">`)
+	b.WriteString(`<ac:parameter ac:name="">`)
+	b.WriteString("<ac:link>")
+	b.WriteString("<ri:page")
+	if ref.SpaceKey != "" {
+		b.WriteString(` ri:space-key="`)
+		b.WriteString(xmlAttrEscape(ref.SpaceKey))
+		b.WriteString(`"`)
+	}
+	b.WriteString(` ri:content-title="`)
+	b.WriteString(xmlAttrEscape(ref.Title))
+	b.WriteString(`" />`)
+	b.WriteString("</ac:link>")
+	b.WriteString("</ac:parameter>")
+	b.WriteString("</ac:structured-macro>")
 	return b.String()
 }
 

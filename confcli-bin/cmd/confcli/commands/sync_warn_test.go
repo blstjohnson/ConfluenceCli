@@ -50,3 +50,35 @@ func TestWarnMacroParams_BranchWarningOnlyForViewGitFile(t *testing.T) {
 		t.Errorf("non view-git-file macro should not get the branch warning, got: %q", out)
 	}
 }
+
+func TestSanitizeBranchParams(t *testing.T) {
+	// Literal short branch is expanded by branch_ref.
+	got := sanitizeBranchParams(map[string]string{
+		"path":   "{path}",
+		"branch": "feature/C2B",
+	}, "remote")
+	if got["branch"] != "refs/remotes/origin/feature/C2B" {
+		t.Errorf("literal branch should expand, got %q", got["branch"])
+	}
+	if got["path"] != "{path}" {
+		t.Errorf("non-branch params must be untouched, got %q", got["path"])
+	}
+
+	// A {branch} placeholder is left for the rewriter's expanded Branch field.
+	keep := sanitizeBranchParams(map[string]string{"branch": "{branch}"}, "remote")
+	if keep["branch"] != "{branch}" {
+		t.Errorf("{branch} placeholder must be left untouched, got %q", keep["branch"])
+	}
+
+	// Without branch_ref, a literal bare branch is left as-is (warning only).
+	none := sanitizeBranchParams(map[string]string{"branch": "feature/C2B"}, "")
+	if none["branch"] != "feature/C2B" {
+		t.Errorf("no branch_ref should leave the value unchanged, got %q", none["branch"])
+	}
+
+	// Already-full ref is idempotent.
+	full := sanitizeBranchParams(map[string]string{"branch": "refs/remotes/origin/x"}, "remote")
+	if full["branch"] != "refs/remotes/origin/x" {
+		t.Errorf("full ref must be idempotent, got %q", full["branch"])
+	}
+}

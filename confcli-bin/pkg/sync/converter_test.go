@@ -11,10 +11,10 @@ import (
 
 func TestBuildPathMap_CoversWalkedFiles(t *testing.T) {
 	fsys := fstest.MapFS{
-		"a.md":         {Data: []byte("a")},
-		"docs/b.md":    {Data: []byte("b")},
-		"drafts/c.md":  {Data: []byte("c")},
-		"docs/_x.md":   {Data: []byte("x")},
+		"a.md":        {Data: []byte("a")},
+		"docs/b.md":   {Data: []byte("b")},
+		"drafts/c.md": {Data: []byte("c")},
+		"docs/_x.md":  {Data: []byte("x")},
 	}
 	profile := &transforms.ImportProfile{Kind: "import"}
 	profile.Tree.Skip = []string{"drafts", "**/_*.md"}
@@ -42,8 +42,8 @@ func TestBuildPathMap_CoversWalkedFiles(t *testing.T) {
 
 func TestNewMarkdownConverter_RewritesLinkAndConverts(t *testing.T) {
 	fsys := fstest.MapFS{
-		"src.md":    {Data: []byte("see [other](other.md)")},
-		"other.md":  {Data: []byte("# other")},
+		"src.md":   {Data: []byte("see [other](other.md)")},
+		"other.md": {Data: []byte("# other")},
 	}
 	profile := &transforms.ImportProfile{Kind: "import"}
 	pm, err := BuildPathMap(profile, fsys)
@@ -89,6 +89,34 @@ func TestNewMarkdownConverter_AcLinkSurvivesGoldmark(t *testing.T) {
 	}
 	if strings.Contains(out, "&lt;ac:link") || strings.Contains(out, "&lt;ri:page") {
 		t.Errorf("rewritten XML must not be HTML-escaped in output:\n%s", out)
+	}
+}
+
+func TestNewMarkdownConverter_IncludeMacroSurvivesGoldmark(t *testing.T) {
+	// ![text](page.md) becomes an "include" structured-macro that nests an
+	// <ac:link>. The stash must capture the whole macro (structured-macro
+	// before ac:link), or the inner link's placeholder is left un-restored.
+	fsys := fstest.MapFS{
+		"src.md":   {Data: []byte("x")},
+		"other.md": {Data: []byte("# other")},
+	}
+	pm, err := BuildPathMap(&transforms.ImportProfile{Kind: "import"}, fsys)
+	if err != nil {
+		t.Fatalf("BuildPathMap: %v", err)
+	}
+	conv := NewMarkdownConverter(pm, nil, nil, nil)
+	out, err := conv(context.Background(), []byte("before ![Other](other.md) after"), "src.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(out, `<ac:structured-macro ac:name="include"`) {
+		t.Errorf("include macro should be present:\n%s", out)
+	}
+	if !strings.Contains(out, `<ri:page ri:content-title="other" />`) {
+		t.Errorf("include macro should reference the target page:\n%s", out)
+	}
+	if strings.Contains(out, "confcli-xml-") {
+		t.Errorf("no stash placeholder should leak into output:\n%s", out)
 	}
 }
 
