@@ -68,6 +68,17 @@ func TestToStorage(t *testing.T) {
 			excludes: []string{`<ac:parameter ac:name="language">`},
 		},
 		{
+			// A literal "]]>" in code would close the CDATA early and
+			// expose the rest as raw XHTML; it must be split across two
+			// CDATA sections so the bytes survive and the block stays closed.
+			name:  "fenced code containing CDATA terminator is split",
+			input: "```\na]]>b\n```\n",
+			contains: []string{
+				`<ac:plain-text-body><![CDATA[a]]]]><![CDATA[>b`,
+				`]]></ac:plain-text-body></ac:structured-macro>`,
+			},
+		},
+		{
 			name:     "GFM alert NOTE renders as note panel",
 			input:    "> [!NOTE]\n> Heads up.\n",
 			contains: []string{

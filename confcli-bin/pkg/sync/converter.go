@@ -104,6 +104,7 @@ func NewMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *trans
 		out := restore(storage)
 		out = selfCloseVoidTags(out)
 		out = escapeUnknownTags(out)
+		out = escapeStrayMarkup(out)
 		if strings.TrimSpace(out) == "" {
 			// Confluence rejects empty page content. Folder-marker files
 			// authored as empty placeholders are legitimate; substitute a
@@ -114,11 +115,12 @@ func NewMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *trans
 	}
 }
 
-// knownHTMLTags is the allow-list for escapeUnknownTags. Any bare-form
-// tag <name> or </name> (no attributes, no namespace) whose name is not
-// in this set is escaped to &lt;name&gt;. The list covers HTML5; the
-// rare cases this misses (custom web components etc.) can be worked
-// around by adding attributes (which suppress the rewrite).
+// knownHTMLTags is the allow-list for escapeUnknownTags. Any tag-shaped
+// token <name…> / </name> whose name is not in this set and is not
+// Confluence-namespaced (no ':') is escaped to &lt;…&gt;. The list covers
+// HTML5; custom web components (hyphenated names) are intentionally not
+// allowed — they don't appear in Confluence docs and collide with the
+// literal <base-dn>-style placeholders this guard exists to catch.
 var knownHTMLTags = map[string]struct{}{
 	"a": {}, "abbr": {}, "address": {}, "area": {}, "article": {},
 	"aside": {}, "audio": {}, "b": {}, "base": {}, "bdi": {}, "bdo": {},
@@ -143,36 +145,56 @@ var knownHTMLTags = map[string]struct{}{
 	"track": {}, "u": {}, "ul": {}, "var": {}, "video": {}, "wbr": {},
 }
 
-// bareTagRe matches a simple open or close tag with no attributes and
-// no namespace (so <ac:link> and <a href="...">  are skipped). Group 1
-// is the slash for close tags; group 2 is the tag name.
-var bareTagRe = regexp.MustCompile(`<(/?)([a-zA-Z][a-zA-Z0-9]*)>`)
+// tagLikeRe matches anything shaped like an open, close, or self-closing
+// tag: <name…>, </name>, <name … />. Group 1 is the leading slash (close
+// tags); group 2 is the tag name, which may carry a namespace colon
+// (ac:link), a hyphen (base-dn), or a dot. The attribute span uses a
+// quote-aware alternation so a '>' inside a quoted value (<a title="a > b">)
+// doesn't end the match early.
+var tagLikeRe = regexp.MustCompile(`<(/?)([A-Za-z][\w.:-]*)((?:"[^"]*"|'[^']*'|[^<>"'])*?)\s*(/?)>`)
 
-// escapeUnknownTags rewrites <FooBar>-style placeholders that user-
-// authored markdown sometimes contains (e.g. "<FIWalletId>" as a field-
-// name placeholder in a table cell). Goldmark's WithUnsafe renderer
-// passes those through as raw HTML, then Confluence's strict XHTML
-// parser rejects them with "expected </FIWalletId>".
+// escapeUnknownTags rewrites tag-shaped text that user-authored markdown
+// contains literally but Confluence's strict XHTML parser would reject.
+// Goldmark's WithUnsafe renderer passes raw HTML through verbatim, so
+// these reach the storage output unescaped. Three classes show up in
+// real docs and each crashes the create/update call:
 //
-// Scope: matches only bare <name> / </name> with no attributes; any
-// real HTML usually has attributes or is in knownHTMLTags. Skips
-// content inside CDATA sections so code samples are untouched.
+//   - bare placeholders:     <FIWalletId>, <Object>
+//   - hyphenated names:      <base-dn>, <digest-value>, <Y-X>, <YYYY-MM-DD>
+//     (valid HTML5 custom-element names, so goldmark keeps them)
+//   - bare-attribute forms:  <TCP Port>, <xrate service url>
+//     (valid HTML5 boolean attributes; Confluence wants attr="value")
+//
+// Rule: escape any tag whose name is neither a known HTML5 element nor a
+// Confluence-namespaced macro (name containing ':', e.g. ac:link / ri:page).
+// Real HTML the user mixes in (<em>, <td colspan="2">) is in knownHTMLTags
+// and survives untouched. Anything else is literal text that would fail
+// the page anyway, so escaping it is strictly safer. Skips content inside
+// CDATA sections so code samples are untouched.
 func escapeUnknownTags(s string) string {
 	if !strings.Contains(s, "<") {
 		return s
 	}
 	replace := func(in string) string {
-		return bareTagRe.ReplaceAllStringFunc(in, func(match string) string {
-			sub := bareTagRe.FindStringSubmatch(match)
+		return tagLikeRe.ReplaceAllStringFunc(in, func(match string) string {
+			sub := tagLikeRe.FindStringSubmatch(match)
+			name := sub[2]
+			// Confluence storage macros (<ac:…>, <ri:…>) are namespaced;
+			// the colon is the marker. They're emitted by the rewriters
+			// and must pass through verbatim.
+			if strings.Contains(name, ":") {
+				return match
+			}
 			// Case-sensitive lookup: XHTML tag names are lowercase, and
 			// real HTML users write them that way. Mixed-case forms like
 			// <Object> or <Data> are placeholder text the user meant
 			// literally — escape those even though "object"/"data" are
 			// valid HTML names in lowercase.
-			if _, ok := knownHTMLTags[sub[2]]; ok {
+			if _, ok := knownHTMLTags[name]; ok {
 				return match
 			}
-			return "&lt;" + sub[1] + sub[2] + "&gt;"
+			esc := strings.ReplaceAll(match, "<", "&lt;")
+			return strings.ReplaceAll(esc, ">", "&gt;")
 		})
 	}
 	var b strings.Builder
@@ -195,6 +217,85 @@ func escapeUnknownTags(s string) string {
 		rest = rest[end:]
 	}
 	return b.String()
+}
+
+// validEntityRe matches a well-formed XML/HTML entity reference at the
+// start of the string: numeric (&#160; / &#xA0;) or named (&amp;). A '&'
+// that doesn't begin one is stray text and must be escaped.
+var validEntityRe = regexp.MustCompile(`^&(#[0-9]+|#x[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);`)
+
+// escapeStrayMarkup is the final XHTML safety net. Outside CDATA it
+// escapes a '&' that doesn't start a valid entity reference and a '<'
+// that doesn't start a tag, comment, or CDATA section. goldmark already
+// escapes both in normal content, so in practice this only fires when
+// malformed source — e.g. a code fence closed with text glued on the
+// same line (```text) — desynchronizes fence pairing and makes goldmark
+// spill raw, unescaped text into the output. Escaping it guarantees the
+// page stays well-formed enough for Confluence's storage parser to accept
+// instead of rejecting the whole create/update; it never alters markup
+// that was already valid.
+//
+// Runs after escapeUnknownTags, which has already neutralized tag-shaped
+// placeholders (<base-dn>, <TCP Port>); what's left for this pass is stray
+// punctuation such as "<--", "a < b", and "&title=". A '>' needs no
+// escaping — it is legal in XHTML character data.
+func escapeStrayMarkup(s string) string {
+	if !strings.ContainsAny(s, "<&") {
+		return s
+	}
+	replace := func(in string) string {
+		var b strings.Builder
+		b.Grow(len(in))
+		for i := 0; i < len(in); i++ {
+			switch in[i] {
+			case '&':
+				if validEntityRe.MatchString(in[i:]) {
+					b.WriteByte('&')
+				} else {
+					b.WriteString("&amp;")
+				}
+			case '<':
+				// A '<' begins real markup only when followed by a tag-name
+				// start (letter), a close-tag '/', or '!'/'?' (comment,
+				// CDATA, processing instruction). Anything else is literal.
+				if i+1 < len(in) && isMarkupStart(in[i+1]) {
+					b.WriteByte('<')
+				} else {
+					b.WriteString("&lt;")
+				}
+			default:
+				b.WriteByte(in[i])
+			}
+		}
+		return b.String()
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	rest := s
+	for {
+		start := strings.Index(rest, "<![CDATA[")
+		if start < 0 {
+			b.WriteString(replace(rest))
+			break
+		}
+		b.WriteString(replace(rest[:start]))
+		end := strings.Index(rest[start:], "]]>")
+		if end < 0 {
+			b.WriteString(rest[start:])
+			break
+		}
+		end += start + len("]]>")
+		b.WriteString(rest[start:end])
+		rest = rest[end:]
+	}
+	return b.String()
+}
+
+// isMarkupStart reports whether b, following a '<', could begin a tag,
+// comment, CDATA section, or processing instruction.
+func isMarkupStart(b byte) bool {
+	return b == '/' || b == '!' || b == '?' ||
+		(b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 // voidTagRe matches the start of an HTML5 void tag (br, hr, img, input,

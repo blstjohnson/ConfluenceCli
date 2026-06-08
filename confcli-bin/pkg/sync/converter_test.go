@@ -170,6 +170,117 @@ func TestNewMarkdownConverter_UnknownTagsEscaped(t *testing.T) {
 	}
 }
 
+func TestNewMarkdownConverter_HyphenatedTagsEscaped(t *testing.T) {
+	// Hyphenated names are valid HTML5 custom-element tags, so goldmark's
+	// WithUnsafe renderer passes them through; Confluence then rejects the
+	// page ("expected </base-dn>"). They're really field placeholders in
+	// the source, so escape them. Covers <base-dn>, <digest-value>, <Y-X>.
+	src := []byte("host is <base-dn> and digest <digest-value>, range <Y-X>\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	for _, raw := range []string{"<base-dn>", "<digest-value>", "<Y-X>"} {
+		if strings.Contains(out, raw) {
+			t.Errorf("hyphenated placeholder %q not escaped: %s", raw, out)
+		}
+	}
+	if !strings.Contains(out, "&lt;base-dn&gt;") {
+		t.Errorf("expected escaped &lt;base-dn&gt;: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_BareAttributeTagsEscaped(t *testing.T) {
+	// "<TCP Port>" parses as a valid HTML5 tag with a boolean attribute,
+	// so goldmark keeps it; Confluence wants attr="value" and fails with
+	// "expected '='". It's placeholder text — escape the whole token.
+	src := []byte("address [<TCP Port>] and <xrate service url>\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if strings.Contains(out, "<TCP Port>") || strings.Contains(out, "<xrate service url>") {
+		t.Errorf("bare-attribute placeholder not escaped: %s", out)
+	}
+	if !strings.Contains(out, "&lt;TCP Port&gt;") {
+		t.Errorf("expected escaped &lt;TCP Port&gt;: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_AttributedKnownTagsPreserved(t *testing.T) {
+	// Real HTML with attributes (a known tag) must still pass through —
+	// the broadened escaper keys off the tag name, not the presence of
+	// attributes.
+	src := []byte("see <a href=\"https://x/y\">link</a> and <td colspan=\"2\">c</td>\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(out, `<a href="https://x/y">`) || !strings.Contains(out, `<td colspan="2">`) {
+		t.Errorf("attributed known tags must survive: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_StrayAmpersandEscaped(t *testing.T) {
+	// A literal "<" closing a code fence with glued text (```text) leaves
+	// goldmark's fences mismatched, spilling raw text with unescaped "&"
+	// into the output. The safety net must escape it. We reproduce the
+	// stray "&" directly via inline raw HTML, which WithUnsafe passes
+	// through verbatim.
+	src := []byte("link: <a href=\"/p?x=1&y=2\">t</a>\nbare amp Tom & Jerry\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	// No '&' should remain that isn't part of a valid entity.
+	for i := 0; i < len(out); i++ {
+		if out[i] == '&' && !validEntityRe.MatchString(out[i:]) {
+			t.Errorf("stray ampersand survived at %d: %s", i, out[i:min(i+12, len(out))])
+		}
+	}
+}
+
+func TestNewMarkdownConverter_StrayLessThanEscaped(t *testing.T) {
+	// "<--" (a sequence-diagram arrow spilled out of a desynced code
+	// fence) is "<" followed by non-markup; it must be escaped so the
+	// parser doesn't choke on "content after '<'". Delivered via raw HTML
+	// so it reaches the output unescaped, mimicking the spill.
+	src := []byte("flow: <span><--</span>\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if strings.Contains(out, "<--") {
+		t.Errorf("stray '<--' not escaped: %s", out)
+	}
+	if !strings.Contains(out, "&lt;--") {
+		t.Errorf("expected escaped &lt;--: %s", out)
+	}
+	// The real <span> tags around it must survive.
+	if !strings.Contains(out, "<span>") || !strings.Contains(out, "</span>") {
+		t.Errorf("surrounding real tags must survive: %s", out)
+	}
+}
+
+func TestNewMarkdownConverter_StrayMarkupSkipsCDATA(t *testing.T) {
+	// Stray "&" / "<--" inside a code block (CDATA) is legitimate sample
+	// text and must pass through verbatim.
+	src := []byte("```text\na & b and x <-- y\n```\n")
+	conv := NewMarkdownConverter(nil, nil, nil, nil)
+	out, err := conv(context.Background(), src, "t.md")
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if !strings.Contains(out, "a & b and x <-- y") {
+		t.Errorf("CDATA content was altered; got: %s", out)
+	}
+}
+
 func TestNewMarkdownConverter_MixedCaseLookalikesEscaped(t *testing.T) {
 	// Mixed-case names like <Object> and <Data> are placeholders even
 	// though "object" and "data" are valid HTML tags in lowercase.

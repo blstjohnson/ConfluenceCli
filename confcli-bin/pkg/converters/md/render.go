@@ -1,6 +1,8 @@
 package md
 
 import (
+	"strings"
+
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/renderer"
 	"github.com/yuin/goldmark/util"
@@ -39,10 +41,15 @@ func (r *confluenceRenderer) renderFencedCodeBlock(w util.BufWriter, source []by
 	}
 	_, _ = w.WriteString(`<ac:plain-text-body><![CDATA[`)
 	lines := block.Lines()
+	var body strings.Builder
 	for i := 0; i < lines.Len(); i++ {
 		line := lines.At(i)
-		_, _ = w.Write(line.Value(source))
+		body.Write(line.Value(source))
 	}
+	// A literal "]]>" inside the code would close the CDATA early and
+	// expose the remainder as raw XHTML, crashing Confluence's parser.
+	// Split it across two CDATA sections so the bytes survive verbatim.
+	_, _ = w.WriteString(strings.ReplaceAll(body.String(), "]]>", "]]]]><![CDATA[>"))
 	_, _ = w.WriteString(`]]></ac:plain-text-body></ac:structured-macro>`)
 	return ast.WalkSkipChildren, nil
 }
