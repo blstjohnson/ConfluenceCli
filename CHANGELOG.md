@@ -4,7 +4,23 @@ All notable changes to confcli will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [v0.0.14] - 2026-06-19
+
+### Added
+
+- `confcli page get` can rewrite Confluence internal page links to local files, driven through the transform-profile `--set` mechanism (no named `--transform` profile required). New keys: `page.refs_dir` / `page.refs_dirs` (comma-separated folders of previously-exported pages to resolve links against), `page.rewrite_links`, and `page.refs_link_style` (`relative` default, or `absolute`). A referenced page found in a reference folder is rewritten to its local file; the page ID → file map is built from `{id}_*` filenames and `*.meta.json` sidecars, so it works with both default and `--clean-names` hierarchy exports. Pages not present keep their original Confluence URL
+- `--set page.clear_macros=<names>` and `--set page.expand_macros=<names>` convenience overrides that append `remove_macro` transforms: `clear` drops the macro and its content, `expand` unwraps it (preserves the inner content). Comma-separated macro names
+- `converters.BuildPageMapFromDirs` — scans exported page folders to build a page-ID → local-file map for link rewriting
+
+### Changed
+
+- `--set` overrides now apply to `confcli page get` even without a `--transform` profile (an empty profile is synthesized), so standalone flags like `--set page.refs_dir=…` work on their own
+
+### Fixed
+
+- `confcli page get` now runs the transform pipeline both before and after format conversion (matching `hierarchy space`). Previously content transforms (e.g. `remove_macro`) ran only after conversion, so macro stripping/expansion on a single page was silently a no-op
+
+## [v0.0.13] - 2026-06-08
 
 ### Fixed
 

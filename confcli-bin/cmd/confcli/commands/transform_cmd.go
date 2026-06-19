@@ -166,6 +166,13 @@ func resolveProfilePath(value string) (string, error) {
 const starterTemplate = `# Transform profile for confcli
 # Use with: confcli hierarchy space --transform <name> ...
 # Override values with: --set page.strip_toc=true
+#
+# --set also works without a profile, e.g. for a single page export:
+#   confcli page get --id 744208425 -o out.md \
+#     --set page.refs_dir=D:\path\to\C2C \
+#     --set page.refs_link_style=absolute \
+#     --set page.expand_macros=expand \
+#     --set page.clear_macros=toc
 
 folder:
   naming: slug        # slug, title, or id
@@ -176,6 +183,11 @@ page:
   format: markdown     # markdown, storage, html, plain, export
   strip_toc: false     # remove table of contents
   save_metadata: false # save .meta.json files
+
+  # rewrite_links: false      # rewrite Confluence internal links to local files
+  # refs_dirs:                # folders of already-exported pages to resolve against
+  #   - D:\path\to\C2C
+  # refs_link_style: relative # relative (to output file) or absolute
 
   # transforms:        # content transformation pipeline (uncomment to use)
   #   - type: remove_macro

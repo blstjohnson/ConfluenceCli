@@ -68,30 +68,33 @@ func newPageGetCmd() *cobra.Command {
 			transformProfile, _ := cmd.Flags().GetString("transform")
 			setOverrides, _ := cmd.Flags().GetStringArray("set")
 
-			// Resolve transform profile if specified
+			// Resolve transform profile (from --transform) and/or --set overrides.
+			// --set works without a named profile by starting from empty defaults.
 			var profile *transforms.TransformProfile
 			if transformProfile != "" {
-				var err error
-				profile, err = transforms.ResolveProfile(transformProfile)
-				if err != nil {
+				var perr error
+				profile, perr = transforms.ResolveProfile(transformProfile)
+				if perr != nil {
+					return perr
+				}
+			} else if len(setOverrides) > 0 {
+				profile = &transforms.TransformProfile{}
+			}
+			if profile != nil && len(setOverrides) > 0 {
+				overrideMap := make(map[string]string)
+				for _, s := range setOverrides {
+					parts := strings.SplitN(s, "=", 2)
+					if len(parts) != 2 {
+						return fmt.Errorf("invalid --set format %q: expected key=value", s)
+					}
+					overrideMap[parts[0]] = parts[1]
+				}
+				if err := transforms.ApplySetOverrides(profile, overrideMap); err != nil {
 					return err
 				}
-				if len(setOverrides) > 0 {
-					overrideMap := make(map[string]string)
-					for _, s := range setOverrides {
-						parts := strings.SplitN(s, "=", 2)
-						if len(parts) != 2 {
-							return fmt.Errorf("invalid --set format %q: expected key=value", s)
-						}
-						overrideMap[parts[0]] = parts[1]
-					}
-					if err := transforms.ApplySetOverrides(profile, overrideMap); err != nil {
-						return err
-					}
-				}
-				if !cmd.Flags().Changed("format") && profile.Page.Format != "" {
-					format = profile.Page.Format
-				}
+			}
+			if profile != nil && !cmd.Flags().Changed("format") && profile.Page.Format != "" {
+				format = profile.Page.Format
 			}
 
 			// Validate inputs
@@ -140,33 +143,61 @@ func newPageGetCmd() *cobra.Command {
 				return fmt.Errorf("failed to get page: %w", err)
 			}
 
-			// Apply content transformation if needed
-			// Confluence supports "storage", "editor", and "export_view" formats natively
-			// For other formats, we fetch the appropriate base format and convert
-			transformedContent := resp.Content
-			if format != "storage" && format != "edit" && format != "export" {
-				switch format {
-				case "markdown":
-					baseURL := viper.GetString("url")
-					// Use advanced converter with support for Confluence macros
-					transformedContent, err = converters.StorageToMarkdownAdvanced(resp.Content, baseURL)
-					if err != nil {
-						return fmt.Errorf("failed to convert storage to markdown: %w", err)
-					}
-				case "plain":
-					transformedContent = utils.StripHTMLTags(resp.Content)
-				case "html":
-					// Storage format is already HTML-based, use as-is
-					transformedContent = resp.Content
+			// Resolve the effective page config (profile defaults + --set overrides).
+			var pageCfg transforms.PageConfig
+			if profile != nil {
+				pageCfg, _, _ = profile.ResolvePageConfig(id, "")
+			}
+
+			// Build the transform pipeline once. It is run twice: before
+			// conversion (so macro transforms can edit the storage XHTML) and
+			// after conversion (for transforms that operate on the output).
+			var pipeline *transforms.Pipeline
+			if len(pageCfg.Transforms) > 0 {
+				var pipeErr error
+				pipeline, pipeErr = transforms.BuildPipeline(pageCfg.Transforms, transforms.DefaultRegistry())
+				if pipeErr != nil {
+					return fmt.Errorf("failed to build transform pipeline: %w", pipeErr)
 				}
-			} else if format == "export" {
-				// export_view is already clean HTML, convert to markdown.
-				// PlantUML images are replaced with source from storage (walking
-				// include macros to pick up transcluded diagrams).
-				baseURL := viper.GetString("url")
+			}
+
+			baseURL := viper.GetString("url")
+
+			// Pre-conversion pass: operates on the source XHTML.
+			preContent := resp.Content
+			if pipeline != nil {
+				tctx := &transforms.TransformContext{
+					PreContent: preContent,
+					PageID:     id,
+					PageTitle:  resp.Page.Title,
+					Format:     format,
+				}
+				if err := pipeline.Run(tctx); err != nil {
+					return fmt.Errorf("pre-conversion transform failed: %w", err)
+				}
+				preContent = tctx.PreContent
+			}
+
+			// Convert the (possibly transformed) source to the requested format.
+			// Confluence serves "storage", "editor", and "export_view" natively.
+			transformedContent := preContent
+			switch format {
+			case "storage", "edit", "html":
+				// Native / already-HTML formats: use as-is.
+			case "markdown":
+				// Advanced converter with support for Confluence macros.
+				transformedContent, err = converters.StorageToMarkdownAdvanced(preContent, baseURL)
+				if err != nil {
+					return fmt.Errorf("failed to convert storage to markdown: %w", err)
+				}
+			case "plain":
+				transformedContent = utils.StripHTMLTags(preContent)
+			case "export":
+				// export_view is clean HTML; convert to markdown. PlantUML images
+				// are replaced with source walked from include macros.
 				fetcher := newPlantUMLIncludeFetcher(ctx, apiClient)
 				transformedContent, err = renderExportWithPlantUML(
-					ctx, apiClient, id, resp.Content, baseURL,
+					ctx, apiClient, id, preContent, baseURL,
 					"", version, resp.Page.Space.Key, fetcher,
 				)
 				if err != nil {
@@ -174,54 +205,69 @@ func newPageGetCmd() *cobra.Command {
 				}
 			}
 
-			// Apply transform pipeline if profile is set
-			if profile != nil {
-				pageCfg, _, _ := profile.ResolvePageConfig(id, "")
-				if len(pageCfg.Transforms) > 0 {
-					reg := transforms.DefaultRegistry()
-					pipeline, pipeErr := transforms.BuildPipeline(pageCfg.Transforms, reg)
-					if pipeErr != nil {
-						return fmt.Errorf("failed to build transform pipeline: %w", pipeErr)
-					}
-					tctx := &transforms.TransformContext{
-						PreContent:  resp.Content,
-						PostContent: transformedContent,
-						PageID:      id,
-						PageTitle:   resp.Page.Title,
-						Format:      format,
-					}
-					if err := pipeline.Run(tctx); err != nil {
-						return fmt.Errorf("transform failed: %w", err)
-					}
-					transformedContent = tctx.PostContent
+			// Post-conversion pass: operates on the converted output.
+			if pipeline != nil {
+				tctx := &transforms.TransformContext{
+					PreContent:  preContent,
+					PostContent: transformedContent,
+					PageID:      id,
+					PageTitle:   resp.Page.Title,
+					Format:      format,
+				}
+				if err := pipeline.Run(tctx); err != nil {
+					return fmt.Errorf("post-conversion transform failed: %w", err)
+				}
+				transformedContent = tctx.PostContent
+			}
+
+			// Determine the output file path so links can be made relative to it.
+			currentFilePath := ""
+			if output != "" {
+				if abs, absErr := filepath.Abs(output); absErr == nil {
+					currentFilePath = abs
+				}
+			} else if outputDir != "" {
+				dest := filepath.Join(outputDir, fmt.Sprintf("%s.%s", resp.Page.ID.String(), utils.GetExtensionForFormat(format)))
+				if abs, absErr := filepath.Abs(dest); absErr == nil {
+					currentFilePath = abs
 				}
 			}
 
-			// Apply TFS link rewriting if enabled
-			if rewriteTFSLinks {
-				tfsBaseURL := ""
-				localRepoPath := ""
-				if cfg, cfgErr := config.LoadConfig(); cfgErr == nil {
-					profile := cfg.Profiles[cfg.CurrentProfile]
-					if profile != nil {
-						tfsBaseURL = profile.TFSBaseURL
-						localRepoPath = profile.LocalRepoPath
+			// Link rewriting: Confluence internal links -> local reference files,
+			// and/or TFS/Git links -> local repo paths. Both share one pass.
+			rewriteConfluence := pageCfg.RewriteLinks || len(pageCfg.RefsDirs) > 0
+			if rewriteConfluence || rewriteTFSLinks {
+				linkCfg := &converters.LinkRewriteConfig{
+					CurrentFilePath: currentFilePath,
+				}
+
+				if rewriteConfluence {
+					pageMap, mapErr := converters.BuildPageMapFromDirs(pageCfg.RefsDirs)
+					if mapErr != nil {
+						return fmt.Errorf("failed to scan reference directories: %w", mapErr)
+					}
+					if len(pageMap) == 0 {
+						fmt.Fprintf(os.Stderr, "Warning: no exported pages found in reference dirs %v; internal links left unchanged\n", pageCfg.RefsDirs)
+					}
+					linkCfg.PageMap = pageMap
+					linkCfg.ConfBaseURL = baseURL
+					// "absolute" emits absolute local paths; "relative" (default)
+					// computes paths relative to the output file's directory.
+					if pageCfg.RefsLinkStyle != "absolute" && currentFilePath != "" {
+						linkCfg.CurrentPageDir = filepath.Dir(currentFilePath)
 					}
 				}
-				if tfsBaseURL != "" {
-					// Determine output file path for relative path computation
-					currentFilePath := ""
-					if output != "" {
-						if abs, absErr := filepath.Abs(output); absErr == nil {
-							currentFilePath = abs
+
+				if rewriteTFSLinks {
+					if cfg, cfgErr := config.LoadConfig(); cfgErr == nil {
+						if prof := cfg.Profiles[cfg.CurrentProfile]; prof != nil {
+							linkCfg.TFSBaseURL = prof.TFSBaseURL
+							linkCfg.LocalRepoPath = prof.LocalRepoPath
 						}
 					}
-					transformedContent = converters.RewriteLinks(transformedContent, &converters.LinkRewriteConfig{
-						TFSBaseURL:      tfsBaseURL,
-						LocalRepoPath:   localRepoPath,
-						CurrentFilePath: currentFilePath,
-					})
 				}
+
+				transformedContent = converters.RewriteLinks(transformedContent, linkCfg)
 			}
 
 			// Handle output

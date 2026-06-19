@@ -667,6 +667,88 @@ func TestApplySetOverridesErrors(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for invalid bool")
 	}
+
+	// Invalid refs_link_style
+	err = ApplySetOverrides(p, map[string]string{"page.refs_link_style": "sideways"})
+	if err == nil {
+		t.Error("expected error for invalid refs_link_style")
+	}
+
+	// Empty macro list
+	err = ApplySetOverrides(p, map[string]string{"page.clear_macros": " , "})
+	if err == nil {
+		t.Error("expected error for empty clear_macros")
+	}
+}
+
+func TestApplySetOverridesLinkRewrite(t *testing.T) {
+	p := &TransformProfile{}
+
+	overrides := map[string]string{
+		"page.rewrite_links":   "true",
+		"page.refs_dir":        `D:\a, D:\b `,
+		"page.refs_link_style": "absolute",
+	}
+	if err := ApplySetOverrides(p, overrides); err != nil {
+		t.Fatalf("ApplySetOverrides: %v", err)
+	}
+
+	if !p.Page.RewriteLinks {
+		t.Error("Page.RewriteLinks = false, want true")
+	}
+	if got := p.Page.RefsDirs; len(got) != 2 || got[0] != `D:\a` || got[1] != `D:\b` {
+		t.Errorf("Page.RefsDirs = %#v, want [D:\\a D:\\b]", got)
+	}
+	if p.Page.RefsLinkStyle != "absolute" {
+		t.Errorf("Page.RefsLinkStyle = %q, want %q", p.Page.RefsLinkStyle, "absolute")
+	}
+}
+
+func TestApplySetOverridesMacros(t *testing.T) {
+	p := &TransformProfile{}
+
+	overrides := map[string]string{
+		"page.clear_macros":  "toc, status",
+		"page.expand_macros": "expand,panel",
+	}
+	if err := ApplySetOverrides(p, overrides); err != nil {
+		t.Fatalf("ApplySetOverrides: %v", err)
+	}
+
+	if len(p.Page.Transforms) != 2 {
+		t.Fatalf("len(Transforms) = %d, want 2", len(p.Page.Transforms))
+	}
+
+	// Both must be remove_macro; exactly one preserves content (expand).
+	var clear, expand *TransformSpec
+	for i := range p.Page.Transforms {
+		ts := &p.Page.Transforms[i]
+		if ts.Type != "remove_macro" {
+			t.Fatalf("Transforms[%d].Type = %q, want remove_macro", i, ts.Type)
+		}
+		if pc, ok := ts.Params["preserve_content"].(bool); ok && pc {
+			expand = ts
+		} else {
+			clear = ts
+		}
+	}
+	if clear == nil || expand == nil {
+		t.Fatalf("want one clear and one expand transform; got clear=%v expand=%v", clear, expand)
+	}
+
+	clearNames, _ := getStringSlice(clear.Params, "macro_names")
+	if len(clearNames) != 2 || clearNames[0] != "toc" || clearNames[1] != "status" {
+		t.Errorf("clear macro_names = %#v, want [toc status]", clearNames)
+	}
+	expandNames, _ := getStringSlice(expand.Params, "macro_names")
+	if len(expandNames) != 2 || expandNames[0] != "expand" || expandNames[1] != "panel" {
+		t.Errorf("expand macro_names = %#v, want [expand panel]", expandNames)
+	}
+
+	// The appended specs must actually build via the registry.
+	if _, err := BuildPipeline(p.Page.Transforms, DefaultRegistry()); err != nil {
+		t.Errorf("BuildPipeline on appended macro transforms: %v", err)
+	}
 }
 
 func TestBuildPipeline(t *testing.T) {

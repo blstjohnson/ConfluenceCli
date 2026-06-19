@@ -32,6 +32,19 @@ type PageConfig struct {
 	StripTOC     bool             `yaml:"strip_toc"`
 	SaveMetadata bool             `yaml:"save_metadata"`
 	Transforms   []TransformSpec  `yaml:"transforms"`
+
+	// RewriteLinks enables rewriting of Confluence internal page links to local
+	// files when exporting a single page. The page ID -> file map is built at
+	// runtime by scanning RefsDirs. Providing RefsDirs implies RewriteLinks.
+	RewriteLinks bool `yaml:"rewrite_links,omitempty"`
+
+	// RefsDirs lists local directories of previously-exported pages used to
+	// resolve internal links to local file paths.
+	RefsDirs []string `yaml:"refs_dirs,omitempty"`
+
+	// RefsLinkStyle controls how resolved links are written: "relative" (default,
+	// relative to the output file's directory) or "absolute".
+	RefsLinkStyle string `yaml:"refs_link_style,omitempty"`
 }
 
 // PageOverride applies settings to specific pages. Matching is by ID (single or
@@ -304,6 +317,13 @@ func (p *TransformProfile) ResolveSkipRoot(pageID int, pagePath string) bool {
 //
 //	folder.naming, folder.length_limit, folder.flat_leaves
 //	page.format, page.strip_toc, page.save_metadata
+//	page.rewrite_links, page.refs_dir (alias page.refs_dirs), page.refs_link_style
+//	page.clear_macros, page.expand_macros
+//
+// page.refs_dir / page.refs_dirs and page.clear_macros / page.expand_macros take
+// comma-separated values. clear_macros appends a remove_macro transform that
+// drops the macro and its content; expand_macros appends one that preserves the
+// inner content (unwrap).
 func ApplySetOverrides(p *TransformProfile, overrides map[string]string) error {
 	for key, val := range overrides {
 		if err := applySetOverride(p, key, val); err != nil {
@@ -343,10 +363,53 @@ func applySetOverride(p *TransformProfile, key, val string) error {
 			return err
 		}
 		p.Page.SaveMetadata = b
+	case "page.rewrite_links":
+		b, err := parseBool(val)
+		if err != nil {
+			return err
+		}
+		p.Page.RewriteLinks = b
+	case "page.refs_dir", "page.refs_dirs":
+		p.Page.RefsDirs = splitList(val)
+	case "page.refs_link_style":
+		if val != "relative" && val != "absolute" {
+			return fmt.Errorf("expected 'relative' or 'absolute', got %q", val)
+		}
+		p.Page.RefsLinkStyle = val
+	case "page.clear_macros":
+		names := splitList(val)
+		if len(names) == 0 {
+			return fmt.Errorf("expected comma-separated macro names")
+		}
+		p.Page.Transforms = append(p.Page.Transforms, TransformSpec{
+			Type:   "remove_macro",
+			Params: map[string]interface{}{"macro_names": names},
+		})
+	case "page.expand_macros":
+		names := splitList(val)
+		if len(names) == 0 {
+			return fmt.Errorf("expected comma-separated macro names")
+		}
+		p.Page.Transforms = append(p.Page.Transforms, TransformSpec{
+			Type:   "remove_macro",
+			Params: map[string]interface{}{"macro_names": names, "preserve_content": true},
+		})
 	default:
 		return fmt.Errorf("unknown override key %q", key)
 	}
 	return nil
+}
+
+// splitList splits a comma-separated --set value into trimmed, non-empty items.
+func splitList(val string) []string {
+	parts := strings.Split(val, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func parseInt(s string) (int, error) {
