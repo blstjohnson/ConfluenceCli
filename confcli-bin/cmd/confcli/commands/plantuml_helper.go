@@ -56,7 +56,9 @@ func newPlantUMLIncludeFetcher(ctx context.Context, apiClient api.Client) conver
 
 // renderExportWithPlantUML converts export_view HTML to markdown, replacing
 // rendered PlantUML images with their source code blocks pulled from the
-// page's storage format (and recursively from any transcluded pages).
+// page's storage format (and recursively from any transcluded pages), and
+// replacing panel-less Git-for-Confluence diagram images with a link to
+// the repository file named by the view-git-file macro.
 //
 // storageContent may be empty — when needed and not already supplied it is
 // fetched on demand. defaultSpaceKey seeds include-macro resolution for
@@ -74,7 +76,9 @@ func renderExportWithPlantUML(
 	defaultSpaceKey string,
 	fetcher converters.IncludeFetcher,
 ) (string, error) {
-	if !converters.HasPlantUMLImages(exportView) {
+	hasPlantUML := converters.HasPlantUMLImages(exportView)
+	hasGitFiles := converters.HasGitFileImages(exportView)
+	if !hasPlantUML && !hasGitFiles {
 		return converters.ExportViewToMarkdown(exportView, baseURL)
 	}
 
@@ -83,6 +87,24 @@ func renderExportWithPlantUML(
 		if err == nil {
 			storageContent = sc
 		}
+	}
+
+	// Git-for-Confluence diagrams (view-git-file + renderpuml): export_view
+	// only carries an opaque rendered image, so recover the file path from
+	// the storage macro and emit a bold link in its place. Panel-wrapped
+	// images are left for the git-plugin-container handler.
+	if hasGitFiles {
+		refs := converters.ExtractGitFileRefs(storageContent)
+		if imgCount := converters.CountGitFileImages(exportView); len(refs) != imgCount {
+			fmt.Fprintf(os.Stderr,
+				"Warning: page %d has %d Git-for-Confluence diagram images but %d view-git-file macros with renderpuml (some diagrams may be dropped)\n",
+				pageID, imgCount, len(refs))
+		}
+		exportView = converters.InjectGitFileRefs(exportView, refs)
+	}
+
+	if !hasPlantUML {
+		return converters.ExportViewToMarkdown(exportView, baseURL)
 	}
 
 	blocks := converters.ExtractPlantUMLBlocksWithIncludes(

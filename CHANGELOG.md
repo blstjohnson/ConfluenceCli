@@ -4,6 +4,16 @@ All notable changes to confcli will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v0.0.15] - 2026-09-11
+
+### Fixed
+
+- `confcli page get -f export` no longer drops Git-for-Confluence PlantUML diagrams (`view-git-file` with `renderpuml` but without `renderpanel`). Confluence renders those as a bare `/download/export/git-for-confluence…png` image with no file name or link, which the junk-image filter stripped, leaving an empty bullet. The export now recovers the file path from the page's storage-format macro (paired with the rendered images in document order) and emits `**[name.puml](repo/relative/path.puml)**` — the same shape the panel variant already produced and the form `confcli sync` turns back into a `view-git-file` macro. Panel-wrapped diagrams are unchanged. An image/macro count mismatch is reported as a warning on stderr
+
+### Added
+
+- `converters.ExtractGitFileRefs` / `InjectGitFileRefs` / `HasGitFileImages` / `CountGitFileImages` — helpers for resolving rendered Git-for-Confluence diagram images back to their `view-git-file` source paths
+
 ## [v0.0.14] - 2026-06-19
 
 ### Added
