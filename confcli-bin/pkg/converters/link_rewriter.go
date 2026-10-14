@@ -1,6 +1,7 @@
 package converters
 
 import (
+	"confcli/pkg/markdownutil"
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
@@ -62,35 +63,33 @@ func RewriteLinks(markdown string, config *LinkRewriteConfig) string {
 		return markdown
 	}
 
-	return markdownLinkRe.ReplaceAllStringFunc(markdown, func(match string) string {
-		submatches := markdownLinkRe.FindStringSubmatch(match)
-		if len(submatches) < 3 {
+	return markdownutil.MarkdownOutsideCode(markdown, func(part string) string {
+		return markdownLinkRe.ReplaceAllStringFunc(part, func(match string) string {
+			submatches := markdownLinkRe.FindStringSubmatch(match)
+			if len(submatches) < 3 {
+				return match
+			}
+			text := submatches[1]
+			linkURL := submatches[2]
+
+			// Try Confluence page link rewriting
+			if config.PageMap != nil && config.ConfBaseURL != "" {
+				if rewritten, ok := rewriteConfluenceLink(linkURL, text, config); ok {
+					return rewritten
+				}
+				// Unrecognised URLs can be attachments or title links; retain the
+				// original rather than silently discarding a valid reference.
+			}
+
+			// Try TFS link rewriting
+			if config.TFSBaseURL != "" {
+				if rewritten, ok := rewriteTFSLink(linkURL, text, config); ok {
+					return rewritten
+				}
+			}
+
 			return match
-		}
-		text := submatches[1]
-		linkURL := submatches[2]
-
-		// Try Confluence page link rewriting
-		if config.PageMap != nil && config.ConfBaseURL != "" {
-			if rewritten, ok := rewriteConfluenceLink(linkURL, text, config); ok {
-				return rewritten
-			}
-			// URL belongs to our Confluence instance but could not be resolved to a
-			// local file (page not in export, wrong space, unrecognised URL format, …).
-			// Remove the link entirely and keep only the visible link text.
-			if strings.Contains(linkURL, config.ConfBaseURL) {
-				return text
-			}
-		}
-
-		// Try TFS link rewriting
-		if config.TFSBaseURL != "" {
-			if rewritten, ok := rewriteTFSLink(linkURL, text, config); ok {
-				return rewritten
-			}
-		}
-
-		return match
+		})
 	})
 }
 
@@ -99,10 +98,13 @@ func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (str
 	// Strip anchor/fragment before matching patterns.
 	// Handle both the literal '#' form and the percent-encoded '%23' form.
 	cleanURL := linkURL
+	fragment := ""
 	if idx := strings.Index(cleanURL, "#"); idx != -1 {
+		fragment = cleanURL[idx:]
 		cleanURL = cleanURL[:idx]
 	}
-	if idx := strings.Index(cleanURL, "%23"); idx != -1 {
+	if idx := strings.Index(strings.ToLower(cleanURL), "%23"); idx != -1 {
+		fragment = "#" + cleanURL[idx+3:]
 		cleanURL = cleanURL[:idx]
 	}
 
@@ -153,7 +155,7 @@ func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (str
 		}
 		// Return the anchor-stripped URL as a fallback external link so the reader
 		// can still navigate to the Confluence page.
-		return fmt.Sprintf("[%s](%s)", text, cleanURL), true
+		return fmt.Sprintf("[%s](%s%s)", text, cleanURL, fragment), true
 	}
 
 	// Compute relative path from current page directory to target
@@ -169,7 +171,7 @@ func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (str
 	// Normalize to forward slashes for markdown
 	relPath = filepath.ToSlash(relPath)
 
-	return fmt.Sprintf("[%s](%s)", text, relPath), true
+	return fmt.Sprintf("[%s](%s%s)", text, escapeMarkdownPath(relPath), fragment), true
 }
 
 // rewriteTFSLink tries to rewrite a TFS/Git repository URL to a local file path

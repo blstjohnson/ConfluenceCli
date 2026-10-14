@@ -1,0 +1,15 @@
+folder:
+  naming: title
+  length_limit: 0
+  flat_leaves: true
+page:
+  format: export
+  strip_toc: true
+  preserve_macros: true
+  inline_transclusions: true
+  save_metadata: true
+  transforms:
+    - type: remove_macro
+      params:
+        macro_names: [toc, status]
+        preserve_content: true

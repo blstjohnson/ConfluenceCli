@@ -7,8 +7,8 @@ import (
 	"github.com/spf13/viper"
 
 	"confcli/pkg/api"
-	"confcli/pkg/models"
 	"confcli/pkg/config"
+	"confcli/pkg/models"
 	"confcli/pkg/repositories"
 	"confcli/pkg/services"
 )
@@ -19,6 +19,7 @@ type client struct {
 	pageService   services.PageServiceInterface
 	spaceService  services.SpaceServiceInterface
 	searchService services.SearchServiceInterface
+	rootSnapshots map[string][]models.Page
 }
 
 // NewClient creates a new Confluence API client
@@ -73,7 +74,6 @@ func NewClientFromViper() (api.Client, error) {
 		SessionCookie:  viper.GetString(fmt.Sprintf("profiles.%s.session_cookie", currentProfile)),
 		SAMLAuthCookie: viper.GetString(fmt.Sprintf("profiles.%s.saml_auth_cookie", currentProfile)),
 	}
-
 
 	return NewClient(options)
 }
@@ -177,7 +177,6 @@ func (c *client) GetCurrentUserDetails(ctx context.Context) (*models.User, error
 	// This would need to be implemented in the HTTP client
 	return nil, fmt.Errorf("get current user details not implemented in refactored client")
 }
-
 
 // GetPageWithExpansions retrieves a page with specified expansions
 func (c *client) GetPageWithExpansions(ctx context.Context, id interface{}, expansions []string) (*models.Page, error) {

@@ -3,7 +3,7 @@
 .PHONY: build build-docker build-all clean release test lint
 
 # Version info
-VERSION ?= dev
+VERSION ?= 0.0.16
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS  = -s -w -X confcli/cmd/confcli/commands.Version=$(VERSION) -X confcli/cmd/confcli/commands.Commit=$(COMMIT) -X confcli/cmd/confcli/commands.Date=$(DATE)

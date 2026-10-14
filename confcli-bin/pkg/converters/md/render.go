@@ -33,11 +33,24 @@ func (r *confluenceRenderer) renderFencedCodeBlock(w util.BufWriter, source []by
 	}
 	block := n.(*ast.FencedCodeBlock)
 
-	_, _ = w.WriteString(`<ac:structured-macro ac:name="code">`)
-	if lang := block.Language(source); len(lang) > 0 {
-		_, _ = w.WriteString(`<ac:parameter ac:name="language">`)
-		_, _ = w.Write(lang)
-		_, _ = w.WriteString(`</ac:parameter>`)
+	lang := string(block.Language(source))
+	params, err := precedingCodeParameters(block, source)
+	if err != nil {
+		return ast.WalkStop, err
+	}
+	macro := "code"
+	if strings.EqualFold(lang, "plantuml") || strings.EqualFold(lang, "puml") {
+		macro = "plantuml"
+	}
+	_, _ = w.WriteString(`<ac:structured-macro ac:name="` + macro + `">`)
+	if macro == "code" {
+		if params == nil {
+			params = map[string]string{}
+		}
+		if lang != "" {
+			params["language"] = lang
+		}
+		_, _ = w.WriteString(writeCodeParameters(params))
 	}
 	_, _ = w.WriteString(`<ac:plain-text-body><![CDATA[`)
 	lines := block.Lines()

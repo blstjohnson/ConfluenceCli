@@ -2,6 +2,7 @@ package transforms
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -21,12 +22,13 @@ import (
 // Import profiles share the ~/.confcli/transformations/ directory with
 // export profiles; the "kind: import" discriminator distinguishes them.
 type ImportProfile struct {
-	Kind       string          `yaml:"kind"`
-	Tree       TreeConfig      `yaml:"tree"`
-	Transforms []TransformSpec `yaml:"transforms"`
-	Overrides  []PathOverride  `yaml:"overrides"`
-	PlantUML   PlantUMLConfig  `yaml:"plantuml"`
-	GitFiles   GitFilesConfig  `yaml:"git_files"`
+	Kind        string           `yaml:"kind"`
+	Tree        TreeConfig       `yaml:"tree"`
+	Transforms  []TransformSpec  `yaml:"transforms"`
+	Overrides   []PathOverride   `yaml:"overrides"`
+	PlantUML    PlantUMLConfig   `yaml:"plantuml"`
+	GitFiles    GitFilesConfig   `yaml:"git_files"`
+	Attachments AttachmentConfig `yaml:"attachments"`
 
 	// titleRegex is index-aligned with Tree.Title.Rewrites and holds the
 	// compiled patterns. Populated by validate (or lazily by TitleFor when
@@ -101,6 +103,8 @@ type PlantUMLConfig struct {
 // shared Branch and RepoRoot from PlantUMLConfig apply here too; the
 // fields below override when set.
 type GitFilesConfig struct {
+	// URL is the TFS repository browser URL used by mode: url.
+	URL        string            `yaml:"url"`
 	Macro      string            `yaml:"macro"`
 	Parameters map[string]string `yaml:"parameters"`
 	Branch     string            `yaml:"branch"`
@@ -145,6 +149,7 @@ var validGitFilesModes = map[string]struct{}{
 	"":       {},
 	"link":   {},
 	"inline": {},
+	"url":    {},
 }
 
 // BranchRefPrefix returns the git ref prefix for a branch_ref mode, and
@@ -188,11 +193,21 @@ func validateBranchRef(section, v string) error {
 
 func (c *GitFilesConfig) validate() error {
 	if _, ok := validGitFilesModes[c.Mode]; !ok {
-		return fmt.Errorf("git_files.mode: must be one of link|inline (got %q)", c.Mode)
+		return fmt.Errorf("git_files.mode: must be one of link|inline|url (got %q)", c.Mode)
 	}
 	for ext, mode := range c.PerExtension {
 		if _, ok := validGitFilesModes[mode]; !ok || mode == "" {
-			return fmt.Errorf("git_files.per_extension[%q]: must be link|inline (got %q)", ext, mode)
+			return fmt.Errorf("git_files.per_extension[%q]: must be link|inline|url (got %q)", ext, mode)
+		}
+	}
+	needsURL := c.Mode == "url"
+	for _, mode := range c.PerExtension {
+		needsURL = needsURL || mode == "url"
+	}
+	if needsURL {
+		u, err := url.Parse(c.URL)
+		if err != nil || u == nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || !strings.Contains(u.Path, "/_git/") {
+			return fmt.Errorf("git_files.url: mode url requires an http(s) TFS repository URL containing /_git/")
 		}
 	}
 	return nil
@@ -201,6 +216,8 @@ func (c *GitFilesConfig) validate() error {
 // TreeConfig controls how a folder tree is projected onto a Confluence page
 // tree.
 type TreeConfig struct {
+	// Nil/true maps Markdown page embeds to include; false emits page links.
+	IncludePageMacro *bool `yaml:"include_page_macro,omitempty"`
 	// FolderPage names a file (case-insensitive match) whose contents become
 	// the parent page for its containing folder. Empty = no marker file; the
 	// sync engine creates an empty stub parent page per folder.
@@ -243,7 +260,14 @@ type TitleRewrite struct {
 type PathOverride struct {
 	Path   string `yaml:"path"`
 	PageID int    `yaml:"page_id,omitempty"`
+	Title  string `yaml:"title,omitempty"`
 	Skip   bool   `yaml:"skip,omitempty"`
+}
+
+// AttachmentConfig selects local files that should travel with the page,
+// rather than remain links into a Git repository. Paths are sync-relative.
+type AttachmentConfig struct {
+	Paths []string `yaml:"paths"`
 }
 
 // LoadImportProfile parses an ImportProfile from YAML bytes and validates it.
@@ -301,6 +325,11 @@ func ResolveImportProfile(value string) (*ImportProfile, error) {
 }
 
 func (p *ImportProfile) validate() error {
+	for i, pat := range p.Attachments.Paths {
+		if !doublestar.ValidatePattern(pat) {
+			return fmt.Errorf("attachments.paths[%d]: invalid glob %q", i, pat)
+		}
+	}
 	for i, pat := range p.Tree.Skip {
 		if !doublestar.ValidatePattern(pat) {
 			return fmt.Errorf("tree.skip[%d]: invalid glob %q", i, pat)
@@ -327,6 +356,9 @@ func (p *ImportProfile) validate() error {
 	}
 	if err := p.GitFiles.validate(); err != nil {
 		return err
+	}
+	if _, err := BuildPipeline(p.Transforms, DefaultRegistry()); err != nil {
+		return fmt.Errorf("import transforms: %w", err)
 	}
 	if err := validateBranchRef("plantuml", p.PlantUML.BranchRef); err != nil {
 		return err
@@ -368,6 +400,9 @@ func (p *ImportProfile) compileTitleRewrites() error {
 // that fail to compile are silently skipped — validate catches them up
 // front for the normal load path.
 func (p *ImportProfile) TitleFor(relPath string) string {
+	if override := p.FindOverride(relPath); override != nil && override.Title != "" {
+		return override.Title
+	}
 	base := path.Base(relPath)
 	if i := strings.LastIndex(base, "."); i > 0 {
 		base = base[:i]

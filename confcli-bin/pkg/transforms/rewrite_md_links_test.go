@@ -22,6 +22,18 @@ func TestRewriteMarkdownLinksBasic(t *testing.T) {
 	}
 }
 
+func TestRewriteMarkdownLinkPreservesEmphasis(t *testing.T) {
+	r := NewRewriteMarkdownLinks(map[string]PageRef{"page.md": {Title: "Subsystem"}}, "")
+	ctx := &TransformContext{PreContent: "[**Subsystem** and *description*](page.md)"}
+	if err := r.Apply(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := "<ac:link-body><strong>Subsystem</strong> and <em>description</em></ac:link-body>"
+	if !strings.Contains(ctx.PreContent, want) || strings.Contains(ctx.PreContent, "**") {
+		t.Fatal(ctx.PreContent)
+	}
+}
+
 func TestRewriteMarkdownLinksParentRelative(t *testing.T) {
 	r := NewRewriteMarkdownLinks(
 		map[string]PageRef{"docs/other.md": {Title: "Other"}},

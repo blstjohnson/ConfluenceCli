@@ -83,7 +83,8 @@ func (r *RewritePlantUMLLinks) Apply(ctx *TransformContext) error {
 	}
 	sort.Strings(names)
 
-	lines := strings.Split(ctx.PreContent, "\n")
+	masked, restore := protectMarkdownCode(ctx.PreContent)
+	lines := strings.Split(masked, "\n")
 	tableLines := markTableLines(lines)
 	inFence := false
 	for i, line := range lines {
@@ -110,6 +111,9 @@ func (r *RewritePlantUMLLinks) Apply(ctx *TransformContext) error {
 			// dropped either way since the macro renders inline. Treating
 			// "!" as a raster-image embed would leave a broken <img src=.puml>.
 			href := sub[4]
+			if !isRepoFileHref(href) {
+				return match
+			}
 			leading := sub[2]
 			trailing := sub[5]
 
@@ -131,7 +135,7 @@ func (r *RewritePlantUMLLinks) Apply(ctx *TransformContext) error {
 			return leading + macro + trailing
 		})
 	}
-	ctx.PreContent = strings.Join(lines, "\n")
+	ctx.PreContent = restore(strings.Join(lines, "\n"))
 	return nil
 }
 

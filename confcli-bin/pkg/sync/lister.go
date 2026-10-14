@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"confcli/pkg/api"
+	"confcli/pkg/models"
 	"confcli/pkg/sync/identity"
 )
 
@@ -38,7 +39,14 @@ func (l *APILister) ListManaged(ctx context.Context, spaceKey string, rootPageID
 		return nil, fmt.Errorf("APILister.ListManaged: rootPageID is required")
 	}
 
-	descendants, err := l.client.GetDescendants(ctx, rootPageID, 0)
+	var descendants []models.Page
+	var err error
+	bulk, hasSnapshot := l.client.(RootSnapshotClient)
+	if hasSnapshot {
+		descendants, err = bulk.GetRootSnapshot(ctx, spaceKey, rootPageID)
+	} else {
+		descendants, err = l.client.GetDescendants(ctx, rootPageID, 0)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get descendants of %d: %w", rootPageID, err)
 	}
@@ -55,7 +63,7 @@ func (l *APILister) ListManaged(ctx context.Context, spaceKey string, rootPageID
 		// just "labels"). Always use the dedicated label endpoint, which
 		// the API client correctly maps.
 		labels := page.Labels
-		if len(labels) == 0 {
+		if len(labels) == 0 && !hasSnapshot {
 			fetched, err := l.client.GetLabels(ctx, pageID)
 			if err != nil {
 				if l.logger != nil {

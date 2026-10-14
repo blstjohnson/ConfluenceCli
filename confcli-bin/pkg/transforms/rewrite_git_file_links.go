@@ -31,6 +31,7 @@ import (
 // When Extensions is non-empty, only listed extensions are rewritten;
 // otherwise the catch-all default applies.
 type RewriteGitFileLinks struct {
+	URL             string
 	Macro           string
 	Parameters      map[string]string
 	Branch          string
@@ -38,7 +39,9 @@ type RewriteGitFileLinks struct {
 	// Extensions optionally limits which extensions trigger a rewrite.
 	// Stored as lowercase, leading dot stripped.
 	Extensions []string
-	Logger     *log.Logger
+	// AttachmentPaths selects local files uploaded by sync after conversion.
+	AttachmentPaths []string
+	Logger          *log.Logger
 
 	// Mode selects the emission style for matched links:
 	//   "" or "link"  — wrap the href in the configured view-git-file macro.
@@ -83,7 +86,7 @@ var extensionsAlwaysSkipped = map[string]struct{}{
 }
 
 func (r *RewriteGitFileLinks) Apply(ctx *TransformContext) error {
-	if r.Macro == "" || len(r.Parameters) == 0 {
+	if (r.Macro == "" || len(r.Parameters) == 0) && r.URL == "" {
 		return nil
 	}
 	logger := r.Logger
@@ -107,7 +110,8 @@ func (r *RewriteGitFileLinks) Apply(ctx *TransformContext) error {
 	}
 	sort.Strings(names)
 
-	lines := strings.Split(ctx.PreContent, "\n")
+	masked, restore := protectMarkdownCode(ctx.PreContent)
+	lines := strings.Split(masked, "\n")
 	tableLines := markTableLines(lines)
 	inFence := false
 	for i, line := range lines {
@@ -117,11 +121,6 @@ func (r *RewriteGitFileLinks) Apply(ctx *TransformContext) error {
 			continue
 		}
 		if inFence {
-			continue
-		}
-		if tableLines[i] {
-			// Confluence storage format doesn't render block-level
-			// structured macros inside table cells; leave the link as-is.
 			continue
 		}
 		lines[i] = gitFileLinkRe.ReplaceAllStringFunc(line, func(match string) string {
@@ -150,13 +149,23 @@ func (r *RewriteGitFileLinks) Apply(ctx *TransformContext) error {
 			}
 
 			ext := strings.TrimPrefix(strings.ToLower(path.Ext(cleanHref)), ".")
-			if ext == "" {
+			mode := defaultMode
+			if m, ok := perExt[ext]; ok {
+				mode = m
+			}
+			if tableLines[i] && mode != "url" {
+				return match
+			}
+			if mode != "url" && (r.Macro == "" || len(r.Parameters) == 0) {
+				return match
+			}
+			if ext == "" && mode != "url" {
 				// No extension — pass through unless the user explicitly
 				// included "" in Extensions (unusual). Rendering arbitrary
 				// extensionless files is risky.
 				return match
 			}
-			if _, skip := extensionsAlwaysSkipped[ext]; skip {
+			if _, skip := extensionsAlwaysSkipped[ext]; skip && (mode != "url" || ext == "md" || ext == "markdown") {
 				return match
 			}
 			if len(allow) > 0 {
@@ -169,15 +178,29 @@ func (r *RewriteGitFileLinks) Apply(ctx *TransformContext) error {
 			if err != nil {
 				decoded = cleanHref
 			}
+			syncPath := path.Clean(joinRepoPath(pageDir, decoded))
+			if matchesAny(r.AttachmentPaths, syncPath) {
+				return match
+			}
 			repoPath := path.Clean(joinRepoPath(repoPageDir, decoded))
 			if repoPath == ".." || strings.HasPrefix(repoPath, "../") {
 				logger.Printf("rewrite/git-file-links: %s: link %q escapes repo root", ctx.PagePath, href)
 				return match
 			}
 
-			mode := defaultMode
-			if m, ok := perExt[ext]; ok {
-				mode = m
+			if mode == "url" {
+				u, err := url.Parse(r.URL)
+				if err != nil || u == nil || u.Host == "" {
+					return match
+				}
+				q := u.Query()
+				q.Set("path", "/"+strings.TrimPrefix(repoPath, "/"))
+				branch := strings.TrimPrefix(strings.TrimPrefix(r.Branch, "refs/remotes/origin/"), "refs/heads/")
+				if branch != "" {
+					q.Set("version", "GB"+branch)
+				}
+				u.RawQuery = q.Encode()
+				return leading + "[" + sub[3] + "](" + u.String() + ")" + trailing
 			}
 
 			var macro string
@@ -199,7 +222,7 @@ func (r *RewriteGitFileLinks) Apply(ctx *TransformContext) error {
 			return leading + macro + trailing
 		})
 	}
-	ctx.PreContent = strings.Join(lines, "\n")
+	ctx.PreContent = restore(strings.Join(lines, "\n"))
 	return nil
 }
 
@@ -310,6 +333,8 @@ func normalizeMode(m string) string {
 	switch strings.ToLower(strings.TrimSpace(m)) {
 	case "inline":
 		return "inline"
+	case "url":
+		return "url"
 	default:
 		return "link"
 	}
@@ -350,6 +375,9 @@ func isRepoFileHref(href string) bool {
 		return false
 	}
 	if strings.Contains(href, "://") || strings.Contains(href, "?") {
+		return false
+	}
+	if u, err := url.Parse(href); err != nil || u.IsAbs() || u.Host != "" {
 		return false
 	}
 	if strings.HasPrefix(href, "mailto:") || strings.HasPrefix(href, "tel:") {

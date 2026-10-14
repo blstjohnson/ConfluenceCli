@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 
+	"confcli/pkg/converters"
+
 	"golang.org/x/net/html"
 )
 
@@ -57,6 +59,20 @@ func (r *RemoveMacro) Name() string {
 }
 
 func (r *RemoveMacro) Apply(ctx *TransformContext) error {
+	if strings.Contains(ctx.PreContent, "<ac:structured-macro") {
+		result, err := converters.StripStorageMacros(ctx.PreContent, func(name string) bool {
+			for _, re := range r.compiled {
+				if re.MatchString(name) {
+					return true
+				}
+			}
+			return false
+		}, r.PreserveContent)
+		if err == nil {
+			ctx.PreContent = result
+			return nil
+		}
+	}
 	if r.PreserveContent {
 		ctx.PreContent = r.removeMacrosPreserveContent(ctx.PreContent)
 	} else {
@@ -104,7 +120,7 @@ func removeMacrosPreserveContentByPattern(content string, nameRe *regexp.Regexp)
 				// Move content nodes from ac:rich-text-body or ac:plain-text-body
 				// directly into the tree, preserving nested macros as proper DOM elements
 				reparentMacroContent(n, child)
-				
+
 				// Remove the macro node
 				n.RemoveChild(child)
 			} else {
@@ -124,7 +140,7 @@ func removeMacrosPreserveContentByPattern(content string, nameRe *regexp.Regexp)
 	// Extract content from wrapper
 	result := buf.String()
 	result = strings.TrimPrefix(result, "<html><head></head><body><wrap>")
-	result = strings.TrimSuffix(result, "</wrap></body></html>\n")
+	result = strings.TrimSuffix(strings.TrimSuffix(result, "\n"), "</wrap></body></html>")
 	return result
 }
 

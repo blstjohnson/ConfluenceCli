@@ -1,0 +1,34 @@
+kind: import
+attachments:
+  paths: ["_attachments/**", "_diagrams/**"]
+tree:
+  folder_page: "{dir}.md"
+  include_page_macro: true
+  title:
+    rewrites:
+      - {pattern: "_", replacement: " "}
+    trim: true
+transforms:
+  - type: restore_macro
+    params:
+      start_pattern: "<!-- {name}-start: {params} -->"
+      end_pattern: "<!-- {name}-end -->"
+      auto_params: true
+      macro_mapping:
+        expand: {confluence_macro: expand}
+        panel: {confluence_macro: panel}
+        note: {confluence_macro: note}
+        info: {confluence_macro: info}
+        warning: {confluence_macro: warning}
+        tip: {confluence_macro: tip}
+plantuml:
+  macro: view-git-file
+  parameters:
+    path: "{path}"
+    branch: "refs/remotes/origin/main"
+    repository-id: "6"
+    renderpuml: "true"
+git_files:
+  mode: url
+  url: "https://tfs.example.com/Collection/Project/_git/Docs"
+  branch: main

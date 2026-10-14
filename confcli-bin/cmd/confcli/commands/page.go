@@ -165,6 +165,15 @@ func newPageGetCmd() *cobra.Command {
 
 			// Pre-conversion pass: operates on the source XHTML.
 			preContent := resp.Content
+			exportViewForMacros := ""
+			preserveMacros := (pageCfg.PreserveMacros || pageCfg.InlineTransclusions) && (format == "export" || format == "markdown")
+			if preserveMacros && format == "export" {
+				exportViewForMacros = preContent
+				preContent, err = apiClient.GetPageContent(ctx, resp.Page.ID.IntOrString(), "storage", version)
+				if err != nil {
+					return fmt.Errorf("fetch storage for macro preservation: %w", err)
+				}
+			}
 			if pipeline != nil {
 				tctx := &transforms.TransformContext{
 					PreContent: preContent,
@@ -181,30 +190,57 @@ func newPageGetCmd() *cobra.Command {
 			// Convert the (possibly transformed) source to the requested format.
 			// Confluence serves "storage", "editor", and "export_view" natively.
 			transformedContent := preContent
-			switch format {
-			case "storage", "edit", "html":
-				// Native / already-HTML formats: use as-is.
-			case "markdown":
-				// Advanced converter with support for Confluence macros.
-				transformedContent, err = converters.StorageToMarkdownAdvanced(preContent, baseURL)
-				if err != nil {
-					return fmt.Errorf("failed to convert storage to markdown: %w", err)
+			if preserveMacros {
+				actualID, ok := resp.Page.ID.Int()
+				if !ok {
+					return fmt.Errorf("invalid page ID")
 				}
-			case "plain":
-				transformedContent = utils.StripHTMLTags(preContent)
-			case "export":
-				// export_view is clean HTML; convert to markdown. PlantUML images
-				// are replaced with source walked from include macros.
-				fetcher := newPlantUMLIncludeFetcher(ctx, apiClient)
-				transformedContent, err = renderExportWithPlantUML(
-					ctx, apiClient, id, preContent, baseURL,
-					"", version, resp.Page.Space.Key, fetcher,
-				)
-				if err != nil {
-					return fmt.Errorf("failed to convert export_view to markdown: %w", err)
+				pageDir := outputDir
+				if output != "" {
+					pageDir = filepath.Dir(output)
 				}
-			}
+				prepared, restore, prepareErr := converters.PrepareRoundTripExport(preContent, exportViewForMacros, converters.RoundTripOptions{
+					BaseURL: baseURL, SpaceKey: resp.Page.Space.Key, PageID: actualID,
+					InlineTransclusions: pageCfg.InlineTransclusions,
+					ResolvePage:         newRoundTripPageResolver(ctx, apiClient, nil, resp.Page.Space.Key),
+					FetchPage:           newRoundTripPageFetcher(ctx, apiClient),
+					LocalRepoPath:       viper.GetString("local_repo_path"), CurrentPageDir: pageDir,
+					Warn: func(message string) { fmt.Fprintf(os.Stderr, "Warning: page %d: %s\n", actualID, message) },
+				})
+				if prepareErr != nil {
+					return prepareErr
+				}
+				transformedContent, err = converters.StorageToMarkdownAdvanced(prepared, baseURL)
+				if err != nil {
+					return err
+				}
+				transformedContent = restore(transformedContent)
+			} else {
+				switch format {
+				case "storage", "edit", "html":
+					// Native / already-HTML formats: use as-is.
+				case "markdown":
+					// Advanced converter with support for Confluence macros.
+					transformedContent, err = converters.StorageToMarkdownAdvanced(preContent, baseURL)
+					if err != nil {
+						return fmt.Errorf("failed to convert storage to markdown: %w", err)
+					}
+				case "plain":
+					transformedContent = utils.StripHTMLTags(preContent)
+				case "export":
+					// export_view is clean HTML; convert to markdown. PlantUML images
+					// are replaced with source walked from include macros.
+					fetcher := newPlantUMLIncludeFetcher(ctx, apiClient)
+					transformedContent, err = renderExportWithPlantUML(
+						ctx, apiClient, id, preContent, baseURL,
+						"", version, resp.Page.Space.Key, fetcher,
+					)
+					if err != nil {
+						return fmt.Errorf("failed to convert export_view to markdown: %w", err)
+					}
+				}
 
+			}
 			// Post-conversion pass: operates on the converted output.
 			if pipeline != nil {
 				tctx := &transforms.TransformContext{
@@ -270,9 +306,13 @@ func newPageGetCmd() *cobra.Command {
 				transformedContent = converters.RewriteLinks(transformedContent, linkCfg)
 			}
 
+			transformedContent, err = converters.SealTransclusions(transformedContent)
+			if err != nil {
+				return fmt.Errorf("seal transclusions: %w", err)
+			}
 			// Handle output
 			outputFormat := viper.GetString("output_format")
-			
+
 			if output != "" {
 				if err := os.WriteFile(output, []byte(transformedContent), 0644); err != nil {
 					return fmt.Errorf("failed to write content to file: %w", err)
@@ -293,10 +333,10 @@ func newPageGetCmd() *cobra.Command {
 			} else {
 				if outputFormat == "json" {
 					data := map[string]interface{}{
-						"id":       resp.Page.ID,
-						"title":    resp.Page.Title,
-						"version":  resp.Page.Version.Number,
-						"space":    resp.Page.Space.ID,
+						"id":      resp.Page.ID,
+						"title":   resp.Page.Title,
+						"version": resp.Page.Version.Number,
+						"space":   resp.Page.Space.ID,
 						"content": map[string]string{
 							"storage": resp.Content,
 						},
@@ -609,7 +649,7 @@ func newPageDeleteCmd() *cobra.Command {
 			}
 
 			ctx := context.Background()
-			
+
 			pageUseCase := usecases.NewPageUseCase(apiClient)
 			req := &usecases.DeletePageWithConfirmationRequest{
 				PageID:    pageID,
@@ -865,7 +905,7 @@ func generateDiff(pageID, oldVersion, newVersion int, oldContent, newContent str
 	diffCmd := exec.Command("git", "diff", "--no-index", colorFlag, "--", oldFile, newFile)
 	output, err := diffCmd.Output()
 	exitErr, ok := err.(*exec.ExitError)
-	
+
 	// git diff --no-index returns exit code 1 when files differ, which is expected
 	if err != nil && (!ok || exitErr.ExitCode() != 1) {
 		// If git is not available, fall back to simple diff

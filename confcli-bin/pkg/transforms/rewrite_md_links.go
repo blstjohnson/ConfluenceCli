@@ -1,6 +1,7 @@
 package transforms
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"net/url"
@@ -8,6 +9,10 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	gmtext "github.com/yuin/goldmark/text"
 )
 
 // PageRef identifies a Confluence page target for an ac:link macro.
@@ -45,10 +50,11 @@ type PageRef struct {
 // Unresolved internal .md links — target is in the repo path namespace but
 // not in PathMap — are warned to the logger and reduced to the link text.
 //
-// Link text is treated as literal plain text via ac:plain-text-link-body.
-// Inline markdown like **bold** inside link text is not rendered as rich
-// content; that is a known limitation.
+// Bold and italic Markdown labels use ac:link-body. Plain labels retain their
+// original ac:plain-text-link-body representation.
 type RewriteMarkdownLinks struct {
+	DisableIncludes bool
+	AttachmentPaths []string
 	// PathMap maps repo-relative slash paths (e.g. "engineering/setup.md")
 	// to the target Confluence page. Nil = no-op.
 	PathMap map[string]PageRef
@@ -86,40 +92,45 @@ func (r *RewriteMarkdownLinks) Apply(ctx *TransformContext) error {
 		logger = log.New(os.Stderr, "", 0)
 	}
 
-	ctx.PreContent = mdLinkRe.ReplaceAllStringFunc(ctx.PreContent, func(match string) string {
-		sub := mdLinkRe.FindStringSubmatch(match)
-		if len(sub) < 4 {
-			return match
-		}
-		bang := sub[1]
-		text := sub[2]
-		href := sub[3]
+	ctx.PreContent = MarkdownOutsideCode(ctx.PreContent, func(s string) string {
+		return mdLinkRe.ReplaceAllStringFunc(s, func(match string) string {
+			sub := mdLinkRe.FindStringSubmatch(match)
+			if len(sub) < 4 {
+				return match
+			}
+			bang := sub[1]
+			text := sub[2]
+			href := sub[3]
 
-		if !isInternalMDLink(href) {
-			return match
-		}
+			if !isInternalMDLink(href) {
+				return match
+			}
 
-		targetPath, anchor := splitAnchor(href)
-		resolved, err := resolveRepoPath(r.CurrentPageDir, targetPath)
-		if err != nil {
-			logger.Printf("rewrite/md-links: %s: cannot resolve %q: %v", ctx.PagePath, href, err)
-			return text
-		}
+			targetPath, anchor := splitAnchor(href)
+			resolved, err := resolveRepoPath(r.CurrentPageDir, targetPath)
+			if err != nil {
+				logger.Printf("rewrite/md-links: %s: cannot resolve %q: %v", ctx.PagePath, href, err)
+				return text
+			}
+			if matchesAny(r.AttachmentPaths, resolved) {
+				return match
+			}
 
-		ref, ok := r.PathMap[resolved]
-		if !ok {
-			logger.Printf("rewrite/md-links: %s: unresolved link %q (target %q not in map)", ctx.PagePath, href, resolved)
-			return text
-		}
+			ref, ok := r.PathMap[resolved]
+			if !ok {
+				logger.Printf("rewrite/md-links: %s: unresolved link %q (target %q not in map)", ctx.PagePath, href, resolved)
+				return text
+			}
 
-		// The embed form ![text](page.md) transcludes the target page's
-		// content via the Confluence "include" macro; the plain form
-		// [text](page.md) becomes a cross-page link. (An anchor is dropped
-		// for the include — it transcludes the whole page.)
-		if bang == "!" {
-			return buildIncludeMacro(ref)
-		}
-		return buildAcLink(ref, anchor, text)
+			// The embed form ![text](page.md) transcludes the target page's
+			// content via the Confluence "include" macro; the plain form
+			// [text](page.md) becomes a cross-page link. (An anchor is dropped
+			// for the include — it transcludes the whole page.)
+			if bang == "!" && !r.DisableIncludes {
+				return buildIncludeMacro(ref)
+			}
+			return buildAcLink(ref, anchor, text)
+		})
 	})
 	return nil
 }
@@ -186,11 +197,51 @@ func buildAcLink(ref PageRef, anchor, text string) string {
 	b.WriteString(` ri:content-title="`)
 	b.WriteString(xmlAttrEscape(ref.Title))
 	b.WriteString(`" />`)
-	b.WriteString(`<ac:plain-text-link-body><![CDATA[`)
-	b.WriteString(cdataSafe(text))
-	b.WriteString(`]]></ac:plain-text-link-body>`)
+	if rich, ok := richPageLinkLabel(text); ok {
+		b.WriteString("<ac:link-body>" + rich + "</ac:link-body>")
+	} else {
+		b.WriteString(`<ac:plain-text-link-body><![CDATA[`)
+		b.WriteString(cdataSafe(text))
+		b.WriteString(`]]></ac:plain-text-link-body>`)
+	}
 	b.WriteString("</ac:link>")
 	return b.String()
+}
+
+func richPageLinkLabel(label string) (string, bool) {
+	if !strings.ContainsAny(label, "*_") {
+		return "", false
+	}
+	data := []byte(label)
+	markdown := goldmark.New()
+	doc := markdown.Parser().Parse(gmtext.NewReader(data))
+	if doc.FirstChild() == nil || doc.FirstChild() != doc.LastChild() || doc.FirstChild().Kind() != ast.KindParagraph {
+		return "", false
+	}
+	emphasis, rawHTML := false, false
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering {
+			if n.Kind() == ast.KindEmphasis {
+				emphasis = true
+			}
+			if n.Kind() == ast.KindRawHTML {
+				rawHTML = true
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	if !emphasis || rawHTML {
+		return "", false
+	}
+	var output bytes.Buffer
+	if err := markdown.Renderer().Render(&output, data, doc); err != nil {
+		return "", false
+	}
+	s := strings.TrimSpace(output.String())
+	if !strings.HasPrefix(s, "<p>") || !strings.HasSuffix(s, "</p>") {
+		return "", false
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(s, "<p>"), "</p>"), true
 }
 
 // buildIncludeMacro emits a Confluence "include" macro that transcludes the

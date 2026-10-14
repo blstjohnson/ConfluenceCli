@@ -18,10 +18,12 @@ tree:
   flatten:
     - "appendix/**"
 transforms:
-  - type: add_toc
-  - type: forward_link_rewrite
+  - type: restore_macro
+  - type: modify_content
     params:
-      base_url: "https://example.atlassian.net/wiki"
+      phase: pre
+      rules:
+        - {find: "old", replace: "new"}
 overrides:
   - path: "docs/onboarding.md"
     page_id: 12345
@@ -48,8 +50,8 @@ overrides:
 	if len(p.Transforms) != 2 {
 		t.Fatalf("len(Transforms) = %d, want 2", len(p.Transforms))
 	}
-	if p.Transforms[0].Type != "add_toc" {
-		t.Errorf("Transforms[0].Type = %q, want %q", p.Transforms[0].Type, "add_toc")
+	if p.Transforms[0].Type != "restore_macro" {
+		t.Errorf("Transforms[0].Type = %q, want %q", p.Transforms[0].Type, "restore_macro")
 	}
 	if len(p.Overrides) != 2 {
 		t.Fatalf("len(Overrides) = %d, want 2", len(p.Overrides))
@@ -252,10 +254,10 @@ func TestLoadProfileAcceptsExplicitExportKind(t *testing.T) {
 func TestImportProfileTitleFor_Default(t *testing.T) {
 	p := &ImportProfile{Kind: "import"}
 	cases := map[string]string{
-		"intro.md":              "intro",
+		"intro.md":                "intro",
 		"docs/getting_started.md": "getting_started",
-		"docs/api/auth.md":      "auth",
-		"no-extension":          "no-extension",
+		"docs/api/auth.md":        "auth",
+		"no-extension":            "no-extension",
 	}
 	for in, want := range cases {
 		if got := p.TitleFor(in); got != want {
@@ -270,9 +272,9 @@ func TestImportProfileTitleFor_UnderscoreToSpace(t *testing.T) {
 		{Pattern: "_", Replacement: " "},
 	}
 	cases := map[string]string{
-		"getting_started.md":    "getting started",
-		"docs/api_v2_notes.md":  "api v2 notes",
-		"plain.md":              "plain",
+		"getting_started.md":   "getting started",
+		"docs/api_v2_notes.md": "api v2 notes",
+		"plain.md":             "plain",
 	}
 	for in, want := range cases {
 		if got := p.TitleFor(in); got != want {
@@ -292,9 +294,9 @@ func TestImportProfileTitleFor_OrderedRewritesAndTrim(t *testing.T) {
 	}
 	p.Tree.Title.Trim = true
 	cases := map[string]string{
-		"01-getting_started.md":   "getting started",
-		"03___onboarding.md":       "onboarding",
-		"plain_title.md":          "plain title",
+		"01-getting_started.md": "getting started",
+		"03___onboarding.md":    "onboarding",
+		"plain_title.md":        "plain title",
 	}
 	for in, want := range cases {
 		if got := p.TitleFor(in); got != want {

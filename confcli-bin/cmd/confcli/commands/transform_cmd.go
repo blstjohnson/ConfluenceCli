@@ -169,7 +169,7 @@ const starterTemplate = `# Transform profile for confcli
 #
 # --set also works without a profile, e.g. for a single page export:
 #   confcli page get --id 744208425 -o out.md \
-#     --set page.refs_dir=D:\path\to\C2C \
+#     --set page.refs_dir=D:\path\to\docs \
 #     --set page.refs_link_style=absolute \
 #     --set page.expand_macros=expand \
 #     --set page.clear_macros=toc
@@ -186,7 +186,7 @@ page:
 
   # rewrite_links: false      # rewrite Confluence internal links to local files
   # refs_dirs:                # folders of already-exported pages to resolve against
-  #   - D:\path\to\C2C
+  #   - D:\path\to\docs
   # refs_link_style: relative # relative (to output file) or absolute
 
   # transforms:        # content transformation pipeline (uncomment to use)

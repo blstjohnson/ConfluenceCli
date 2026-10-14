@@ -1,0 +1,45 @@
+kind: import
+
+tree:
+  folder_page: "{dir}.md"
+  include_page_macro: true
+  title:
+    rewrites:
+      - { pattern: "_", replacement: " " }
+    trim: true
+
+transforms:
+  - type: restore_macro
+    params:
+      start_pattern: "<!-- {name}-start: {params} -->"
+      end_pattern: "<!-- {name}-end -->"
+      auto_params: true
+      macro_mapping:
+        expand:
+          confluence_macro: expand
+        panel:
+          confluence_macro: panel
+
+plantuml:
+  macro: view-git-file
+  parameters:
+    path: "{path}"
+    branch: "refs/remotes/origin/feature/docs"
+    repository-id: "123"
+    renderpuml: "true"
+
+git_files:
+  macro: view-git-file
+  parameters:
+    path: "{path}"
+    branch: "refs/remotes/origin/feature/docs"
+    repository-id: "123"
+  mode: link
+  per_extension:
+    yaml: link
+    sql: link
+    avsc: link
+    json: link
+    schema.json: link
+  inline:
+    max_bytes: 200000

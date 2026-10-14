@@ -9,12 +9,12 @@ func TestExpandBranchRef(t *testing.T) {
 		mode   string
 		want   string
 	}{
-		{"remote expands bare", "feature/C2B", "remote", "refs/remotes/origin/feature/C2B"},
-		{"origin alias", "feature/C2B", "origin", "refs/remotes/origin/feature/C2B"},
-		{"local expands bare", "feature/C2B", "local", "refs/heads/feature/C2B"},
-		{"short is no-op", "feature/C2B", "short", "feature/C2B"},
-		{"empty mode is no-op", "feature/C2B", "", "feature/C2B"},
-		{"unknown mode is no-op", "feature/C2B", "weird", "feature/C2B"},
+		{"remote expands bare", "feature/docs", "remote", "refs/remotes/origin/feature/docs"},
+		{"origin alias", "feature/docs", "origin", "refs/remotes/origin/feature/docs"},
+		{"local expands bare", "feature/docs", "local", "refs/heads/feature/docs"},
+		{"short is no-op", "feature/docs", "short", "feature/docs"},
+		{"empty mode is no-op", "feature/docs", "", "feature/docs"},
+		{"unknown mode is no-op", "feature/docs", "weird", "feature/docs"},
 		{"already full ref untouched", "refs/remotes/origin/x", "remote", "refs/remotes/origin/x"},
 		{"empty branch untouched", "", "remote", ""},
 		{"idempotent", "refs/heads/x", "local", "refs/heads/x"},

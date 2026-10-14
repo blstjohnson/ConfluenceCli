@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // ImageRef is a local image referenced by a page, resolved to its bytes so
@@ -71,7 +73,7 @@ var (
 // Returned images are deduplicated by basename; the first occurrence's bytes
 // win. A basename collision between two different source files on the same
 // page is logged.
-func rewriteImages(storage, relPath string, fsys, repoFS fs.FS, repoRel string, logger *log.Logger) (string, []ImageRef, error) {
+func rewriteImages(storage, relPath string, fsys, repoFS fs.FS, repoRel string, logger *log.Logger, attachmentPaths ...[]string) (string, []ImageRef, error) {
 	lower := strings.ToLower(storage)
 	if !strings.Contains(lower, "<img") && !strings.Contains(lower, "<a ") {
 		return storage, nil, nil
@@ -83,7 +85,8 @@ func rewriteImages(storage, relPath string, fsys, repoFS fs.FS, repoRel string, 
 	}
 
 	collected := map[string][]byte{} // basename → bytes
-	var order []string               // basenames in first-seen order
+	var attachmentErr error
+	var order []string // basenames in first-seen order
 
 	collect := func(base string, data []byte) {
 		if existing, seen := collected[base]; !seen {
@@ -160,14 +163,24 @@ func rewriteImages(storage, relPath string, fsys, repoFS fs.FS, repoRel string, 
 		if src == "" || isRemoteRef(src) {
 			return tag
 		}
-		// Only plain links to image files become attachment downloads;
-		// links to other targets are left for Confluence to render as-is.
-		if _, ok := imageExtensions[imageExtOf(src)]; !ok {
+		selected := false
+		for _, patterns := range attachmentPaths {
+			for _, pattern := range patterns {
+				if matched, _ := doublestar.Match(pattern, resolveImagePath(baseDir, src)); matched {
+					selected = true
+				}
+			}
+		}
+		if _, ok := imageExtensions[imageExtOf(src)]; !ok && !selected {
 			return tag
 		}
 
 		data, base, ok := loadImage(src)
 		if !ok {
+			if selected {
+				attachmentErr = fmt.Errorf("selected attachment %q in %s could not be read", src, relPath)
+				return tag
+			}
 			if logger != nil {
 				logger.Printf("sync images: %s links to %q which could not be read; left as-is", relPath, src)
 			}
@@ -184,6 +197,9 @@ func rewriteImages(storage, relPath string, fsys, repoFS fs.FS, repoRel string, 
 	}
 
 	out := mapOutsideCDATA(storage, rewriteSegment)
+	if attachmentErr != nil {
+		return "", nil, attachmentErr
+	}
 
 	if len(order) == 0 {
 		return out, nil, nil

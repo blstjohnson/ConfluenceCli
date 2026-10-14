@@ -16,6 +16,19 @@
 - Scroll Versions plugin support for version-aware exports
 - Resilient downloads: per-page errors are logged, not fatal
 - Generic macro body handling: inline content as code blocks, file references as links
+- Macro-preserving hierarchy export (`page.preserve_macros`): Include embeds, Expand/Panel comments, explicit anchors and preserved link fragments
+- Import-profile transforms, including nested `restore_macro`, inline PlantUML and TFS file URLs (`git_files.mode: url`)
+- Single-page uploads with `sync --file`, preserving the complete link map and resolving existing parents without writing them
+- Selected batches with `sync --file-list`: exact UTF-8 paths relative to `--from`, sequential writes, read-only unselected parents, and stopping before the next page after an error
+- Local images and explicitly selected document/Draw.io attachments, including attachment bytes in change detection
+- Code titles/collapse settings, alphabetic/roman lists, table code blocks and rich page-link labels preserved through profile export/import
+
+See the [round-trip documentation](../README.md#сохранение-макросов-при-экспорте-и-обратной-загрузке) and [profile examples](examples/README.md).
+
+Export option `page.inline_transclusions` keeps Include/Excerpt content inside the real page. Profile sync restores live references without synthetic fragment pages.
+
+The current patch is **0.0.16**; see the [release notes](../CHANGELOG.md#v0016---2026-10-13) and [operating instructions](../README.md#обновление-одной-существующей-страницы). `sync` replaces the whole page body, creates a new page version on update and reports orphans without deleting them. Its hash-based plan does not merge document revisions or protect against edits made after an earlier dry-run. Exporting pages preserves attachment URLs; downloading binary files into Git remains a separate step.
+
 ### Content Formats
 
 The CLI supports multiple content formats for retrieving pages:

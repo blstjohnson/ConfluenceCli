@@ -71,11 +71,15 @@ func newHierarchySpaceCmd() *cobra.Command {
 
 			// Resolve transform profile if specified
 			var profile *transforms.TransformProfile
-			if transformProfile != "" {
+			if transformProfile != "" || len(setOverrides) > 0 {
 				var err error
-				profile, err = transforms.ResolveProfile(transformProfile)
-				if err != nil {
-					return err
+				if transformProfile != "" {
+					profile, err = transforms.ResolveProfile(transformProfile)
+					if err != nil {
+						return err
+					}
+				} else {
+					profile = &transforms.TransformProfile{Folder: transforms.FolderConfig{LengthLimit: 80}}
 				}
 
 				// Apply --set overrides
@@ -769,6 +773,8 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 	}
 
 	// getFolderName returns the folder name for a page
+	resolvePage := newRoundTripPageResolver(ctx, apiClient, pageMap, space)
+	fetchRoundTripPage := newRoundTripPageFetcher(ctx, apiClient)
 	getFolderName := func(pageID int) string {
 		if namedFolders || cleanNames {
 			if name, ok := folderNameMap[pageID]; ok {
@@ -1066,6 +1072,21 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				}
 			}
 
+			preserveMacros := false
+			if profile != nil {
+				cfg, _, _ := profile.ResolvePageConfig(pageID, "")
+				preserveMacros = (cfg.PreserveMacros || cfg.InlineTransclusions) && (normalizedFormat == "export" || normalizedFormat == "markdown")
+			}
+			exportViewForMacros := ""
+			if preserveMacros && apiFormat == "export_view" {
+				exportViewForMacros = apiContent
+				storage, err := apiClient.GetPageContent(ctx, page.ID.IntOrString(), "storage", fetchVersion)
+				if err != nil {
+					return fmt.Errorf("preserve macros for page %d: fetch storage: %w", pageID, err)
+				}
+				apiContent = storage
+			}
+
 			// Expand Confluence tiny URLs (/x/AbCd) to canonical page URLs
 			// before conversion so the link rewriter can match them.
 			if tinyURLExpander != nil {
@@ -1112,7 +1133,32 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 			var content string
 			var convertErr error
 			// For export/export_view format, convert to markdown
-			if normalizedFormat == "export" {
+			if preserveMacros {
+				prepared, restore, err := converters.PrepareRoundTripExport(apiContent, exportViewForMacros, converters.RoundTripOptions{
+					BaseURL: baseURL, SpaceKey: space, ResolvePage: resolvePage,
+					TitleForPage: func(id string) string {
+						for key, p := range pageMap {
+							if fmt.Sprint(key) == id {
+								return p.Title
+							}
+						}
+						return ""
+					},
+					PageID:              pageID,
+					InlineTransclusions: func() bool { cfg, _, _ := profile.ResolvePageConfig(pageID, ""); return cfg.InlineTransclusions }(),
+					FetchPage:           fetchRoundTripPage,
+					LocalRepoPath:       linkCfg.LocalRepoPath, CurrentPageDir: pageDir,
+					Warn: func(message string) { fmt.Fprintf(os.Stderr, "Warning: page %d: %s\n", pageID, message) },
+				})
+				if err != nil {
+					return fmt.Errorf("preserve macros for page %d: %w", pageID, err)
+				}
+				content, convertErr = converters.StorageToMarkdownAdvanced(prepared, baseURL)
+				if convertErr != nil {
+					return fmt.Errorf("convert preserved macros for page %d: %w", pageID, convertErr)
+				}
+				content = restore(content)
+			} else if normalizedFormat == "export" {
 				defaultSpace := page.Space.Key
 				if defaultSpace == "" {
 					defaultSpace = space
@@ -1189,6 +1235,10 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 					rewriteCfg.PageExistsChecker = linkCfg.PageExistsChecker
 				}
 				content = converters.RewriteLinks(content, rewriteCfg)
+			}
+			content, err = converters.SealTransclusions(content)
+			if err != nil {
+				return fmt.Errorf("seal transclusions for page %d: %w", pageID, err)
 			}
 			if writeErr := os.WriteFile(absFilePath, []byte(content), 0644); writeErr != nil {
 				msg := fmt.Sprintf("Warning: failed to write page %d (%s) to file: %v", pageID, page.Title, writeErr)

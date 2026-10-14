@@ -14,6 +14,8 @@ type Transform interface {
 
 // TransformContext holds all the data a transform may read or modify.
 type TransformContext struct {
+	// Per-conversion placeholders shared between the pre and post phases.
+	macroMarkers map[string]string
 	// PreContent is the source content before format conversion.
 	// Export direction: Confluence storage/export_view XHTML.
 	// Import direction: markdown source.

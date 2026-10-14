@@ -21,6 +21,10 @@ type PageLocator interface {
 	FindByPath(ctx context.Context, spaceKey, relPath string) (*models.Page, error)
 }
 
+type PinnedPageLocator interface {
+	FindByID(ctx context.Context, spaceKey string, pageID int) (*models.Page, error)
+}
+
 // ManagedPageLister enumerates Confluence pages under a sync root that
 // carry a confcli-id label, so the engine can flag orphans (pages with no
 // matching source file). The real implementation is wired in the sync
@@ -53,6 +57,7 @@ type Engine struct {
 	logger  *log.Logger
 	repoFS  fs.FS
 	repoRel string
+	rootID  int
 }
 
 // Options bundles Engine constructor arguments.
@@ -104,6 +109,7 @@ func New(opts Options) (*Engine, error) {
 // orphan detection scopes to. It is not embedded in actions because the
 // executor already knows it from its own configuration.
 func (e *Engine) BuildPlan(ctx context.Context, fsys fs.FS, spaceKey string, rootPageID int) (*Plan, error) {
+	e.rootID = rootPageID
 	root, err := e.walk(fsys, ".")
 	if err != nil {
 		return nil, fmt.Errorf("walk source tree: %w", err)
@@ -306,7 +312,7 @@ func (e *Engine) emitFile(
 	// Rewrite local <img> references into Confluence attachment macros and
 	// collect the images so the executor can upload them. The image bytes are
 	// folded into the content hash below so an image-only edit re-syncs.
-	storage, images, err := rewriteImages(storage, relPath, fsys, e.repoFS, e.repoRel, e.logger)
+	storage, images, err := rewriteImages(storage, relPath, fsys, e.repoFS, e.repoRel, e.logger, e.profile.Attachments.Paths)
 	if err != nil {
 		return fmt.Errorf("rewrite images %q: %w", relPath, err)
 	}
@@ -316,9 +322,21 @@ func (e *Engine) emitFile(
 	newHash := identity.BuildHashLabel(title, storage, imageFingerprint(images))
 	seen[idLabel] = struct{}{}
 
-	existing, err := e.locator.FindByPath(ctx, spaceKey, relPath)
+	var existing *models.Page
+	if override := e.profile.FindOverride(relPath); override != nil && override.PageID != 0 {
+		pinned, ok := e.locator.(PinnedPageLocator)
+		if !ok {
+			return fmt.Errorf("locate %q: locator does not support page_id overrides", relPath)
+		}
+		existing, err = pinned.FindByID(ctx, spaceKey, override.PageID)
+	} else {
+		existing, err = e.locator.FindByPath(ctx, spaceKey, relPath)
+	}
 	if err != nil {
 		return fmt.Errorf("locate %q: %w", relPath, err)
+	}
+	if existing != nil && existing.Title != title {
+		return fmt.Errorf("locate %q: existing title %q differs from planned title %q; set overrides.title to preserve links", relPath, existing.Title, title)
 	}
 
 	if existing == nil {
@@ -344,20 +362,25 @@ func (e *Engine) emitFile(
 	}
 	oldHash := identity.ExtractHashLabel(existing.Labels)
 
-	if oldHash == newHash {
+	if oldHash == newHash && !e.parentChanged(existing, parentRel, plan) {
 		plan.Actions = append(plan.Actions, Action{
-			Kind:         ActionSkip,
-			RelPath:      relPath,
-			Title:        existing.Title,
-			PageID:       pageID,
-			IDLabel:      idLabel,
-			OldHashLabel: oldHash,
-			Reason:       "hash matches existing page",
+			Kind:          ActionSkip,
+			RelPath:       relPath,
+			ParentRelPath: parentRel,
+			Title:         existing.Title,
+			PageID:        pageID,
+			IDLabel:       idLabel,
+			OldHashLabel:  oldHash,
+			Reason:        "hash matches existing page",
 		})
 		plan.Stats.add(ActionSkip)
 		return nil
 	}
 
+	reason := updateReason(oldHash)
+	if oldHash == newHash {
+		reason = "parent differs from source tree"
+	}
 	plan.Actions = append(plan.Actions, Action{
 		Kind:          ActionUpdate,
 		RelPath:       relPath,
@@ -370,11 +393,33 @@ func (e *Engine) emitFile(
 		NewHashLabel:  newHash,
 		Storage:       storage,
 		Images:        images,
-		Reason:        updateReason(oldHash),
+		Reason:        reason,
 	})
 	plan.Stats.add(ActionUpdate)
 	plan.Stats.Images += len(images)
 	return nil
+}
+
+// Recreating a parent or moving a managed page changes the tree even when its
+// body is unchanged. Schedule an update so the executor can restore ancestry.
+func (e *Engine) parentChanged(existing *models.Page, parentRel string, plan *Plan) bool {
+	expectedParent := e.rootID
+	if parentRel != "" {
+		for _, action := range plan.Actions {
+			if action.RelPath == parentRel {
+				if action.Kind == ActionCreate {
+					return true
+				}
+				expectedParent = action.PageID
+				break
+			}
+		}
+	}
+	if expectedParent == 0 || len(existing.Ancestors) == 0 {
+		return false
+	}
+	actualParent, ok := existing.Ancestors[len(existing.Ancestors)-1].ID.Int()
+	return !ok || actualParent != expectedParent
 }
 
 func updateReason(oldHash string) string {

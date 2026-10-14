@@ -19,7 +19,7 @@ func TestWarnMacroParams_PlaceholderQuestionMark(t *testing.T) {
 		"path":          "{path}",
 		"repository-id": "?",
 		"branch":        "{branch}",
-	}, "refs/remotes/origin/feature/C2B")
+	}, "refs/remotes/origin/feature/docs")
 	if !strings.Contains(out, "repository-id") || !strings.Contains(out, "placeholder") {
 		t.Errorf("expected placeholder warning for repository-id, got: %q", out)
 	}
@@ -27,8 +27,8 @@ func TestWarnMacroParams_PlaceholderQuestionMark(t *testing.T) {
 
 func TestWarnMacroParams_BareLiteralBranch(t *testing.T) {
 	out := capture("view-git-file", map[string]string{
-		"branch": "feature/C2B",
-	}, "feature/C2B")
+		"branch": "feature/docs",
+	}, "feature/docs")
 	if !strings.Contains(out, "bare name") {
 		t.Errorf("expected bare-branch warning, got: %q", out)
 	}
@@ -38,7 +38,7 @@ func TestWarnMacroParams_FullRefBranchSilent(t *testing.T) {
 	out := capture("view-git-file", map[string]string{
 		"branch":        "{branch}",
 		"repository-id": "41",
-	}, "refs/remotes/origin/feature/C2B")
+	}, "refs/remotes/origin/feature/docs")
 	if out != "" {
 		t.Errorf("a correct config should produce no warnings, got: %q", out)
 	}
@@ -55,9 +55,9 @@ func TestSanitizeBranchParams(t *testing.T) {
 	// Literal short branch is expanded by branch_ref.
 	got := sanitizeBranchParams(map[string]string{
 		"path":   "{path}",
-		"branch": "feature/C2B",
+		"branch": "feature/docs",
 	}, "remote")
-	if got["branch"] != "refs/remotes/origin/feature/C2B" {
+	if got["branch"] != "refs/remotes/origin/feature/docs" {
 		t.Errorf("literal branch should expand, got %q", got["branch"])
 	}
 	if got["path"] != "{path}" {
@@ -71,8 +71,8 @@ func TestSanitizeBranchParams(t *testing.T) {
 	}
 
 	// Without branch_ref, a literal bare branch is left as-is (warning only).
-	none := sanitizeBranchParams(map[string]string{"branch": "feature/C2B"}, "")
-	if none["branch"] != "feature/C2B" {
+	none := sanitizeBranchParams(map[string]string{"branch": "feature/docs"}, "")
+	if none["branch"] != "feature/docs" {
 		t.Errorf("no branch_ref should leave the value unchanged, got %q", none["branch"])
 	}
 

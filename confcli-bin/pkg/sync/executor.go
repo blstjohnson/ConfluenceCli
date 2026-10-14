@@ -18,11 +18,12 @@ import (
 // executor currently reports orphan counts and leaves orphan pages
 // untouched.
 type Executor struct {
-	client     api.Client
-	spaceKey   string
-	rootPageID int
-	versionMsg string
-	logger     *log.Logger
+	client      api.Client
+	spaceKey    string
+	rootPageID  int
+	versionMsg  string
+	logger      *log.Logger
+	stopOnError bool
 }
 
 // ExecutorOptions bundles Executor constructor arguments.
@@ -32,8 +33,9 @@ type ExecutorOptions struct {
 	RootPageID int
 	// VersionMsg is recorded on every page update. Empty defaults to a
 	// terse "confcli sync".
-	VersionMsg string
-	Logger     *log.Logger
+	VersionMsg  string
+	Logger      *log.Logger
+	StopOnError bool
 }
 
 // NewExecutor constructs an Executor. Client, SpaceKey, and RootPageID
@@ -53,11 +55,12 @@ func NewExecutor(opts ExecutorOptions) (*Executor, error) {
 		msg = "confcli sync"
 	}
 	return &Executor{
-		client:     opts.Client,
-		spaceKey:   opts.SpaceKey,
-		rootPageID: opts.RootPageID,
-		versionMsg: msg,
-		logger:     opts.Logger,
+		client:      opts.Client,
+		spaceKey:    opts.SpaceKey,
+		rootPageID:  opts.RootPageID,
+		versionMsg:  msg,
+		logger:      opts.Logger,
+		stopOnError: opts.StopOnError,
 	}, nil
 }
 
@@ -105,6 +108,9 @@ func (x *Executor) Apply(ctx context.Context, plan *Plan) *Outcome {
 	}
 
 	for _, action := range plan.Actions {
+		if x.stopOnError && len(out.Errors) > 0 {
+			break
+		}
 		switch action.Kind {
 		case ActionSkip:
 			out.Skipped++
@@ -130,12 +136,22 @@ func (x *Executor) Apply(ctx context.Context, plan *Plan) *Outcome {
 			}
 			pageIDs[action.RelPath] = pageID
 
-			if err := x.applyLabels(ctx, pageID, "", action.IDLabel, "", action.NewHashLabel); err != nil {
+			// Keep identity even after a failed upload, but install the final
+			// hash only after every attachment succeeds so the next sync retries.
+			initialHash := action.NewHashLabel
+			if len(action.Images) > 0 {
+				initialHash = ""
+			}
+			if err := x.applyLabels(ctx, pageID, "", action.IDLabel, "", initialHash); err != nil {
 				out.Errors = append(out.Errors, ActionError{Action: action, Err: fmt.Errorf("label: %w", err)})
 				continue
 			}
 			out.Created++
-			x.uploadImages(ctx, pageID, action, out)
+			if x.uploadImages(ctx, pageID, action, out) && len(action.Images) > 0 {
+				if err := x.applyLabels(ctx, pageID, "", "", "", action.NewHashLabel); err != nil {
+					out.Errors = append(out.Errors, ActionError{Action: action, Err: fmt.Errorf("label: %w", err)})
+				}
+			}
 
 		case ActionUpdate:
 			// Reparent under the expected parent on every update so --root is
@@ -159,13 +175,16 @@ func (x *Executor) Apply(ctx context.Context, plan *Plan) *Outcome {
 				continue
 			}
 			pageIDs[action.RelPath] = action.PageID
+			if !x.uploadImages(ctx, action.PageID, action, out) {
+				out.Updated++
+				continue
+			}
 
 			if err := x.applyLabels(ctx, action.PageID, action.IDLabel, action.IDLabel, action.OldHashLabel, action.NewHashLabel); err != nil {
 				out.Errors = append(out.Errors, ActionError{Action: action, Err: fmt.Errorf("label: %w", err)})
 				continue
 			}
 			out.Updated++
-			x.uploadImages(ctx, action.PageID, action, out)
 		}
 	}
 
@@ -192,14 +211,17 @@ func (x *Executor) resolveParent(action Action, pageIDs map[string]int) (*int, e
 // A failed upload is recorded as an action error but does not abort the run —
 // the page itself was already created/updated successfully, and the missing
 // attachment can be fixed on the next sync.
-func (x *Executor) uploadImages(ctx context.Context, pageID int, action Action, out *Outcome) {
+func (x *Executor) uploadImages(ctx context.Context, pageID int, action Action, out *Outcome) bool {
+	ok := true
 	for _, img := range action.Images {
 		if err := x.client.UploadAttachment(ctx, pageID, img.Filename, img.Data, imageMime(img.Filename)); err != nil {
 			out.Errors = append(out.Errors, ActionError{Action: action, Err: fmt.Errorf("upload image %q: %w", img.Filename, err)})
+			ok = false
 			continue
 		}
 		out.ImagesUploaded++
 	}
+	return ok
 }
 
 // applyLabels reconciles a page's identity and hash labels. Existing

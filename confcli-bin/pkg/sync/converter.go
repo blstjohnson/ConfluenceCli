@@ -3,12 +3,15 @@ package sync
 import (
 	"context"
 	"fmt"
+	"html"
 	"io/fs"
 	"log"
+	"net/url"
 	"path"
 	"regexp"
 	"strings"
 
+	"confcli/pkg/converters"
 	"confcli/pkg/converters/md"
 	"confcli/pkg/transforms"
 )
@@ -51,7 +54,12 @@ func BuildPathMap(profile *transforms.ImportProfile, fsys fs.FS) (map[string]tra
 // the rewritten XML intact through goldmark, each <ac:link>...</ac:link>
 // chunk is replaced with an HTML-comment placeholder before conversion
 // and restored verbatim in the storage output.
-func NewMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *transforms.RewritePlantUMLLinks, gitFiles *transforms.RewriteGitFileLinks, logger *log.Logger) Converter {
+func NewMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *transforms.RewritePlantUMLLinks, gitFiles *transforms.RewriteGitFileLinks, logger *log.Logger, includePage ...bool) Converter {
+	include := len(includePage) == 0 || includePage[0]
+	return newMarkdownConverter(pathMap, plantuml, gitFiles, logger, include, nil)
+}
+
+func newMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *transforms.RewritePlantUMLLinks, gitFiles *transforms.RewriteGitFileLinks, logger *log.Logger, include bool, attachmentPaths []string) Converter {
 	return func(_ context.Context, source []byte, relPath string) (string, error) {
 		ctx := &transforms.TransformContext{
 			PreContent: string(source),
@@ -59,9 +67,11 @@ func NewMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *trans
 		}
 		if pathMap != nil {
 			rewriter := &transforms.RewriteMarkdownLinks{
-				PathMap:        pathMap,
-				CurrentPageDir: path.Dir(relPath),
-				Logger:         logger,
+				DisableIncludes: !include,
+				AttachmentPaths: attachmentPaths,
+				PathMap:         pathMap,
+				CurrentPageDir:  path.Dir(relPath),
+				Logger:          logger,
 			}
 			if rewriter.CurrentPageDir == "." {
 				rewriter.CurrentPageDir = ""
@@ -105,6 +115,7 @@ func NewMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *trans
 		out = selfCloseVoidTags(out)
 		out = escapeUnknownTags(out)
 		out = escapeStrayMarkup(out)
+		out = escapeUnpairedCodeTags(out)
 		if strings.TrimSpace(out) == "" {
 			// Confluence rejects empty page content. Folder-marker files
 			// authored as empty placeholders are legitimate; substitute a
@@ -113,6 +124,110 @@ func NewMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *trans
 		}
 		return out, nil
 	}
+}
+
+// A literal placeholder such as <code> can arrive from exported text as an
+// unclosed HTML tag. Keep it visible instead of submitting malformed XHTML.
+func escapeUnpairedCodeTags(storage string) string {
+	paragraphs := regexp.MustCompile(`(?is)<p\b[^>]*>.*?</p>`)
+	tags := regexp.MustCompile(`(?i)</?code\s*>`)
+	return mapOutsideCDATA(storage, func(segment string) string {
+		return paragraphs.ReplaceAllStringFunc(segment, func(paragraph string) string {
+			positions := tags.FindAllStringIndex(paragraph, -1)
+			stack := []int{}
+			unpaired := map[int]bool{}
+			for i, span := range positions {
+				if strings.HasPrefix(paragraph[span[0]:span[1]], "</") {
+					if len(stack) == 0 {
+						unpaired[i] = true
+					} else {
+						stack = stack[:len(stack)-1]
+					}
+				} else {
+					stack = append(stack, i)
+				}
+			}
+			for _, i := range stack {
+				unpaired[i] = true
+			}
+			for i := len(positions) - 1; i >= 0; i-- {
+				if unpaired[i] {
+					span := positions[i]
+					paragraph = paragraph[:span[0]] + html.EscapeString(paragraph[span[0]:span[1]]) + paragraph[span[1]:]
+				}
+			}
+			return paragraph
+		})
+	})
+}
+
+// NewProfileMarkdownConverter runs the import profile around the standard
+// converter. The same context spans both phases, so macro boundary placeholders
+// can be restored after Markdown (including nested page embeds) is rendered.
+func NewProfileMarkdownConverter(profile *transforms.ImportProfile, pathMap map[string]transforms.PageRef, plantuml *transforms.RewritePlantUMLLinks, gitFiles *transforms.RewriteGitFileLinks, logger *log.Logger) (Converter, error) {
+	if profile == nil {
+		return nil, fmt.Errorf("import profile is required")
+	}
+	pipeline, err := transforms.BuildPipeline(profile.Transforms, transforms.DefaultRegistry())
+	if err != nil {
+		return nil, err
+	}
+	include := profile.Tree.IncludePageMacro == nil || *profile.Tree.IncludePageMacro
+	convert := newMarkdownConverter(pathMap, plantuml, gitFiles, logger, include, profile.Attachments.Paths)
+	return func(ctx context.Context, source []byte, relPath string) (string, error) {
+		prepared, restoreTransclusions, err := converters.RestoreTransclusions(string(source))
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", relPath, err)
+		}
+		tctx := &transforms.TransformContext{PreContent: prepared, PagePath: relPath, Format: "storage"}
+		if err := pipeline.Run(tctx); err != nil {
+			return "", err
+		}
+		storage, err := convert(ctx, []byte(tctx.PreContent), relPath)
+		if err != nil {
+			return "", err
+		}
+		tctx.PostContent = storage
+		if err := pipeline.Run(tctx); err != nil {
+			return "", err
+		}
+		return restoreAnchorElements(restoreTransclusions(tctx.PostContent)), nil
+	}, nil
+}
+
+var anchorElementRe = regexp.MustCompile(`<a\s+(?:id|name)="([^"]*)"\s*></a>`)
+var localAnchorLinkRe = regexp.MustCompile(`(?s)<a href="#([^"]*)"[^>]*>(.*?)</a>`)
+
+func restoreAnchorElements(storage string) string {
+	rewrite := func(s string) string {
+		s = anchorElementRe.ReplaceAllString(s, `<ac:structured-macro ac:name="anchor"><ac:parameter ac:name="">$1</ac:parameter></ac:structured-macro>`)
+		return localAnchorLinkRe.ReplaceAllStringFunc(s, func(link string) string {
+			m := localAnchorLinkRe.FindStringSubmatch(link)
+			anchor := html.UnescapeString(m[1])
+			if decoded, err := url.PathUnescape(anchor); err == nil {
+				anchor = decoded
+			}
+			return `<ac:link ac:anchor="` + html.EscapeString(anchor) + `"><ac:link-body>` + m[2] + `</ac:link-body></ac:link>`
+		})
+	}
+	var b strings.Builder
+	for {
+		start := strings.Index(storage, "<![CDATA[")
+		if start < 0 {
+			b.WriteString(rewrite(storage))
+			break
+		}
+		b.WriteString(rewrite(storage[:start]))
+		end := strings.Index(storage[start:], "]]>")
+		if end < 0 {
+			b.WriteString(storage[start:])
+			break
+		}
+		end += start + 3
+		b.WriteString(storage[start:end])
+		storage = storage[end:]
+	}
+	return b.String()
 }
 
 // knownHTMLTags is the allow-list for escapeUnknownTags. Any tag-shaped
@@ -190,7 +305,7 @@ func escapeUnknownTags(s string) string {
 			// <Object> or <Data> are placeholder text the user meant
 			// literally — escape those even though "object"/"data" are
 			// valid HTML names in lowercase.
-			if _, ok := knownHTMLTags[name]; ok {
+			if _, ok := knownHTMLTags[name]; ok && validXHTMLTagSyntax.MatchString(match) {
 				return match
 			}
 			esc := strings.ReplaceAll(match, "<", "&lt;")
@@ -223,6 +338,8 @@ func escapeUnknownTags(s string) string {
 // start of the string: numeric (&#160; / &#xA0;) or named (&amp;). A '&'
 // that doesn't begin one is stray text and must be escaped.
 var validEntityRe = regexp.MustCompile(`^&(#[0-9]+|#x[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);`)
+
+var validXHTMLTagSyntax = regexp.MustCompile(`(?s)^</?[A-Za-z][A-Za-z0-9:-]*(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*\s*=\s*(?:"[^"]*"|'[^']*'))*\s*/?>$`)
 
 // escapeStrayMarkup is the final XHTML safety net. Outside CDATA it
 // escapes a '&' that doesn't start a valid entity reference and a '<'
@@ -361,20 +478,29 @@ var opaqueXMLRes = []*regexp.Regexp{
 // the originals back into the converted output.
 func stashAcLinks(src string) (string, func(string) string) {
 	originals := []string{}
-	stashed := src
-	for _, re := range opaqueXMLRes {
-		stashed = re.ReplaceAllStringFunc(stashed, func(match string) string {
-			placeholder := fmt.Sprintf("<!--confcli-xml-%d-->", len(originals))
-			originals = append(originals, match)
-			return placeholder
-		})
-	}
+	placeholders := []string{}
+	stashed := transforms.MarkdownOutsideCode(src, func(s string) string {
+		for _, re := range opaqueXMLRes {
+			s = re.ReplaceAllStringFunc(s, func(match string) string {
+				placeholder := fmt.Sprintf("<!--confcli-xml-%d-->", len(originals))
+				if strings.HasPrefix(match, "<ac:link") {
+					// Inline links must stay inline: a comment at the start of
+					// a paragraph turns the whole paragraph into a raw HTML block.
+					placeholder = fmt.Sprintf(`<span data-confcli-xml="%d"></span>`, len(originals))
+				}
+				originals = append(originals, match)
+				placeholders = append(placeholders, placeholder)
+				return placeholder
+			})
+		}
+		return s
+	})
 	if len(originals) == 0 {
 		return stashed, func(s string) string { return s }
 	}
 	return stashed, func(rendered string) string {
 		for i, orig := range originals {
-			ph := fmt.Sprintf("<!--confcli-xml-%d-->", i)
+			ph := placeholders[i]
 			rendered = strings.Replace(rendered, ph, orig, 1)
 		}
 		return rendered

@@ -380,6 +380,30 @@ func TestExecutor_ImageUploadFailureDoesNotAbortPage(t *testing.T) {
 	if len(out.Errors) != 1 || !strings.Contains(out.Errors[0].Err.Error(), "upload image") {
 		t.Errorf("expected one upload-image error, got %+v", out.Errors)
 	}
+	if len(fc.addLabel) != 0 || len(fc.removeLabel) != 0 {
+		t.Fatalf("failed upload must retain the old hash so next sync retries: add=%v remove=%v", fc.addLabel, fc.removeLabel)
+	}
+}
+
+func TestExecutor_FailedCreateAttachmentKeepsIdentityAndRetriesHash(t *testing.T) {
+	fc := &execFakeClient{uploadErr: errors.New("attachment unavailable")}
+	x := newExec(t, fc)
+	action := Action{Kind: ActionCreate, RelPath: "a.md", Title: "a", IDLabel: "id", NewHashLabel: "new", Storage: "<p>x</p>", Images: []ImageRef{{Filename: "d.png", Data: []byte("PNG")}}}
+	out := x.Apply(context.Background(), &Plan{Actions: []Action{action}})
+	if out.Created != 1 || len(out.Errors) != 1 || len(fc.addLabel) != 1 || fc.addLabel[0].name != "id" {
+		t.Fatalf("failed create upload should keep only identity: %+v, labels=%v", out, fc.addLabel)
+	}
+	// A page with identity but no content hash is classified as an update;
+	// retry it with working attachment storage rather than creating a duplicate.
+	fc.uploadErr = nil
+	action.Kind, action.PageID = ActionUpdate, 1001
+	out = x.Apply(context.Background(), &Plan{Actions: []Action{action}})
+	if out.Updated != 1 || out.ImagesUploaded != 1 || len(out.Errors) != 0 || len(fc.createCalls) != 1 {
+		t.Fatalf("attachment retry failed: %+v", out)
+	}
+	if fc.addLabel[len(fc.addLabel)-1].name != "new" {
+		t.Fatalf("successful retry must install the final hash: %v", fc.addLabel)
+	}
 }
 
 func TestExecutor_SkipAndOrphanMakeNoAPICalls(t *testing.T) {

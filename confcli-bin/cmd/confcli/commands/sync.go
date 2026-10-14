@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,8 @@ func NewSyncCmd() *cobra.Command {
 		spaceKey    string
 		rootID      int
 		dryRun      bool
+		filePath    string
+		fileList    string
 	)
 
 	cmd := &cobra.Command{
@@ -39,6 +42,14 @@ func NewSyncCmd() *cobra.Command {
 The import profile controls folder→page mapping (folder_page marker, flatten/skip globs, per-path overrides). Files carrying matching confcli-id labels are updated when their content hash changes and skipped when it does not. Pages on the server that no source file maps to are reported as orphans (handled by a separate command in a future release).
 
 With --dry-run the plan is computed and printed but no API writes are performed. The global --read-only flag implies --dry-run.
+
+With --file, only that exact Markdown path relative to --from may be written.
+The complete source tree still resolves links and parents. Ancestors remain
+read-only; a missing parent must be synced separately first.
+
+With --file-list, select exact paths from a UTF-8 file (one per line).
+Only those files may be written, sequentially in plan order. Other ancestors
+remain read-only. --file and --file-list are mutually exclusive.
 
 Example:
   confcli sync --profile docs --from ./docs --space ENG --root 12345 --dry-run`,
@@ -73,6 +84,36 @@ Example:
 				return fmt.Errorf("--from %q is not a directory", absFrom)
 			}
 			fsys := os.DirFS(absFrom)
+			if cmd.Flags().Changed("file") && cmd.Flags().Changed("file-list") {
+				return errors.New("--file and --file-list cannot be combined")
+			}
+			var selectedPaths []string
+			if cmd.Flags().Changed("file-list") {
+				data, err := os.ReadFile(fileList)
+				if err != nil {
+					return fmt.Errorf("read --file-list: %w", err)
+				}
+				for _, line := range strings.Split(strings.TrimPrefix(string(data), "\ufeff"), "\n") {
+					line = strings.TrimSpace(line)
+					if line == "" {
+						continue
+					}
+					name, err := sync.NormalizeFileSelection(line)
+					if err != nil {
+						return err
+					}
+					selectedPaths = append(selectedPaths, name)
+				}
+				if len(selectedPaths) == 0 {
+					return errors.New("--file-list is empty")
+				}
+			}
+			if cmd.Flags().Changed("file") {
+				filePath, err = sync.NormalizeFileSelection(filePath)
+				if err != nil {
+					return err
+				}
+			}
 
 			client, err := clients.NewClientFromViper()
 			if err != nil {
@@ -100,6 +141,13 @@ Example:
 			if err != nil {
 				return fmt.Errorf("git_files setup: %w", err)
 			}
+			if gitFilesRewriter != nil {
+				gitFilesRewriter.AttachmentPaths = profile.Attachments.Paths
+			}
+			converter, err := sync.NewProfileMarkdownConverter(profile, pathMap, plantumlRewriter, gitFilesRewriter, stderr)
+			if err != nil {
+				return fmt.Errorf("import transforms: %w", err)
+			}
 
 			// Resolve a repo-root filesystem so image/attachment references
 			// that escape --from but stay inside the repo (../../diagrams/x.svg)
@@ -109,9 +157,9 @@ Example:
 
 			engine, err := sync.New(sync.Options{
 				Profile: profile,
-				Locator: sync.NewLocator(client, stderr),
+				Locator: sync.NewLocator(client, stderr, rootID),
 				Lister:  sync.NewAPILister(client, stderr),
-				Convert: sync.NewMarkdownConverter(pathMap, plantumlRewriter, gitFilesRewriter, stderr),
+				Convert: converter,
 				Logger:  stderr,
 				RepoFS:  repoFS,
 				RepoRel: repoRel,
@@ -125,14 +173,27 @@ Example:
 			if err != nil {
 				return fmt.Errorf("build plan: %w", err)
 			}
+			if cmd.Flags().Changed("file") {
+				plan, err = sync.SelectFile(plan, filePath)
+				if err != nil {
+					return err
+				}
+			}
+			if cmd.Flags().Changed("file-list") {
+				plan, err = sync.SelectFiles(plan, selectedPaths)
+				if err != nil {
+					return err
+				}
+			}
 
 			outcome := outcomeFromStats(plan.Stats)
 			if !dryRun {
 				exec, err := sync.NewExecutor(sync.ExecutorOptions{
-					Client:     client,
-					SpaceKey:   spaceKey,
-					RootPageID: rootID,
-					Logger:     stderr,
+					Client:      client,
+					SpaceKey:    spaceKey,
+					RootPageID:  rootID,
+					Logger:      stderr,
+					StopOnError: cmd.Flags().Changed("file-list"),
 				})
 				if err != nil {
 					return fmt.Errorf("init executor: %w", err)
@@ -140,7 +201,13 @@ Example:
 				outcome = exec.Apply(ctx, plan)
 			}
 
-			printSyncReport(cmd.OutOrStdout(), plan, outcome, dryRun, viper.GetBool("debug"))
+			if viper.GetString("output_format") == "json" {
+				if err := printSyncJSON(cmd.OutOrStdout(), plan, outcome, dryRun); err != nil {
+					return err
+				}
+			} else {
+				printSyncReport(cmd.OutOrStdout(), plan, outcome, dryRun, viper.GetBool("debug"))
+			}
 
 			if len(outcome.Errors) > 0 {
 				return fmt.Errorf("sync completed with %d error(s)", len(outcome.Errors))
@@ -154,6 +221,8 @@ Example:
 	cmd.Flags().StringVar(&spaceKey, "space", "", "Confluence space key (required)")
 	cmd.Flags().IntVar(&rootID, "root", 0, "Confluence root page ID (required)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Compute and print the plan without applying it")
+	cmd.Flags().StringVar(&filePath, "file", "", "Write only this exact Markdown path relative to --from; retain the full link map and read-only parents")
+	cmd.Flags().StringVar(&fileList, "file-list", "", "UTF-8 file listing exact Markdown paths relative to --from; write only those pages sequentially")
 
 	return cmd
 }
@@ -190,7 +259,7 @@ func buildPlantUMLRewriter(profile *transforms.ImportProfile, absFrom string, lo
 // parameter value expanded via branch_ref. A value using the {branch}
 // placeholder is left untouched — that path is expanded through the
 // rewriter's already-expanded Branch field — so this only catches the
-// common case of a hard-coded short branch name (branch: "feature/C2B")
+// common case of a hard-coded short branch name (branch: "feature/docs")
 // that branch_ref would otherwise miss.
 func sanitizeBranchParams(params map[string]string, mode string) map[string]string {
 	if len(params) == 0 {
@@ -217,7 +286,7 @@ func sanitizeBranchParams(params map[string]string, mode string) map[string]stri
 // fall back gracefully when individual files trigger inline emission.
 func buildGitFilesRewriter(profile *transforms.ImportProfile, absFrom string, fsys fs.FS, logger *log.Logger) (*transforms.RewriteGitFileLinks, error) {
 	cfg := profile.GitFiles
-	if cfg.Macro == "" || len(cfg.Parameters) == 0 {
+	if (cfg.Macro == "" || len(cfg.Parameters) == 0) && cfg.URL == "" {
 		return nil, nil
 	}
 	branch, syncRel, err := resolveGitContext(absFrom, cfg.Branch, cfg.RepoRoot, "git_files")
@@ -228,6 +297,7 @@ func buildGitFilesRewriter(profile *transforms.ImportProfile, absFrom string, fs
 	params := sanitizeBranchParams(cfg.Parameters, cfg.BranchRef)
 	warnMacroParams(logger, "git_files", cfg.Macro, params, branch)
 	return &transforms.RewriteGitFileLinks{
+		URL:             cfg.URL,
 		Macro:           cfg.Macro,
 		Parameters:      params,
 		Branch:          branch,
@@ -398,9 +468,9 @@ func printSyncReport(w io.Writer, plan *sync.Plan, outcome *sync.Outcome, dryRun
 		}
 	}
 
-	imageLabel := "images:"
+	imageLabel := "attachments:"
 	if dryRun {
-		imageLabel = "images (to upload):"
+		imageLabel = "attachments (to upload):"
 	}
 	fmt.Fprintf(w, "created:  %d\n", outcome.Created)
 	fmt.Fprintf(w, "updated:  %d\n", outcome.Updated)
@@ -412,4 +482,34 @@ func printSyncReport(w io.Writer, plan *sync.Plan, outcome *sync.Outcome, dryRun
 	for _, e := range outcome.Errors {
 		fmt.Fprintf(w, "  error: %s\n", e.Error())
 	}
+}
+
+// The reviewable JSON plan omits storage and attachment bytes.
+func printSyncJSON(w io.Writer, plan *sync.Plan, outcome *sync.Outcome, dryRun bool) error {
+	type action struct {
+		Kind        sync.ActionKind `json:"kind"`
+		Path        string          `json:"path"`
+		Parent      string          `json:"parent"`
+		Title       string          `json:"title"`
+		PageID      int             `json:"page_id,omitempty"`
+		Attachments int             `json:"attachments"`
+	}
+	actions := make([]action, 0, len(plan.Actions))
+	for _, a := range plan.Actions {
+		actions = append(actions, action{a.Kind, a.RelPath, a.ParentRelPath, a.Title, a.PageID, len(a.Images)})
+	}
+	errors := make([]string, 0, len(outcome.Errors))
+	for _, e := range outcome.Errors {
+		errors = append(errors, e.Error())
+	}
+	return json.NewEncoder(w).Encode(struct {
+		DryRun      bool     `json:"dry_run"`
+		Actions     []action `json:"actions"`
+		Created     int      `json:"created"`
+		Updated     int      `json:"updated"`
+		Skipped     int      `json:"skipped"`
+		Orphaned    int      `json:"orphaned"`
+		Attachments int      `json:"attachments"`
+		Errors      []string `json:"errors"`
+	}{dryRun, actions, outcome.Created, outcome.Updated, outcome.Skipped, outcome.Orphaned, outcome.ImagesUploaded, errors})
 }

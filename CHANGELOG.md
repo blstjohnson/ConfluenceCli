@@ -4,6 +4,60 @@ All notable changes to confcli will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v0.0.16] - 2026-10-13
+
+### Added
+
+- Export profiles and `page get` support `page.inline_transclusions`: the full visible Include/Excerpt Include content stays inside its real consumer page, with source-owned links/images and sealed source markers, without artificial fragment documents. Profile sync restores live references and editable Excerpt bodies; changed snapshots, missing sources, cycles, excessive nesting and unsupported named excerpts fail explicitly before writes.
+
+- `sync --file <path.md>` restricts writes to one source file while retaining the complete link map. Existing parents are resolved read-only; missing parents and invalid selections fail before writes.
+- `sync --file-list <paths.txt>` accepts an explicit UTF-8 list of exact Markdown paths and applies only those pages sequentially, stopping before the next page after an error. Non-selected ancestors remain read-only; empty lists, duplicate paths/page mappings and missing ancestors fail before writes.
+
+- Import profiles can preserve original page titles with `overrides.title` and upload selected local document/Draw.io files with `attachments.paths`. Sync JSON output includes the reviewable action plan without file payloads.
+
+- `hierarchy space` supports `page.preserve_macros` in profiles and `--set`: exports Include as a page embed, Expand/Panel as paired comments and Anchor as an explicit HTML anchor. Storage preserves document order and page targets; export_view plugin output is used when macro IDs match, including historical exports.
+- Import-profile `transforms` now run before and after Markdown conversion. `restore_macro` restores nested Expand/Panel boundaries and parameters; malformed markers and unknown transforms fail before sync writes.
+- `git_files.mode: url` and `git_files.url` emit normal TFS repository file links with encoded paths and branch versions, including links in tables.
+- Example export/import profiles for preserving macros and local attachment references.
+
+### Documentation
+
+- Updated export/import operating instructions and profile examples for single-page sync, existing-page mapping, page history, attachment selection and repeat-run verification. All changes remain in patch version `0.0.16` over `0.0.15`.
+- Clarified that hierarchy export preserves asset references; downloading original attachments and the published Draw.io revisions into Git is a separate migration step. PNG/Draw.io pairs import as an image and source attachment. PlantUML styling adaptation is not automatic.
+- Documented full-body replacement, hash-based update detection, read-only orphan reporting, lack of a saved-plan/source-freshness guard, and partial page/attachment failures. Dry-run counts are not a semantic comparison of document revisions.
+
+### Fixed
+
+- Export keeps the blank boundary between a table and a following list. Export and import nest dedented pipe tables in their introducing list items when the ordered sequence continues, keeping one continuous list even when Confluence discards an `ol` start attribute. Independent following lists receive a blank separator instead of becoming table rows.
+
+- Bold and italic labels in local page links restore as rich Confluence link bodies instead of displaying literal Markdown markers.
+
+- Macro-preserving exports retain code-example titles and collapse settings, including code inside table cells. Imports restore these settings without breaking following rows or document sections. Simple nested ordered lists retain their alphabetic/roman markers through HTML.
+
+- `overrides.page_id` now adopts existing copied pages; pinned and indexed destinations are checked against the selected space and ancestor root before any update.
+- Sync checks ancestry even when content is unchanged, moving children under a recreated parent. Batched content/label snapshots are shared by page lookup and orphan detection, avoiding repeated recursive scans and CQL indexing delays.
+- Pinned-page lookup reuses the verified root snapshot and its labels within one plan, retaining space/ancestry validation and a guarded direct fallback for missing pages. Single-page sync avoids repeated per-page metadata requests across the complete source tree.
+- Literal unpaired `<code>` and malformed HTML-looking placeholders remain visible text instead of producing invalid storage XHTML.
+- Paragraphs starting with a page link retain paragraph boundaries and Markdown formatting instead of becoming raw HTML blocks.
+
+- Confluence link rewriting retains fragments and encodes spaces in local paths.
+- Fenced `plantuml`/`puml` blocks upload as PlantUML macros rather than code macros.
+- Markdown page, PlantUML and Git-file rewrites preserve code examples. Page embeds respect `tree.include_page_macro`; explicit anchors survive the export/import cycle.
+- Storage macro removal preserves CDATA and self-closing page references; `preserve_content` no longer leaks an unmatched wrapper into subsequent conversion.
+- Missing ordinary page links no longer abort a macro-preserving hierarchy export: the title URL and fragment are retained with a warning. Missing includes and transport/authentication errors still fail explicitly.
+- Sync falls back to direct labels under the verified target root when Confluence CQL indexing has not caught up, preventing duplicate-create attempts immediately after a successful upload.
+- Failed attachment uploads no longer install a successful content hash. New pages retain their identity label, and the next sync retries the upload without creating duplicates.
+- External and absolute PlantUML URLs stay as links instead of becoming repository macros.
+- Git-backed diagram exports accept relative output directories when calculating repository file paths.
+- Macro-preserving exports retain attachment images and download links, including filenames with spaces and attachments owned by another page. References point to the source attachment; copying assets into Git remains a separate migration step.
+- Export link rewriting preserves unrecognised Confluence URLs (including attachments and title links) and leaves code examples unchanged.
+- Macro-preserving exports unwrap Scroll Ignore content without leaking its configuration into Markdown. Unrendered plugin macros preserve their parameters in explicit comments and emit warnings for manual migration.
+- Full hierarchy exports retain unresolved link text and user references instead of aborting on a link without a page target.
+- Code blocks keep their list indentation; code in table cells stays on one line with HTML entities preserving its exact preformatted content. Plain HTML code with line-break tags is preserved as well.
+- Rowspan expansion grows the grid when earlier rows occupy extra columns, preventing silent loss of trailing cells. Lists in table headers, nested tables and escaped pipe characters retain their content and table structure.
+- Note, Info, Warning and Tip wrappers preserve their bodies and parameters; raw Markdown, file attachments, Excerpt and Handy Tip targets remain accessible without leaking plugin configuration into prose.
+- Page references by ID can use collected titles for a readable label. Block boundaries in rich link labels retain their word spacing.
+
 ## [v0.0.15] - 2026-09-11
 
 ### Fixed

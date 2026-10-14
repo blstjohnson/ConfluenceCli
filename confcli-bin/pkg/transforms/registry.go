@@ -43,6 +43,7 @@ func DefaultRegistry() *Registry {
 	r.Register("expand_tiny_urls", buildExpandTinyURLs)
 	r.Register("drop_table_column", buildDropTableColumn)
 	r.Register("embed_plantuml_links", buildEmbedPlantUMLLinks)
+	r.Register("restore_macro", buildRestoreMacro)
 
 	return r
 }
@@ -57,7 +58,7 @@ func buildRemoveMacro(params map[string]interface{}) (Transform, error) {
 	if len(names) == 0 {
 		return nil, fmt.Errorf("remove_macro requires at least one macro_names entry")
 	}
-	
+
 	// Check if preserve_content is set (useful for expand macros)
 	preserveContent := false
 	if pc, ok := params["preserve_content"]; ok {
@@ -65,7 +66,7 @@ func buildRemoveMacro(params map[string]interface{}) (Transform, error) {
 			preserveContent = pb
 		}
 	}
-	
+
 	if preserveContent {
 		return NewRemoveMacroWithContentPreserve(names...)
 	}

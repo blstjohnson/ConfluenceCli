@@ -19,6 +19,8 @@
 !Makefile
 !BUILD.md
 !CHANGELOG.md
+!/confcli-bin/examples/*.yaml
+!/confcli-bin/pkg/sync/testdata/*.yaml
 !build.sh
 !Dockerfile.build
 !.devcontainer/devcontainer.json
@@ -41,3 +43,7 @@ state.json
 # mini-rag (local RAG index)
 .rag/venv/
 .rag/db/
+
+# Local credentials, source snapshots and migration scratch files.
+/.local/
+/.memory_bank/

@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"confcli/pkg/markdownutil"
+
 	html2md "github.com/JohannesKaufmann/html-to-markdown/v2/converter"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/base"
 	"github.com/JohannesKaufmann/html-to-markdown/v2/plugin/commonmark"
@@ -574,7 +576,7 @@ func (p *ConfluencePlugin) handleGitPluginContainer(ctx html2md.Context, w html2
 // handleCodeMacro handles code macros
 func (p *ConfluencePlugin) handleCodeMacro(ctx html2md.Context, w html2md.Writer, n *html.Node) html2md.RenderStatus {
 	language := ""
-	
+
 	// Try to get language from ac:parameter children
 	for child := n.FirstChild; child != nil; child = child.NextSibling {
 		if child.Type == html.ElementNode && child.Data == "ac:parameter" {
@@ -876,7 +878,9 @@ func fixEmptyListWrappers(markdown string) string {
 		// Only trigger on non-empty, non-list-item, non-heading lines.
 		// Headings deliberately keep their surrounding blank lines.
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || listItemIndentRe.MatchString(line) || strings.HasPrefix(trimmed, "#") {
+		// A table needs its blank separator before a following list. Removing
+		// it makes the list items render as additional table rows.
+		if trimmed == "" || listItemIndentRe.MatchString(line) || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "|") {
 			continue
 		}
 
@@ -1115,7 +1119,7 @@ func headingToAnchor(text string) string {
 // and collapses multiple consecutive <br/> tags (handles all br variants)
 // flattenListsInTableCells converts HTML lists inside table cells to flat text with <br/> separators
 func flattenListsInTableCells(htmlContent string) string {
-	tdRe := regexp.MustCompile(`(?is)(<td\b[^>]*>)(.*?)(</td>)`)
+	tdRe := regexp.MustCompile(`(?is)(<(?:td|th)\b[^>]*>)(.*?)(</(?:td|th)>)`)
 	ulCheckRe := regexp.MustCompile(`(?i)<[uo]l\b`)
 	listTagRe := regexp.MustCompile(`(?i)</?[uo]l\b[^>]*>`)
 	liOpenRe := regexp.MustCompile(`(?i)<li\b[^>]*>`)
@@ -1306,7 +1310,12 @@ func RemoveMarkdownEscaping(markdown string) string {
 			continue
 		}
 		if !inCodeBlock {
-			lines[i] = markdownEscapeRe.ReplaceAllString(line, "$1")
+			lines[i] = markdownEscapeRe.ReplaceAllStringFunc(line, func(s string) string {
+				if strings.HasPrefix(trimmed, "|") && s == `\|` {
+					return s
+				}
+				return s[1:]
+			})
 		}
 	}
 	return strings.Join(lines, "\n")
@@ -1436,6 +1445,15 @@ func expandSingleTable(tableNode *html.Node) bool {
 	for i := range grid {
 		grid[i] = make([]*html.Node, maxCols)
 	}
+	grow := func(columns int) {
+		if columns <= maxCols {
+			return
+		}
+		for i := range grid {
+			grid[i] = append(grid[i], make([]*html.Node, columns-maxCols)...)
+		}
+		maxCols = columns
+	}
 
 	// originMap tracks the origin position (first placement) of each cell.
 	// Only the origin position gets the cell's content; expansion cells are left empty.
@@ -1453,12 +1471,11 @@ func expandSingleTable(tableNode *html.Node) bool {
 			for colIdx < maxCols && grid[rowIdx][colIdx] != nil {
 				colIdx++
 			}
-			if colIdx >= maxCols {
-				break
-			}
-
 			cs := getAttrInt(cell, "colspan", 1)
 			rs := getAttrInt(cell, "rowspan", 1)
+			// Rowspans from earlier rows occupy columns not reflected in this
+			// row's own cell count. Grow instead of silently dropping the tail.
+			grow(colIdx + cs)
 
 			// Record the origin position for this cell
 			originMap[cell] = cellOrigin{rowIdx, colIdx}
@@ -1564,7 +1581,97 @@ func getAttrInt(n *html.Node, key string, defaultVal int) int {
 
 // preProcessHTML cleans up Confluence HTML before markdown conversion.
 // Strips elements that confuse the html-to-markdown converter.
+func flattenNestedTables(source string) string {
+	doc, err := html.Parse(strings.NewReader(source))
+	if err != nil {
+		return source
+	}
+	changed := false
+	var walk func(*html.Node)
+	walk = func(n *html.Node) {
+		for c := n.FirstChild; c != nil; {
+			next := c.NextSibling
+			walk(c)
+			c = next
+		}
+		if n.Type != html.ElementNode || n.Data != "table" {
+			return
+		}
+		insideCell := false
+		for p := n.Parent; p != nil; p = p.Parent {
+			if p.Data == "td" || p.Data == "th" {
+				insideCell = true
+				break
+			}
+		}
+		if !insideCell {
+			return
+		}
+		inline := &html.Node{Type: html.ElementNode, Data: "span"}
+		var rows []*html.Node
+		var collect func(*html.Node)
+		collect = func(p *html.Node) {
+			if p.Type == html.ElementNode && p.Data == "tr" {
+				rows = append(rows, p)
+				return
+			}
+			for c := p.FirstChild; c != nil; c = c.NextSibling {
+				collect(c)
+			}
+		}
+		collect(n)
+		for i, row := range rows {
+			if i > 0 {
+				inline.AppendChild(&html.Node{Type: html.ElementNode, Data: "br"})
+			}
+			cellIndex := 0
+			for c := row.FirstChild; c != nil; c = c.NextSibling {
+				if c.Type != html.ElementNode || (c.Data != "td" && c.Data != "th") {
+					continue
+				}
+				if cellIndex > 0 {
+					inline.AppendChild(&html.Node{Type: html.TextNode, Data: " — "})
+				}
+				cellIndex++
+				for inner := c.FirstChild; inner != nil; inner = inner.NextSibling {
+					inline.AppendChild(cloneNode(inner))
+				}
+			}
+		}
+		n.Parent.InsertBefore(inline, n)
+		n.Parent.RemoveChild(n)
+		changed = true
+	}
+	walk(doc)
+	if !changed {
+		return source
+	}
+	var b strings.Builder
+	var body *html.Node
+	var find func(*html.Node)
+	find = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "body" {
+			body = n
+			return
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			find(c)
+		}
+	}
+	find(doc)
+	if body == nil {
+		return source
+	}
+	for c := body.FirstChild; c != nil; c = c.NextSibling {
+		if html.Render(&b, c) != nil {
+			return source
+		}
+	}
+	return b.String()
+}
+
 func preProcessHTML(htmlContent string) string {
+	htmlContent = flattenNestedTables(htmlContent)
 	// Flatten lists inside table cells — must be done before other transformations
 	// because <ul>/<ol> in <td> breaks the table plugin entirely
 	htmlContent = flattenListsInTableCells(htmlContent)
@@ -1924,6 +2031,7 @@ func storageToMarkdownCore(storageContent string, baseURL string) (string, error
 	markdown = RemoveMarkdownEscaping(markdown)
 	// Strip any <details>/<summary> tags that leak through from export_view HTML
 	markdown = stripDetailsElements(markdown)
+	markdown = markdownutil.NormalizeTableLists(markdown)
 
 	return markdown, nil
 }

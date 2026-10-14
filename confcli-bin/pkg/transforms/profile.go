@@ -22,16 +22,19 @@ type TransformProfile struct {
 // FolderConfig controls folder naming and structure.
 type FolderConfig struct {
 	Naming      string `yaml:"naming"`       // e.g. "slug", "title", "id"
-	LengthLimit int    `yaml:"length_limit"`  // max folder name length (0 = no limit)
-	FlatLeaves  bool   `yaml:"flat_leaves"`   // flatten leaf pages into parent dir
+	LengthLimit int    `yaml:"length_limit"` // max folder name length (0 = no limit)
+	FlatLeaves  bool   `yaml:"flat_leaves"`  // flatten leaf pages into parent dir
 }
 
 // PageConfig holds default page-level settings.
 type PageConfig struct {
-	Format       string           `yaml:"format"`        // e.g. "markdown", "storage", "html"
-	StripTOC     bool             `yaml:"strip_toc"`
-	SaveMetadata bool             `yaml:"save_metadata"`
-	Transforms   []TransformSpec  `yaml:"transforms"`
+	// PreserveMacros keeps include, expand and anchor semantics for a later sync.
+	PreserveMacros      bool            `yaml:"preserve_macros,omitempty"`
+	InlineTransclusions bool            `yaml:"inline_transclusions,omitempty"`
+	Format              string          `yaml:"format"` // e.g. "markdown", "storage", "html"
+	StripTOC            bool            `yaml:"strip_toc"`
+	SaveMetadata        bool            `yaml:"save_metadata"`
+	Transforms          []TransformSpec `yaml:"transforms"`
 
 	// RewriteLinks enables rewriting of Confluence internal page links to local
 	// files when exporting a single page. The page ID -> file map is built at
@@ -50,17 +53,19 @@ type PageConfig struct {
 // PageOverride applies settings to specific pages. Matching is by ID (single or
 // list) and/or path glob. Both can be specified (AND logic).
 type PageOverride struct {
-	ID             interface{}      `yaml:"id"`              // int, string, or []interface{}
-	Path           string           `yaml:"path"`            // glob pattern matched against page path
-	Format         string           `yaml:"format,omitempty"`
-	StripTOC       *bool            `yaml:"strip_toc,omitempty"`
-	SaveMetadata   *bool            `yaml:"save_metadata,omitempty"`
-	Flatten        *bool            `yaml:"flatten,omitempty"`
-	Transforms     []TransformSpec  `yaml:"transforms,omitempty"`
-	SkipTransforms bool             `yaml:"skip_transforms,omitempty"`
-	Skip           bool             `yaml:"skip,omitempty"`
-	SkipContent    bool             `yaml:"skip_content,omitempty"`
-	SkipRoot       bool             `yaml:"skip_root,omitempty"`
+	PreserveMacros      *bool           `yaml:"preserve_macros,omitempty"`
+	InlineTransclusions *bool           `yaml:"inline_transclusions,omitempty"`
+	ID                  interface{}     `yaml:"id"`   // int, string, or []interface{}
+	Path                string          `yaml:"path"` // glob pattern matched against page path
+	Format              string          `yaml:"format,omitempty"`
+	StripTOC            *bool           `yaml:"strip_toc,omitempty"`
+	SaveMetadata        *bool           `yaml:"save_metadata,omitempty"`
+	Flatten             *bool           `yaml:"flatten,omitempty"`
+	Transforms          []TransformSpec `yaml:"transforms,omitempty"`
+	SkipTransforms      bool            `yaml:"skip_transforms,omitempty"`
+	Skip                bool            `yaml:"skip,omitempty"`
+	SkipContent         bool            `yaml:"skip_content,omitempty"`
+	SkipRoot            bool            `yaml:"skip_root,omitempty"`
 }
 
 // TransformSpec is a single transform entry in the YAML pipeline.
@@ -241,6 +246,12 @@ func (p *TransformProfile) ResolvePageConfig(pageID int, pagePath string) (PageC
 		if override.SaveMetadata != nil {
 			result.SaveMetadata = *override.SaveMetadata
 		}
+		if override.PreserveMacros != nil {
+			result.PreserveMacros = *override.PreserveMacros
+		}
+		if override.InlineTransclusions != nil {
+			result.InlineTransclusions = *override.InlineTransclusions
+		}
 
 		if override.SkipTransforms {
 			result.Transforms = nil
@@ -351,12 +362,24 @@ func applySetOverride(p *TransformProfile, key, val string) error {
 		p.Folder.FlatLeaves = b
 	case "page.format":
 		p.Page.Format = val
+	case "page.preserve_macros":
+		b, err := parseBool(val)
+		if err != nil {
+			return err
+		}
+		p.Page.PreserveMacros = b
 	case "page.strip_toc":
 		b, err := parseBool(val)
 		if err != nil {
 			return err
 		}
 		p.Page.StripTOC = b
+	case "page.inline_transclusions":
+		b, err := parseBool(val)
+		if err != nil {
+			return err
+		}
+		p.Page.InlineTransclusions = b
 	case "page.save_metadata":
 		b, err := parseBool(val)
 		if err != nil {

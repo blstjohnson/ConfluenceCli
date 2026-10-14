@@ -138,3 +138,52 @@ func TestLocator_FindByPath_SearchError(t *testing.T) {
 		t.Fatalf("expected error wrapping 'boom', got %v", err)
 	}
 }
+
+type unindexedClient struct {
+	api.Client
+	space                        string
+	searchCalls, descendantCalls int
+	labels                       map[int][]models.Label
+}
+
+func (f *unindexedClient) Search(context.Context, string, int) ([]models.SearchResult, error) {
+	f.searchCalls++
+	return nil, nil
+}
+func (f *unindexedClient) GetPageWithExpansions(_ context.Context, id interface{}, _ []string) (*models.Page, error) {
+	return &models.Page{ID: models.PageID{Value: id}, Space: models.Space{Key: f.space}, Version: models.Version{Number: 3}}, nil
+}
+func (f *unindexedClient) GetDescendants(context.Context, int, int) ([]models.Page, error) {
+	f.descendantCalls++
+	return []models.Page{pageWithID(42), pageWithID(43)}, nil
+}
+func (f *unindexedClient) GetLabels(_ context.Context, id int) ([]models.Label, error) {
+	return f.labels[id], nil
+}
+
+func TestLocator_FindsUnindexedPagesWithoutDuplicateCreate(t *testing.T) {
+	f := &unindexedClient{space: "DEV", labels: map[int][]models.Label{42: {{Name: identity.BuildIDLabel("a.md")}}, 43: {{Name: identity.BuildIDLabel("b.md")}}}}
+	l := NewLocator(f, nil, 1)
+	for _, file := range []string{"a.md", "b.md"} {
+		p, err := l.FindByPath(context.Background(), "DEV", file)
+		if err != nil || p == nil || p.Version.Number != 3 || identity.ExtractIDLabel(p.Labels) != identity.BuildIDLabel(file) {
+			t.Fatalf("unindexed page not found: %s: %v, %+v", file, err, p)
+		}
+	}
+	if f.descendantCalls != 1 {
+		t.Fatalf("root must be scanned once per plan: %d", f.descendantCalls)
+	}
+}
+
+func TestLocator_RejectsWrongSpaceAndDuplicateUnindexedIdentity(t *testing.T) {
+	for _, wrongSpace := range []bool{true, false} {
+		space := "DEV"
+		if wrongSpace {
+			space = "OTHER"
+		}
+		f := &unindexedClient{space: space, labels: map[int][]models.Label{42: {{Name: identity.BuildIDLabel("a.md")}}, 43: {{Name: identity.BuildIDLabel("a.md")}}}}
+		if _, err := NewLocator(f, nil, 1).FindByPath(context.Background(), "DEV", "a.md"); err == nil {
+			t.Fatalf("unsafe fallback accepted: wrongSpace=%v", wrongSpace)
+		}
+	}
+}

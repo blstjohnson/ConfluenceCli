@@ -18,6 +18,15 @@ type PageExtension struct {
 	client *HTTPClient
 }
 
+// PageNotFoundError distinguishes a missing title from transport/auth failures.
+type PageNotFoundError struct {
+	SpaceKey, Title string
+}
+
+func (e *PageNotFoundError) Error() string {
+	return fmt.Sprintf("page with title '%s' in space '%s' not found", e.Title, e.SpaceKey)
+}
+
 // NewPageExtension creates a new page extension
 func NewPageExtension(client *HTTPClient) *PageExtension {
 	return &PageExtension{client: client}
@@ -100,7 +109,7 @@ func (e *PageExtension) FindPageByTitle(ctx context.Context, req *FindPageByTitl
 	}
 
 	if len(result.Results) == 0 {
-		return nil, fmt.Errorf("page with title '%s' in space '%s' not found", req.Title, req.SpaceKey)
+		return nil, &PageNotFoundError{SpaceKey: req.SpaceKey, Title: req.Title}
 	}
 
 	return &FindPageByTitleResponse{Page: &result.Results[0]}, nil
