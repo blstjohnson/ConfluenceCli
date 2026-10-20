@@ -79,7 +79,7 @@ func newHierarchySpaceCmd() *cobra.Command {
 						return err
 					}
 				} else {
-					profile = &transforms.TransformProfile{Folder: transforms.FolderConfig{LengthLimit: 80}}
+					profile = &transforms.TransformProfile{Folder: transforms.FolderConfig{LengthLimit: 80}, Page: transforms.PageConfig{PreserveMacros: true}}
 				}
 
 				// Apply --set overrides
@@ -774,7 +774,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 
 	// getFolderName returns the folder name for a page
 	resolvePage := newRoundTripPageResolver(ctx, apiClient, pageMap, space)
-	fetchRoundTripPage := newRoundTripPageFetcher(ctx, apiClient)
+	fetchRoundTripPage := newRoundTripPageFetcher(ctx, apiClient, dateFilter)
 	getFolderName := func(pageID int) string {
 		if namedFolders || cleanNames {
 			if name, ok := folderNameMap[pageID]; ok {
@@ -1072,7 +1072,7 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 				}
 			}
 
-			preserveMacros := false
+			preserveMacros := normalizedFormat == "export" || normalizedFormat == "markdown"
 			if profile != nil {
 				cfg, _, _ := profile.ResolvePageConfig(pageID, "")
 				preserveMacros = (cfg.PreserveMacros || cfg.InlineTransclusions) && (normalizedFormat == "export" || normalizedFormat == "markdown")
@@ -1144,10 +1144,17 @@ func exportSpaceToDirectoryIterative(apiClient api.Client, space string, rootPag
 						}
 						return ""
 					},
-					PageID:              pageID,
-					InlineTransclusions: func() bool { cfg, _, _ := profile.ResolvePageConfig(pageID, ""); return cfg.InlineTransclusions }(),
-					FetchPage:           fetchRoundTripPage,
-					LocalRepoPath:       linkCfg.LocalRepoPath, CurrentPageDir: pageDir,
+					PageID:    pageID,
+					PageTitle: page.Title,
+					InlineTransclusions: func() bool {
+						if profile == nil {
+							return false
+						}
+						cfg, _, _ := profile.ResolvePageConfig(pageID, "")
+						return cfg.InlineTransclusions
+					}(),
+					FetchPage:     fetchRoundTripPage,
+					LocalRepoPath: linkCfg.LocalRepoPath, CurrentPageDir: pageDir,
 					Warn: func(message string) { fmt.Fprintf(os.Stderr, "Warning: page %d: %s\n", pageID, message) },
 				})
 				if err != nil {

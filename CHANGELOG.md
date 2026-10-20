@@ -4,6 +4,35 @@ All notable changes to confcli will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [v0.0.17] - 2026-10-20
+
+### Added
+
+- Import profiles support `toc.min_headings`: prepend a Table of Contents macro when the source Markdown heading count reaches the threshold. Code examples are excluded, existing TOC macros are not duplicated, and zero disables insertion.
+
+### Changed
+
+- `hierarchy space` and `page get` preserve storage macro semantics by default for Markdown/export. Page Include remains a relative `![Page](page.md)` reference at its original position; source pages remain full documents. Explicit `page.preserve_macros: false` retains the legacy converter and `page.inline_transclusions: true` selects inline snapshots.
+- Named Anchor links target the owning heading text and local document filename instead of an opaque fragment. Anchor macros no longer generate HTML anchor tags.
+
+### Fixed
+
+- Page-title lookup uses Confluence's `spaceKey` filter, preventing an identically named page in another space or archive from becoming a link or Include target.
+- `sync --file` and `--file-list` convert only selected documents and resolve ancestors without converting their content. Invalid macros or missing attachments in unrelated pages no longer block a selected publication; the full link map and missing-parent checks remain in place.
+- Heading links to legacy Markdown pages with inline HTML anchors reuse the existing Confluence Anchor target. These links continue to work when the old anchor changes the generated heading ID on an unselected target page.
+- Automatic Table of Contents is placed inside a leading “Оглавление” Expand. Existing TOCs are moved without duplication, retaining their parameters, or removed when the heading count is below the configured threshold; empty navigation wrappers are omitted from Markdown export. Self-closing TOC storage tags no longer consume following content in the HTML converter.
+- Export and sync discard empty untitled presentation wrappers and bare whitespace-only inline formatting tags, retaining whitespace, anchor IDs, code examples, meaningful titles and macro restoration metadata.
+- Anchor links distinguish duplicate headings using Obsidian parent-heading paths. When a heading path cannot select the correct occurrence, export uses an Obsidian block ID; sync restores its Confluence anchor without putting navigation metadata in the visible title.
+- Single-page exports with `page get --output` or `--output-dir` automatically resolve self-anchor links to the actual output filename without reference directories. Renamed output files take precedence over old reference metadata.
+- Native Confluence heading IDs resolve to visible headings, including IDs containing embedded Anchor names. An obsolete ID can use the link label only when it exactly identifies a unique heading; ambiguous targets are not guessed.
+- Draw.io macros without rendered macro IDs retain their image references using the published diagram name and revision, rather than disappearing or selecting the latest attachment.
+- Page links and Include embeds correctly parse filenames with balanced parentheses; local heading fragments retain readable Unicode and escaped spaces.
+- Historical hierarchy exports resolve referenced anchor and transclusion content at the selected date.
+
+### Documentation
+
+- Updated operating instructions, export/import profile examples and the default build version to 0.0.17.
+
 ## [v0.0.16] - 2026-10-13
 
 ### Added

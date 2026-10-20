@@ -4,7 +4,39 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
+
+func TestMacroPreservationDefaultsAndOptOut(t *testing.T) {
+	for _, tc := range []struct {
+		source   string
+		preserve bool
+	}{
+		{"kind: export", true},
+		{"page: {preserve_macros: false}", false},
+		{"page: {inline_transclusions: true}", true},
+	} {
+		p, err := LoadProfile([]byte(tc.source))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Page.PreserveMacros != tc.preserve {
+			t.Fatalf("default/opt-out lost for %q", tc.source)
+		}
+		data, err := yaml.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reloaded, err := LoadProfile(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reloaded.Page.PreserveMacros != tc.preserve {
+			t.Fatal("saved profile lost explicit opt-out")
+		}
+	}
+}
 
 func TestLoadProfile(t *testing.T) {
 	yaml := `

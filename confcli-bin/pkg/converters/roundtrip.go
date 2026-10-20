@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -21,6 +22,7 @@ type RoundTripOptions struct {
 	BaseURL, SpaceKey             string
 	LocalRepoPath, CurrentPageDir string
 	PageID                        int
+	PageTitle                     string
 	InlineTransclusions           bool
 	FetchPage                     func(id int) (RoundTripPage, error)
 	transclusionStack             []int
@@ -41,6 +43,46 @@ func PrepareRoundTripExport(storage, exportView string, opts RoundTripOptions) (
 		return "", nil, fmt.Errorf("parse storage for macro preservation: %w", err)
 	}
 	rendered := renderedMacros(exportView)
+	anchors := map[int]map[string]string{opts.PageID: pageAnchorIndex(root, exportView, opts.PageTitle)}
+	blockHeadings := map[*storageNode]string{}
+	headingNodes, headings := storageHeadingLocations(root)
+	for i, fragment := range headingFragments(headings) {
+		if strings.HasPrefix(fragment, "^") {
+			blockHeadings[headingNodes[i]] = fragment
+		}
+	}
+	anchorLink := func(id int, anchor, label string) string {
+		if decoded, err := url.PathUnescape(anchor); err == nil {
+			anchor = decoded
+		}
+		index, cached := anchors[id]
+		if !cached && opts.FetchPage != nil {
+			page, fetchErr := opts.FetchPage(id)
+			if fetchErr == nil {
+				var pageRoot *storageNode
+				pageRoot, fetchErr = parseStorage(page.Storage)
+				if fetchErr == nil {
+					index = pageAnchorIndex(pageRoot, page.ExportView, page.Title)
+				}
+			}
+			if fetchErr != nil && opts.Warn != nil {
+				opts.Warn(fmt.Sprintf("cannot inspect anchors on page %d: %v", id, fetchErr))
+			}
+			anchors[id] = index
+		}
+		if heading := index[anchor]; heading != "" {
+			anchor = heading
+		} else if cleanLabel := strings.Join(strings.Fields(label), " "); cleanLabel != "" && index[cleanLabel] == cleanLabel {
+			anchor = cleanLabel
+		} else if opts.Warn != nil && anchor != "confcli-excerpt" && !strings.HasPrefix(anchor, "handytip-") {
+			opts.Warn(fmt.Sprintf("anchor %q on page %d has no matching heading; keeping the original fragment", anchor, id))
+		}
+		href := ""
+		if id > 0 {
+			href = strings.TrimRight(opts.BaseURL, "/") + "/pages/viewpage.action?pageId=" + strconv.Itoa(id)
+		}
+		return href + "#" + escapeMarkdownPath(anchor)
+	}
 	prefix := fmt.Sprintf("CONFCLIRT%x", sha256.Sum256([]byte(storage)))
 	for strings.Contains(storage, prefix) || strings.Contains(exportView, prefix) {
 		prefix += "X"
@@ -63,7 +105,7 @@ func PrepareRoundTripExport(storage, exportView string, opts RoundTripOptions) (
 		anchor := n.attr("ac:anchor")
 		if ref == nil {
 			if anchor != "" {
-				return "#" + escapeMarkdownPath(anchor), "", nil
+				return anchorLink(opts.PageID, anchor, n.content()), "", nil
 			}
 			return "", "", fmt.Errorf("page link has no ri:page or anchor")
 		}
@@ -100,7 +142,8 @@ func PrepareRoundTripExport(storage, exportView string, opts RoundTripOptions) (
 		}
 		href := strings.TrimRight(opts.BaseURL, "/") + "/pages/viewpage.action?pageId=" + id
 		if anchor != "" {
-			href += "#" + escapeMarkdownPath(anchor)
+			pageID, _ := strconv.Atoi(id)
+			href = anchorLink(pageID, anchor, n.content())
 		}
 		return href, title, nil
 	}
@@ -290,6 +333,34 @@ func PrepareRoundTripExport(storage, exportView string, opts RoundTripOptions) (
 		if n.name == "ac:structured-macro" {
 			name := n.attr("ac:name")
 			switch name {
+			case "toc":
+				// HTML parsers treat a self-closing custom tag as an opening
+				// tag, which can swallow the rest of the document on export.
+				raw := storage[n.start:n.end]
+				if strings.HasSuffix(raw, "/>") {
+					raw = strings.TrimSuffix(raw, "/>") + "></ac:structured-macro>"
+				}
+				return raw, nil // let the TOC converter/strip option handle it
+			case "drawio":
+				// Draw.io export_view often omits data-macro-id altogether. Its
+				// storage parameters identify the published preview exactly; do not
+				// silently switch to a newer attachment revision.
+				params := n.params()
+				owner := opts.PageID
+				if value := params["pageId"]; value != "" {
+					if id, err := strconv.Atoi(value); err == nil {
+						owner = id
+					} else {
+						return "", fmt.Errorf("drawio: invalid pageId %q", value)
+					}
+				}
+				if diagram := params["diagramName"]; diagram != "" && owner > 0 {
+					href := strings.TrimRight(opts.BaseURL, "/") + "/download/attachments/" + strconv.Itoa(owner) + "/" + url.PathEscape(diagram+".png")
+					if revision := params["revision"]; revision != "" {
+						href += "?version=" + url.QueryEscape(revision)
+					}
+					return `<img src="` + html.EscapeString(href) + `" alt="` + html.EscapeString(diagram) + `" />`, nil
+				}
 			case "excerpt":
 				if body := n.find("ac:rich-text-body"); body != nil {
 					content, e := children(body)
@@ -388,10 +459,20 @@ func PrepareRoundTripExport(storage, exportView string, opts RoundTripOptions) (
 				}
 				return "<div>" + stash("!["+escapeMarkdownLabel(title)+"]("+href+")") + "</div>", nil
 			case "anchor":
-				anchor := n.params()[""]
-				return stash(`<a id="` + html.EscapeString(anchor) + `"></a>`), nil
+				if anchor := n.params()[""]; anchors[opts.PageID][anchor] == "" && opts.Warn != nil {
+					opts.Warn(fmt.Sprintf("anchor %q has no owning heading; its links keep the original fragment", anchor))
+				}
+				return "", nil
 			case "expand", "panel", "note", "info", "warning", "tip":
+				if isTOCNavigationExpand(n) {
+					return children(n.find("ac:rich-text-body"))
+				}
 				params := n.params()
+				if body := n.find("ac:rich-text-body"); body != nil && strings.TrimSpace(params["title"]) == "" {
+					if empty, hasTOC := tocNavigationContent(body); empty && !hasTOC {
+						return "", nil
+					}
+				}
 				payload := params["title"]
 				_, hasTitle := params["title"]
 				if len(params) > 1 || (len(params) > 0 && !hasTitle) || strings.HasPrefix(payload, "{") || strings.Contains(payload, "--") || strings.ContainsAny(payload, "\r\n") {
@@ -457,6 +538,9 @@ func PrepareRoundTripExport(storage, exportView string, opts RoundTripOptions) (
 		if e != nil {
 			return "", e
 		}
+		if block := blockHeadings[n]; block != "" {
+			inner += " " + block
+		}
 		if n.name == "root" {
 			return inner, nil
 		}
@@ -468,6 +552,9 @@ func PrepareRoundTripExport(storage, exportView string, opts RoundTripOptions) (
 		for _, a := range n.attrs {
 			value := a.Value
 			if n.name == "a" && storageName(a.Name) == "href" {
+				if strings.HasPrefix(value, "#") {
+					value = anchorLink(opts.PageID, strings.TrimPrefix(value, "#"), n.content())
+				}
 				base, _ := url.Parse(opts.BaseURL)
 				if u, e := url.Parse(value); e == nil && strings.Contains(u.Path, "/display/") && (u.Host == "" || (base != nil && u.Host == base.Host)) {
 					parts := strings.SplitN(strings.SplitN(u.Path, "/display/", 2)[1], "/", 2)
@@ -480,11 +567,16 @@ func PrepareRoundTripExport(storage, exportView string, opts RoundTripOptions) (
 						if id > 0 {
 							value = strings.TrimRight(opts.BaseURL, "/") + "/pages/viewpage.action?pageId=" + fmt.Sprint(id)
 							if u.Fragment != "" {
-								value += "#" + escapeMarkdownPath(u.Fragment)
+								value = anchorLink(id, u.Fragment, n.content())
 							}
 						} else if opts.Warn != nil {
 							opts.Warn(fmt.Sprintf("page %q in %q not found; keeping link %q", title, parts[0], value))
 						}
+					}
+				}
+				if u, e := url.Parse(value); e == nil && u.Fragment != "" && (u.Host == "" || (base != nil && u.Host == base.Host)) {
+					if id, err := strconv.Atoi(u.Query().Get("pageId")); err == nil && id > 0 {
+						value = anchorLink(id, u.Fragment, n.content())
 					}
 				}
 				if u, e := url.Parse(value); e == nil && !u.IsAbs() && !strings.HasPrefix(value, "#") {
@@ -523,7 +615,7 @@ func PrepareRoundTripExport(storage, exportView string, opts RoundTripOptions) (
 				markdown = markdown[:pos] + original + markdown[pos+len(token):]
 			}
 		}
-		return markdown
+		return CleanEmptyMarkdownMarkup(markdown)
 	}, nil
 }
 

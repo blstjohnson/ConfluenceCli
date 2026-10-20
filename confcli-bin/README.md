@@ -16,7 +16,9 @@
 - Scroll Versions plugin support for version-aware exports
 - Resilient downloads: per-page errors are logged, not fatal
 - Generic macro body handling: inline content as code blocks, file references as links
-- Macro-preserving hierarchy export (`page.preserve_macros`): Include embeds, Expand/Panel comments, explicit anchors and preserved link fragments
+- Macro-preserving export by default (`page.preserve_macros`): relative Include embeds, Expand/Panel comments and named-anchor links resolved to heading text without generated HTML anchor tags
+- Published Draw.io preview revisions preserved even when rendered macro IDs are absent
+- Optional leading collapsible Table of Contents on sync, controlled by `toc.min_headings` in the import profile; navigation-only Expand wrappers are omitted from Markdown export
 - Import-profile transforms, including nested `restore_macro`, inline PlantUML and TFS file URLs (`git_files.mode: url`)
 - Single-page uploads with `sync --file`, preserving the complete link map and resolving existing parents without writing them
 - Selected batches with `sync --file-list`: exact UTF-8 paths relative to `--from`, sequential writes, read-only unselected parents, and stopping before the next page after an error
@@ -25,9 +27,9 @@
 
 See the [round-trip documentation](../README.md#сохранение-макросов-при-экспорте-и-обратной-загрузке) and [profile examples](examples/README.md).
 
-Export option `page.inline_transclusions` keeps Include/Excerpt content inside the real page. Profile sync restores live references without synthetic fragment pages.
+By default Include stays as `![Page](relative/page.md)` at its original position and profile sync restores a live Page Include. Export option `page.inline_transclusions: true` selects inline Include/Excerpt snapshots instead. Neither mode creates synthetic fragment pages. Include targets must be present in the export tree (or `page.refs_dirs` for single-page exports) to obtain local paths.
 
-The current patch is **0.0.16**; see the [release notes](../CHANGELOG.md#v0016---2026-10-13) and [operating instructions](../README.md#обновление-одной-существующей-страницы). `sync` replaces the whole page body, creates a new page version on update and reports orphans without deleting them. Its hash-based plan does not merge document revisions or protect against edits made after an earlier dry-run. Exporting pages preserves attachment URLs; downloading binary files into Git remains a separate step.
+The current version is **0.0.17**; see the [release notes](../CHANGELOG.md#v0017---2026-10-20) and [operating instructions](../README.md#обновление-одной-существующей-страницы). `sync` replaces the whole page body, creates a new page version on update and reports orphans without deleting them. Its hash-based plan does not merge document revisions or protect against edits made after an earlier dry-run. Exporting pages preserves attachment URLs; downloading binary files into Git remains a separate step.
 
 ### Content Formats
 

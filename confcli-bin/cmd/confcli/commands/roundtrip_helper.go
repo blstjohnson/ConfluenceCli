@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"confcli/pkg/api"
 	"confcli/pkg/converters"
 	"confcli/pkg/models"
 )
 
-func newRoundTripPageFetcher(ctx context.Context, client api.Client) func(int) (converters.RoundTripPage, error) {
+func newRoundTripPageFetcher(ctx context.Context, client api.Client, dates ...time.Time) func(int) (converters.RoundTripPage, error) {
 	cache := map[int]converters.RoundTripPage{}
 	return func(id int) (converters.RoundTripPage, error) {
 		if page, ok := cache[id]; ok {
@@ -20,11 +21,22 @@ func newRoundTripPageFetcher(ctx context.Context, client api.Client) func(int) (
 		if err != nil {
 			return converters.RoundTripPage{}, err
 		}
-		storage, err := client.GetPageContent(ctx, id, "storage", p.Version.Number)
+		version := p.Version.Number
+		if len(dates) > 0 && !dates[0].IsZero() {
+			versions, err := client.GetPageVersions(ctx, id)
+			if err != nil {
+				return converters.RoundTripPage{}, err
+			}
+			version = resolveVersionAtDate(versions, dates[0])
+			if version == 0 {
+				return converters.RoundTripPage{}, fmt.Errorf("page %d did not exist at %s", id, dates[0].Format(time.RFC3339))
+			}
+		}
+		storage, err := client.GetPageContent(ctx, id, "storage", version)
 		if err != nil {
 			return converters.RoundTripPage{}, err
 		}
-		view, err := client.GetPageContent(ctx, id, "export_view", p.Version.Number)
+		view, err := client.GetPageContent(ctx, id, "export_view", version)
 		if err != nil {
 			return converters.RoundTripPage{}, err
 		}

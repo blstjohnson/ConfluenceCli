@@ -20,6 +20,8 @@ type PageRef struct {
 	PageID   int    // present for logging only; ac:link uses title
 	Title    string // required
 	SpaceKey string // empty = same space as source page
+	// Markdown heading path -> existing or generated Confluence anchor.
+	HeadingAnchors map[string]string
 }
 
 // RewriteMarkdownLinks rewrites relative markdown links to other repository
@@ -81,7 +83,7 @@ func (r *RewriteMarkdownLinks) Name() string {
 	return "rewrite/md-links"
 }
 
-var mdLinkRe = regexp.MustCompile(`(!?)\[([^\]]*)\]\(([^)\s]+)\)`)
+var mdLinkRe = regexp.MustCompile(`(!?)\[((?:\\.|[^\]\\])*)\]\(((?:[^()\s]|\([^()\s]*\))+)\)`)
 
 func (r *RewriteMarkdownLinks) Apply(ctx *TransformContext) error {
 	if r.PathMap == nil {
@@ -92,6 +94,7 @@ func (r *RewriteMarkdownLinks) Apply(ctx *TransformContext) error {
 		logger = log.New(os.Stderr, "", 0)
 	}
 
+	var headingErr error
 	ctx.PreContent = MarkdownOutsideCode(ctx.PreContent, func(s string) string {
 		return mdLinkRe.ReplaceAllStringFunc(s, func(match string) string {
 			sub := mdLinkRe.FindStringSubmatch(match)
@@ -129,10 +132,20 @@ func (r *RewriteMarkdownLinks) Apply(ctx *TransformContext) error {
 			if bang == "!" && !r.DisableIncludes {
 				return buildIncludeMacro(ref)
 			}
+			if decoded, err := url.PathUnescape(anchor); err == nil {
+				if target := ref.HeadingAnchors[decoded]; target != "" {
+					anchor = target
+				} else if strings.Contains(decoded, "#") || strings.HasPrefix(decoded, "^") {
+					// Do not send an Obsidian heading path as a Confluence anchor:
+					// Confluence does not resolve that syntax.
+					headingErr = fmt.Errorf("%s: unresolved nested heading %q on %q", ctx.PagePath, decoded, resolved)
+					return match
+				}
+			}
 			return buildAcLink(ref, anchor, text)
 		})
 	})
-	return nil
+	return headingErr
 }
 
 func isInternalMDLink(href string) bool {

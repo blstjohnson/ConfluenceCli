@@ -6,7 +6,7 @@ page:
   format: export
   strip_toc: true
   preserve_macros: true
-  inline_transclusions: true
+  inline_transclusions: false # Include remains a relative ![page](page.md) reference
   save_metadata: true
   transforms:
     - type: remove_macro

@@ -29,11 +29,18 @@ type ImportProfile struct {
 	PlantUML    PlantUMLConfig   `yaml:"plantuml"`
 	GitFiles    GitFilesConfig   `yaml:"git_files"`
 	Attachments AttachmentConfig `yaml:"attachments"`
+	TOC         TOCConfig        `yaml:"toc"`
 
 	// titleRegex is index-aligned with Tree.Title.Rewrites and holds the
 	// compiled patterns. Populated by validate (or lazily by TitleFor when
 	// the profile was constructed directly without going through Load*).
 	titleRegex []*regexp.Regexp
+}
+
+// TOCConfig keeps a table of contents only when the source has at least
+// MinHeadings real Markdown headings. Zero disables automatic management.
+type TOCConfig struct {
+	MinHeadings int `yaml:"min_headings"`
 }
 
 // PlantUMLConfig controls how markdown links to .puml files are
@@ -325,6 +332,9 @@ func ResolveImportProfile(value string) (*ImportProfile, error) {
 }
 
 func (p *ImportProfile) validate() error {
+	if p.TOC.MinHeadings < 0 {
+		return fmt.Errorf("toc.min_headings must not be negative")
+	}
 	for i, pat := range p.Attachments.Paths {
 		if !doublestar.ValidatePattern(pat) {
 			return fmt.Errorf("attachments.paths[%d]: invalid glob %q", i, pat)

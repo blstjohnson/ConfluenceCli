@@ -34,6 +34,7 @@ func TestDocumentationRoundTrip(t *testing.T) {
 <p>Intro</p><ac:structured-macro ac:name="include"><ac:parameter ac:name=""><ac:link><ri:page ri:content-title="Other" /></ac:link></ac:parameter></ac:structured-macro>
 <ac:structured-macro ac:name="panel"><ac:parameter ac:name="title">Inner</ac:parameter><ac:parameter ac:name="borderColor">red</ac:parameter><ac:rich-text-body>
 <ac:structured-macro ac:name="anchor"><ac:parameter ac:name="">api-anchor</ac:parameter></ac:structured-macro>
+<h2>Local API heading</h2>
 <p><ac:link ac:anchor="api-anchor"><ac:plain-text-link-body>Local API</ac:plain-text-link-body></ac:link></p>
 <table><tbody><tr><th>Link</th></tr><tr><td><ac:link ac:anchor="api-anchor"><ri:page ri:content-title="Other"/><ac:plain-text-link-body><![CDATA[API]]></ac:plain-text-link-body></ac:link></td></tr></tbody></table>
 <ac:structured-macro ac:name="plantuml"><ac:plain-text-body><![CDATA[@startuml
@@ -61,7 +62,7 @@ Alice -> Bob: <test> & check
 	if !strings.Contains(markdown, "```plantuml\n@startuml\nAlice -> Bob: <test> & check\n@enduml\n```") || !strings.Contains(markdown, "<!-- expand-start: Оглавление & API -->\n") {
 		t.Fatalf("macro boundaries or PlantUML line breaks lost:\n%s", markdown)
 	}
-	for _, want := range []string{"<!-- expand-start: Оглавление & API -->", "<!-- expand-end -->", "![Other](Other%20page.md)", "[API](Other%20page.md#api-anchor)", "[Local API](#api-anchor)", `<a id="api-anchor"></a>`, "```plantuml", "Alice -> Bob: <test> & check"} {
+	for _, want := range []string{"<!-- expand-start: Оглавление & API -->", "<!-- expand-end -->", "![Other](Other%20page.md)", "[API](Other%20page.md#api-anchor)", "[Local API](#Local%20API%20heading)", "```plantuml", "Alice -> Bob: <test> & check"} {
 		if !strings.Contains(markdown, want) {
 			t.Errorf("missing %q in markdown:\n%s", want, markdown)
 		}
@@ -79,10 +80,13 @@ Alice -> Bob: <test> & check
 		t.Fatal(err)
 	}
 	assertStorageXML(t, storage)
-	for _, want := range []string{`ac:name="expand"`, `ac:name="panel"`, `ac:name="borderColor">red`, `ac:name="include"`, `ri:content-title="Other"`, `ac:anchor="api-anchor"`, `<ac:link-body>Local API</ac:link-body>`, `ac:name="anchor"`, `ac:name="plantuml"`, `<table>`, `<ac:rich-text-body>`, `Alice -> Bob: <test> & check`} {
+	for _, want := range []string{`ac:name="expand"`, `ac:name="panel"`, `ac:name="borderColor">red`, `ac:name="include"`, `ri:content-title="Other"`, `ac:anchor="Local API heading"`, `<ac:link-body>Local API</ac:link-body>`, `ac:name="plantuml"`, `<table>`, `<ac:rich-text-body>`, `Alice -> Bob: <test> & check`} {
 		if !strings.Contains(storage, want) {
 			t.Errorf("missing %q in storage:\n%s", want, storage)
 		}
+	}
+	if strings.Contains(markdown, `<a id=`) || strings.Contains(storage, `ac:name="anchor"`) {
+		t.Fatal("named anchor should become a heading link")
 	}
 	if strings.Count(storage, `ac:name="include"`) != 1 || strings.Contains(storage, "confcli-restore") || strings.Contains(storage, "CONFCLIRT") {
 		t.Errorf("duplicate/missing restoration:\n%s", storage)
