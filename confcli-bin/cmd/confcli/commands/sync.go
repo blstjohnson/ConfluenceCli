@@ -169,21 +169,17 @@ Example:
 			}
 
 			ctx := context.Background()
-			plan, err := engine.BuildPlan(ctx, fsys, spaceKey, rootID)
+			var plan *sync.Plan
+			if cmd.Flags().Changed("file") {
+				selectedPaths = []string{filePath}
+			}
+			if len(selectedPaths) > 0 {
+				plan, err = engine.BuildSelectedPlan(ctx, fsys, spaceKey, rootID, selectedPaths)
+			} else {
+				plan, err = engine.BuildPlan(ctx, fsys, spaceKey, rootID)
+			}
 			if err != nil {
 				return fmt.Errorf("build plan: %w", err)
-			}
-			if cmd.Flags().Changed("file") {
-				plan, err = sync.SelectFile(plan, filePath)
-				if err != nil {
-					return err
-				}
-			}
-			if cmd.Flags().Changed("file-list") {
-				plan, err = sync.SelectFiles(plan, selectedPaths)
-				if err != nil {
-					return err
-				}
 			}
 
 			outcome := outcomeFromStats(plan.Stats)

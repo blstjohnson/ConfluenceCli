@@ -109,6 +109,35 @@ func New(opts Options) (*Engine, error) {
 // orphan detection scopes to. It is not embedded in actions because the
 // executor already knows it from its own configuration.
 func (e *Engine) BuildPlan(ctx context.Context, fsys fs.FS, spaceKey string, rootPageID int) (*Plan, error) {
+	return e.buildPlan(ctx, fsys, spaceKey, rootPageID, nil)
+}
+
+// BuildSelectedPlan converts only the requested sources. The converter must
+// still use a full-tree path map, so links to unselected pages remain intact.
+// Existing ancestors are located without converting their bodies or assets.
+func (e *Engine) BuildSelectedPlan(ctx context.Context, fsys fs.FS, spaceKey string, rootPageID int, values []string) (*Plan, error) {
+	selected := map[string]bool{}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("file selection is empty")
+	}
+	for _, value := range values {
+		name, err := NormalizeFileSelection(value)
+		if err != nil {
+			return nil, err
+		}
+		if selected[name] {
+			return nil, fmt.Errorf("duplicate selected path %q", name)
+		}
+		selected[name] = true
+	}
+	plan, err := e.buildPlan(ctx, fsys, spaceKey, rootPageID, selected)
+	if err != nil {
+		return nil, err
+	}
+	return SelectFiles(plan, values)
+}
+
+func (e *Engine) buildPlan(ctx context.Context, fsys fs.FS, spaceKey string, rootPageID int, selected map[string]bool) (*Plan, error) {
 	e.rootID = rootPageID
 	root, err := e.walk(fsys, ".")
 	if err != nil {
@@ -117,11 +146,38 @@ func (e *Engine) BuildPlan(ctx context.Context, fsys fs.FS, spaceKey string, roo
 
 	plan := &Plan{}
 	seen := make(map[string]struct{})
-	if err := e.visit(ctx, fsys, root, "", spaceKey, plan, seen); err != nil {
+	var required map[string]bool
+	if selected != nil {
+		parents := map[string]string{}
+		var collect func(*dirNode, string)
+		collect = func(node *dirNode, parent string) {
+			if !node.flatten && node.marker != "" {
+				parents[node.marker] = parent
+				parent = node.marker
+			}
+			for _, file := range node.files {
+				parents[file] = parent
+			}
+			for _, sub := range node.subdirs {
+				collect(sub, parent)
+			}
+		}
+		collect(root, "")
+		required = map[string]bool{}
+		for file := range selected {
+			if _, ok := parents[file]; !ok {
+				return nil, fmt.Errorf("--file %q is not an included Markdown source; check --from and profile skip rules", file)
+			}
+			for p := file; p != ""; p = parents[p] {
+				required[p] = true
+			}
+		}
+	}
+	if err := e.visit(ctx, fsys, root, "", spaceKey, plan, seen, selected, required); err != nil {
 		return nil, err
 	}
 
-	if e.lister != nil {
+	if e.lister != nil && selected == nil {
 		managed, err := e.lister.ListManaged(ctx, spaceKey, rootPageID)
 		if err != nil {
 			return nil, fmt.Errorf("list managed pages: %w", err)
@@ -266,21 +322,31 @@ func (e *Engine) visit(
 	spaceKey string,
 	plan *Plan,
 	seen map[string]struct{},
+	selected, required map[string]bool,
 ) error {
+	emit := func(file, parent string) error {
+		if selected == nil || selected[file] {
+			return e.emitFile(ctx, fsys, file, parent, spaceKey, plan, seen)
+		}
+		if required[file] {
+			return e.emitAncestor(ctx, file, parent, spaceKey, plan)
+		}
+		return nil
+	}
 	effectiveParent := parentRel
 	if !node.flatten && node.marker != "" {
-		if err := e.emitFile(ctx, fsys, node.marker, parentRel, spaceKey, plan, seen); err != nil {
+		if err := emit(node.marker, parentRel); err != nil {
 			return err
 		}
 		effectiveParent = node.marker
 	}
 	for _, f := range node.files {
-		if err := e.emitFile(ctx, fsys, f, effectiveParent, spaceKey, plan, seen); err != nil {
+		if err := emit(f, effectiveParent); err != nil {
 			return err
 		}
 	}
 	for _, sub := range node.subdirs {
-		if err := e.visit(ctx, fsys, sub, effectiveParent, spaceKey, plan, seen); err != nil {
+		if err := e.visit(ctx, fsys, sub, effectiveParent, spaceKey, plan, seen, selected, required); err != nil {
 			return err
 		}
 	}
@@ -322,34 +388,16 @@ func (e *Engine) emitFile(
 	newHash := identity.BuildHashLabel(title, storage, imageFingerprint(images))
 	seen[idLabel] = struct{}{}
 
-	var existing *models.Page
-	if override := e.profile.FindOverride(relPath); override != nil && override.PageID != 0 {
-		pinned, ok := e.locator.(PinnedPageLocator)
-		if !ok {
-			return fmt.Errorf("locate %q: locator does not support page_id overrides", relPath)
-		}
-		existing, err = pinned.FindByID(ctx, spaceKey, override.PageID)
-	} else {
-		existing, err = e.locator.FindByPath(ctx, spaceKey, relPath)
-	}
+	existing, err := e.findExisting(ctx, spaceKey, relPath, title)
 	if err != nil {
-		return fmt.Errorf("locate %q: %w", relPath, err)
-	}
-	if existing != nil && existing.Title != title {
-		return fmt.Errorf("locate %q: existing title %q differs from planned title %q; set overrides.title to preserve links", relPath, existing.Title, title)
+		return err
 	}
 
 	if existing == nil {
 		plan.Actions = append(plan.Actions, Action{
-			Kind:          ActionCreate,
-			RelPath:       relPath,
-			ParentRelPath: parentRel,
-			Title:         title,
-			IDLabel:       idLabel,
-			NewHashLabel:  newHash,
-			Storage:       storage,
-			Images:        images,
-			Reason:        "no page with this id label",
+			Kind: ActionCreate, RelPath: relPath, ParentRelPath: parentRel,
+			Title: title, IDLabel: idLabel, NewHashLabel: newHash,
+			Storage: storage, Images: images, Reason: "no page with this id label",
 		})
 		plan.Stats.add(ActionCreate)
 		plan.Stats.Images += len(images)
@@ -364,14 +412,9 @@ func (e *Engine) emitFile(
 
 	if oldHash == newHash && !e.parentChanged(existing, parentRel, plan) {
 		plan.Actions = append(plan.Actions, Action{
-			Kind:          ActionSkip,
-			RelPath:       relPath,
-			ParentRelPath: parentRel,
-			Title:         existing.Title,
-			PageID:        pageID,
-			IDLabel:       idLabel,
-			OldHashLabel:  oldHash,
-			Reason:        "hash matches existing page",
+			Kind: ActionSkip, RelPath: relPath, ParentRelPath: parentRel,
+			Title: existing.Title, PageID: pageID, IDLabel: idLabel,
+			OldHashLabel: oldHash, Reason: "hash matches existing page",
 		})
 		plan.Stats.add(ActionSkip)
 		return nil
@@ -382,21 +425,56 @@ func (e *Engine) emitFile(
 		reason = "parent differs from source tree"
 	}
 	plan.Actions = append(plan.Actions, Action{
-		Kind:          ActionUpdate,
-		RelPath:       relPath,
-		ParentRelPath: parentRel,
-		Title:         title,
-		PageID:        pageID,
-		Version:       existing.Version.Number,
-		IDLabel:       idLabel,
-		OldHashLabel:  oldHash,
-		NewHashLabel:  newHash,
-		Storage:       storage,
-		Images:        images,
-		Reason:        reason,
+		Kind: ActionUpdate, RelPath: relPath, ParentRelPath: parentRel,
+		Title: title, PageID: pageID, Version: existing.Version.Number,
+		IDLabel: idLabel, OldHashLabel: oldHash, NewHashLabel: newHash,
+		Storage: storage, Images: images, Reason: reason,
 	})
 	plan.Stats.add(ActionUpdate)
 	plan.Stats.Images += len(images)
+	return nil
+}
+
+func (e *Engine) findExisting(ctx context.Context, spaceKey, relPath, title string) (*models.Page, error) {
+	var existing *models.Page
+	var err error
+	if override := e.profile.FindOverride(relPath); override != nil && override.PageID != 0 {
+		pinned, ok := e.locator.(PinnedPageLocator)
+		if !ok {
+			return nil, fmt.Errorf("locate %q: locator does not support page_id overrides", relPath)
+		}
+		existing, err = pinned.FindByID(ctx, spaceKey, override.PageID)
+	} else {
+		existing, err = e.locator.FindByPath(ctx, spaceKey, relPath)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("locate %q: %w", relPath, err)
+	}
+	if existing != nil && existing.Title != title {
+		return nil, fmt.Errorf("locate %q: existing title %q differs from planned title %q; set overrides.title to preserve links", relPath, existing.Title, title)
+	}
+	return existing, nil
+}
+
+func (e *Engine) emitAncestor(ctx context.Context, relPath, parentRel, spaceKey string, plan *Plan) error {
+	title := e.profile.TitleFor(relPath)
+	existing, err := e.findExisting(ctx, spaceKey, relPath, title)
+	if err != nil {
+		return err
+	}
+	action := Action{Kind: ActionSkip, RelPath: relPath, ParentRelPath: parentRel, Title: title, IDLabel: identity.BuildIDLabel(relPath), Reason: "ancestor resolved read-only for file selection"}
+	if existing == nil {
+		action.Kind = ActionCreate // SelectFiles rejects a missing ancestor before writes.
+	} else {
+		id, ok := existing.ID.Int()
+		if !ok {
+			return fmt.Errorf("locate %q: page ID %v is not an integer", relPath, existing.ID)
+		}
+		action.PageID = id
+		action.OldHashLabel = identity.ExtractHashLabel(existing.Labels)
+	}
+	plan.Actions = append(plan.Actions, action)
+	plan.Stats.add(action.Kind)
 	return nil
 }
 

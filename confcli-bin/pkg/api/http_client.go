@@ -499,7 +499,7 @@ func (c *HTTPClient) GetPageRaw(ctx context.Context, id int) (*http.Response, er
 // GetPageByTitleRaw retrieves a page by its space key and title (raw API call without business logic)
 func (c *HTTPClient) GetPageByTitleRaw(ctx context.Context, spaceKey, title string) (*http.Response, error) {
 	params := url.Values{}
-	params.Add("space", spaceKey)
+	params.Add("spaceKey", spaceKey)
 	params.Add("title", title)
 
 	path := c.APIPrefix + "/content"
