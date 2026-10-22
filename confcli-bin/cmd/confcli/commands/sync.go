@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,13 +24,14 @@ import (
 // uploader that pushes a local markdown tree to a Confluence page tree.
 func NewSyncCmd() *cobra.Command {
 	var (
-		profileName string
-		fromDir     string
-		spaceKey    string
-		rootID      int
-		dryRun      bool
-		filePath    string
-		fileList    string
+		profileName    string
+		fromDir        string
+		spaceKey       string
+		rootID         int
+		dryRun         bool
+		updateExisting bool
+		filePath       string
+		fileList       string
 	)
 
 	cmd := &cobra.Command{
@@ -42,6 +42,11 @@ func NewSyncCmd() *cobra.Command {
 The import profile controls folder→page mapping (folder_page marker, flatten/skip globs, per-path overrides). Files carrying matching confcli-id labels are updated when their content hash changes and skipped when it does not. Pages on the server that no source file maps to are reported as orphans (handled by a separate command in a future release).
 
 With --dry-run the plan is computed and printed but no API writes are performed. The global --read-only flag implies --dry-run.
+
+With --update-existing, an unbound page can be updated when its exported name
+(hierarchy --clean-names) and parent chain match the source tree under --root.
+The existing title, ID and history are preserved; ambiguous names or another
+source's confcli-id label fail before writes. Explicit profile overrides win.
 
 With --file, only that exact Markdown path relative to --from may be written.
 The complete source tree still resolves links and parents. Ancestors remain
@@ -113,6 +118,7 @@ Example:
 				if err != nil {
 					return err
 				}
+				selectedPaths = []string{filePath}
 			}
 
 			client, err := clients.NewClientFromViper()
@@ -126,6 +132,14 @@ Example:
 			}
 
 			stderr := log.New(cmd.ErrOrStderr(), "", 0)
+			ctx := cmd.Context()
+			locator := sync.NewLocator(client, stderr, rootID)
+			if updateExisting {
+				profile, err = sync.BindExisting(ctx, profile, fsys, locator, spaceKey, rootID, selectedPaths)
+				if err != nil {
+					return err
+				}
+			}
 
 			pathMap, err := sync.BuildPathMap(profile, fsys)
 			if err != nil {
@@ -157,7 +171,7 @@ Example:
 
 			engine, err := sync.New(sync.Options{
 				Profile: profile,
-				Locator: sync.NewLocator(client, stderr, rootID),
+				Locator: locator,
 				Lister:  sync.NewAPILister(client, stderr),
 				Convert: converter,
 				Logger:  stderr,
@@ -168,22 +182,14 @@ Example:
 				return fmt.Errorf("init engine: %w", err)
 			}
 
-			ctx := context.Background()
-			plan, err := engine.BuildPlan(ctx, fsys, spaceKey, rootID)
+			var plan *sync.Plan
+			if len(selectedPaths) > 0 {
+				plan, err = engine.BuildSelectedPlan(ctx, fsys, spaceKey, rootID, selectedPaths)
+			} else {
+				plan, err = engine.BuildPlan(ctx, fsys, spaceKey, rootID)
+			}
 			if err != nil {
 				return fmt.Errorf("build plan: %w", err)
-			}
-			if cmd.Flags().Changed("file") {
-				plan, err = sync.SelectFile(plan, filePath)
-				if err != nil {
-					return err
-				}
-			}
-			if cmd.Flags().Changed("file-list") {
-				plan, err = sync.SelectFiles(plan, selectedPaths)
-				if err != nil {
-					return err
-				}
 			}
 
 			outcome := outcomeFromStats(plan.Stats)
@@ -221,6 +227,7 @@ Example:
 	cmd.Flags().StringVar(&spaceKey, "space", "", "Confluence space key (required)")
 	cmd.Flags().IntVar(&rootID, "root", 0, "Confluence root page ID (required)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Compute and print the plan without applying it")
+	cmd.Flags().BoolVar(&updateExisting, "update-existing", false, "Adopt unbound pages with matching exported names and parent hierarchy; preserve existing titles and IDs")
 	cmd.Flags().StringVar(&filePath, "file", "", "Write only this exact Markdown path relative to --from; retain the full link map and read-only parents")
 	cmd.Flags().StringVar(&fileList, "file-list", "", "UTF-8 file listing exact Markdown paths relative to --from; write only those pages sequentially")
 
@@ -493,10 +500,11 @@ func printSyncJSON(w io.Writer, plan *sync.Plan, outcome *sync.Outcome, dryRun b
 		Title       string          `json:"title"`
 		PageID      int             `json:"page_id,omitempty"`
 		Attachments int             `json:"attachments"`
+		Reason      string          `json:"reason,omitempty"`
 	}
 	actions := make([]action, 0, len(plan.Actions))
 	for _, a := range plan.Actions {
-		actions = append(actions, action{a.Kind, a.RelPath, a.ParentRelPath, a.Title, a.PageID, len(a.Images)})
+		actions = append(actions, action{a.Kind, a.RelPath, a.ParentRelPath, a.Title, a.PageID, len(a.Images), a.Reason})
 	}
 	errors := make([]string, 0, len(outcome.Errors))
 	for _, e := range outcome.Errors {

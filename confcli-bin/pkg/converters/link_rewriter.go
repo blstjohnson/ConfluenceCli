@@ -170,6 +170,11 @@ func rewriteConfluenceLink(linkURL, text string, config *LinkRewriteConfig) (str
 
 	// Normalize to forward slashes for markdown
 	relPath = filepath.ToSlash(relPath)
+	if fragment != "" {
+		if decoded, err := url.PathUnescape(strings.TrimPrefix(fragment, "#")); err == nil {
+			fragment = "#" + escapeMarkdownPath(decoded)
+		}
+	}
 
 	return fmt.Sprintf("[%s](%s%s)", text, escapeMarkdownPath(relPath), fragment), true
 }

@@ -1,4 +1,6 @@
 kind: import
+toc:
+  min_headings: 5 # 0 disables automatic Table of Contents
 attachments:
   paths: ["_attachments/**", "_diagrams/**"]
 tree:

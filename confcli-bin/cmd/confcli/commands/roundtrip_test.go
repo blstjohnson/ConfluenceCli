@@ -84,4 +84,34 @@ func TestHierarchyPreservesMacrosWithHistoricalExportView(t *testing.T) {
 			t.Errorf("missing historical content request %s: %v", call, client.contentCalls)
 		}
 	}
+	for _, call := range client.contentCalls {
+		if strings.HasSuffix(call, "/0") {
+			t.Fatalf("historical anchor/source used latest content: %v", client.contentCalls)
+		}
+	}
+}
+
+func TestHierarchyPreservesIncludeByDefault(t *testing.T) {
+	for _, format := range []string{"markdown", "export"} {
+		t.Run(format, func(t *testing.T) {
+			viper.Reset()
+			t.Cleanup(viper.Reset)
+			viper.Set("url", "https://wiki.test")
+			client := &roundTripExportClient{pages: map[int]*models.Page{
+				1:  {ID: models.PageID{Value: 1}, Title: "Source", Space: models.Space{Key: "DEV"}},
+				42: {ID: models.PageID{Value: 42}, Title: "Other", Space: models.Space{Key: "DEV"}, Ancestors: []models.Page{{ID: models.PageID{Value: 1}}}},
+			}}
+			dir := t.TempDir()
+			if err := exportSpaceToDirectoryIterative(client, "DEV", 1, dir, format, 0, false, 25, true, false, false, true, true, false, true, false, &converters.LinkRewriteConfig{ConfBaseURL: "https://wiki.test"}, time.Time{}, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			body, err := os.ReadFile(filepath.Join(dir, "Source", "Source.md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(body), "![Other](Other.md)") || strings.Contains(string(body), "Other content") {
+				t.Fatal(string(body))
+			}
+		})
+	}
 }

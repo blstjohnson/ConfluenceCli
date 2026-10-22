@@ -33,7 +33,12 @@ func BuildPathMap(profile *transforms.ImportProfile, fsys fs.FS) (map[string]tra
 	}
 	pathMap := make(map[string]transforms.PageRef, len(files))
 	for _, f := range files {
-		pathMap[f] = transforms.PageRef{Title: profile.TitleFor(f)}
+		source, err := fs.ReadFile(fsys, f)
+		if err != nil {
+			return nil, fmt.Errorf("read heading targets in %s: %w", f, err)
+		}
+		_, anchors := converters.PrepareMarkdownHeadingAnchors(source)
+		pathMap[f] = transforms.PageRef{Title: profile.TitleFor(f), HeadingAnchors: anchors}
 	}
 	return pathMap, nil
 }
@@ -61,8 +66,10 @@ func NewMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *trans
 
 func newMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *transforms.RewritePlantUMLLinks, gitFiles *transforms.RewriteGitFileLinks, logger *log.Logger, include bool, attachmentPaths []string) Converter {
 	return func(_ context.Context, source []byte, relPath string) (string, error) {
+		cleaned := converters.CleanEmptyMarkdownMarkup(string(source))
+		prepared, _ := converters.PrepareMarkdownHeadingAnchors([]byte(cleaned))
 		ctx := &transforms.TransformContext{
-			PreContent: string(source),
+			PreContent: prepared,
 			PagePath:   relPath,
 		}
 		if pathMap != nil {
@@ -122,7 +129,7 @@ func newMarkdownConverter(pathMap map[string]transforms.PageRef, plantuml *trans
 			// minimal paragraph so they create as parent stubs.
 			out = "<p />"
 		}
-		return out, nil
+		return restoreAnchorElements(out), nil
 	}
 }
 
@@ -175,7 +182,7 @@ func NewProfileMarkdownConverter(profile *transforms.ImportProfile, pathMap map[
 	include := profile.Tree.IncludePageMacro == nil || *profile.Tree.IncludePageMacro
 	convert := newMarkdownConverter(pathMap, plantuml, gitFiles, logger, include, profile.Attachments.Paths)
 	return func(ctx context.Context, source []byte, relPath string) (string, error) {
-		prepared, restoreTransclusions, err := converters.RestoreTransclusions(string(source))
+		prepared, restoreTransclusions, err := converters.RestoreTransclusions(converters.CleanEmptyMarkdownMarkup(string(source)))
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", relPath, err)
 		}
@@ -191,7 +198,7 @@ func NewProfileMarkdownConverter(profile *transforms.ImportProfile, pathMap map[
 		if err := pipeline.Run(tctx); err != nil {
 			return "", err
 		}
-		return restoreAnchorElements(restoreTransclusions(tctx.PostContent)), nil
+		return addTableOfContents(source, restoreAnchorElements(restoreTransclusions(tctx.PostContent)), profile.TOC.MinHeadings)
 	}, nil
 }
 

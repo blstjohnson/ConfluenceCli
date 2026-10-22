@@ -93,6 +93,7 @@ func inlineTransclusion(n *storageNode, opts RoundTripOptions) (string, error) {
 	}
 	child := opts
 	child.PageID, child.SpaceKey = id, page.SpaceKey
+	child.PageTitle = page.Title
 	if child.SpaceKey == "" {
 		child.SpaceKey = space
 	}

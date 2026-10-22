@@ -78,7 +78,7 @@ func newPageGetCmd() *cobra.Command {
 					return perr
 				}
 			} else if len(setOverrides) > 0 {
-				profile = &transforms.TransformProfile{}
+				profile = &transforms.TransformProfile{Page: transforms.PageConfig{PreserveMacros: true}}
 			}
 			if profile != nil && len(setOverrides) > 0 {
 				overrideMap := make(map[string]string)
@@ -144,7 +144,7 @@ func newPageGetCmd() *cobra.Command {
 			}
 
 			// Resolve the effective page config (profile defaults + --set overrides).
-			var pageCfg transforms.PageConfig
+			pageCfg := transforms.PageConfig{PreserveMacros: true}
 			if profile != nil {
 				pageCfg, _, _ = profile.ResolvePageConfig(id, "")
 			}
@@ -201,6 +201,7 @@ func newPageGetCmd() *cobra.Command {
 				}
 				prepared, restore, prepareErr := converters.PrepareRoundTripExport(preContent, exportViewForMacros, converters.RoundTripOptions{
 					BaseURL: baseURL, SpaceKey: resp.Page.Space.Key, PageID: actualID,
+					PageTitle:           resp.Page.Title,
 					InlineTransclusions: pageCfg.InlineTransclusions,
 					ResolvePage:         newRoundTripPageResolver(ctx, apiClient, nil, resp.Page.Space.Key),
 					FetchPage:           newRoundTripPageFetcher(ctx, apiClient),
@@ -271,7 +272,8 @@ func newPageGetCmd() *cobra.Command {
 
 			// Link rewriting: Confluence internal links -> local reference files,
 			// and/or TFS/Git links -> local repo paths. Both share one pass.
-			rewriteConfluence := pageCfg.RewriteLinks || len(pageCfg.RefsDirs) > 0
+			localSelfLinks := preserveMacros && currentFilePath != ""
+			rewriteConfluence := pageCfg.RewriteLinks || len(pageCfg.RefsDirs) > 0 || localSelfLinks
 			if rewriteConfluence || rewriteTFSLinks {
 				linkCfg := &converters.LinkRewriteConfig{
 					CurrentFilePath: currentFilePath,
@@ -281,6 +283,16 @@ func newPageGetCmd() *cobra.Command {
 					pageMap, mapErr := converters.BuildPageMapFromDirs(pageCfg.RefsDirs)
 					if mapErr != nil {
 						return fmt.Errorf("failed to scan reference directories: %w", mapErr)
+					}
+					// The page being exported already has a known local destination.
+					// Self-anchor links must use that filename even without refs_dirs
+					// or when old reference metadata points to a different filename.
+					if localSelfLinks {
+						actualID, ok := resp.Page.ID.Int()
+						if !ok {
+							return fmt.Errorf("invalid page ID")
+						}
+						pageMap[actualID] = currentFilePath
 					}
 					if len(pageMap) == 0 {
 						fmt.Fprintf(os.Stderr, "Warning: no exported pages found in reference dirs %v; internal links left unchanged\n", pageCfg.RefsDirs)

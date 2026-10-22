@@ -29,7 +29,7 @@ type FolderConfig struct {
 // PageConfig holds default page-level settings.
 type PageConfig struct {
 	// PreserveMacros keeps include, expand and anchor semantics for a later sync.
-	PreserveMacros      bool            `yaml:"preserve_macros,omitempty"`
+	PreserveMacros      bool            `yaml:"preserve_macros"`
 	InlineTransclusions bool            `yaml:"inline_transclusions,omitempty"`
 	Format              string          `yaml:"format"` // e.g. "markdown", "storage", "html"
 	StripTOC            bool            `yaml:"strip_toc"`
@@ -141,7 +141,7 @@ func (o *PageOverride) matchesPath(pagePath string) bool {
 // LoadProfile loads an export TransformProfile from YAML bytes. It rejects
 // profiles whose kind is anything other than "" (legacy) or "export".
 func LoadProfile(data []byte) (*TransformProfile, error) {
-	var p TransformProfile
+	p := TransformProfile{Page: PageConfig{PreserveMacros: true}}
 	if err := yaml.Unmarshal(data, &p); err != nil {
 		return nil, fmt.Errorf("parse transform profile: %w", err)
 	}

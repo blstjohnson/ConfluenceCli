@@ -6,8 +6,82 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"confcli/pkg/converters"
 	"confcli/pkg/transforms"
 )
+
+func TestNestedHeadingLinksRoundTripToExactOccurrence(t *testing.T) {
+	data := []byte("## Scenario\n\n### Message check\n\n[below](Gateway.md#Shared#Message%20check)\n\n## Shared\n\n### Message check\n\nActual implementation\n")
+	profile := &transforms.ImportProfile{Kind: "import"}
+	refs, err := BuildPathMap(profile, fstest.MapFS{"Gateway.md": {Data: data}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := refs["Gateway.md"].HeadingAnchors["Shared#Message check"]
+	if id == "" {
+		t.Fatal("missing nested heading target")
+	}
+	convert, err := NewProfileMarkdownConverter(profile, refs, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage, err := convert(context.Background(), data, "Gateway.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := `<ac:structured-macro ac:name="anchor"><ac:parameter ac:name="">` + id + `</ac:parameter></ac:structured-macro>`
+	if !strings.Contains(storage, anchor) || !strings.Contains(storage, `ac:anchor="`+id+`"`) || strings.Contains(storage, `ac:anchor="Shared#`) {
+		t.Fatal(storage)
+	}
+	if strings.Index(storage, anchor) < strings.Index(storage, ">Shared</h2>") || strings.Index(storage, anchor) > strings.LastIndex(storage, ">Message check</h3>") {
+		t.Fatal("anchor attached to the earlier occurrence", storage)
+	}
+	prepared, restore, err := converters.PrepareRoundTripExport(storage, "", converters.RoundTripOptions{PageID: 42, PageTitle: "Gateway", BaseURL: "https://wiki.example.com", ResolvePage: func(_, _ string) (int, error) { return 42, nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	md, err := converters.StorageToMarkdownAdvanced(prepared, "https://wiki.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md = converters.RewriteLinks(restore(md), &converters.LinkRewriteConfig{ConfBaseURL: "wiki.example.com", PageMap: map[int]string{42: "Gateway.md"}})
+	if !strings.Contains(md, "[below](Gateway.md#Shared#Message%20check)") || strings.Contains(md, "<a id=") {
+		t.Fatal(md)
+	}
+}
+
+func TestMissingNestedHeadingFailsBeforeConversion(t *testing.T) {
+	data := []byte("[bad](Gateway.md#Shared#Missing)")
+	profile := &transforms.ImportProfile{Kind: "import"}
+	refs, err := BuildPathMap(profile, fstest.MapFS{"Gateway.md": {Data: []byte("## Shared\n\n### Present\n")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewMarkdownConverter(refs, nil, nil, nil)(context.Background(), data, "Other.md")
+	if err == nil || !strings.Contains(err.Error(), "unresolved nested heading") {
+		t.Fatal(err)
+	}
+}
+
+func TestHeadingBlockIDImportsAsAnchorMetadata(t *testing.T) {
+	data := []byte("## Shared\n\n### Repeated\n\nEarlier section\n\n### Repeated ^confcli-target\n\nTarget section\n\n[below](Gateway.md#^confcli-target)\n")
+	profile := &transforms.ImportProfile{Kind: "import"}
+	refs, err := BuildPathMap(profile, fstest.MapFS{"Gateway.md": {Data: data}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage, err := NewMarkdownConverter(refs, nil, nil, nil)(context.Background(), data, "Gateway.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(storage, "^confcli-target") || !strings.Contains(storage, `ac:anchor="confcli-target"`) || !strings.Contains(storage, `<ac:parameter ac:name="">confcli-target</ac:parameter>`) {
+		t.Fatal(storage)
+	}
+	anchor := strings.Index(storage, `<ac:parameter ac:name="">confcli-target</ac:parameter>`)
+	if anchor < strings.Index(storage, "Earlier section") || anchor > strings.Index(storage, "Target section") {
+		t.Fatal("block anchor attached to wrong section", storage)
+	}
+}
 
 func TestBuildPathMap_CoversWalkedFiles(t *testing.T) {
 	fsys := fstest.MapFS{

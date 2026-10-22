@@ -85,7 +85,7 @@ type FindPageByTitleResponse struct {
 // FindPageByTitle finds a page by space key and title
 func (e *PageExtension) FindPageByTitle(ctx context.Context, req *FindPageByTitleRequest) (*FindPageByTitleResponse, error) {
 	params := url.Values{}
-	params.Add("space", req.SpaceKey)
+	params.Add("spaceKey", req.SpaceKey)
 	params.Add("title", req.Title)
 
 	path := e.client.APIPrefix + "/content"
