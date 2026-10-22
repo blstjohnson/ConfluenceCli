@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `sync --update-existing` adopts unbound pages by their `hierarchy --clean-names` export name and matching parent hierarchy under the selected root. Original titles, IDs and history are retained, including forward-link titles; ambiguous names and conflicting identity labels fail before writes. Works with dry-run, single-file and file-list selection, without editing profile YAML. JSON plans include the action reason.
+
 - Import profiles support `toc.min_headings`: prepend a Table of Contents macro when the source Markdown heading count reaches the threshold. Code examples are excluded, existing TOC macros are not duplicated, and zero disables insertion.
 
 ### Changed

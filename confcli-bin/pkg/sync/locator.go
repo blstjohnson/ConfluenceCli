@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
+	"strings"
 
 	"confcli/pkg/api"
 	"confcli/pkg/models"
@@ -105,26 +107,9 @@ func (l *Locator) FindByID(ctx context.Context, spaceKey string, pageID int) (*m
 	if l.rootID == 0 {
 		return nil, fmt.Errorf("locator: page_id overrides require a selected root")
 	}
-	if bulk, ok := l.client.(RootSnapshotClient); ok {
-		if l.pinnedPages == nil || l.pinnedSpace != spaceKey {
-			pages, err := bulk.GetRootSnapshot(ctx, spaceKey, l.rootID)
-			if err != nil {
-				return nil, fmt.Errorf("locator: pinned root snapshot: %w", err)
-			}
-			cache := make(map[int]*models.Page, len(pages))
-			for _, candidate := range pages {
-				if err := l.validateDestination(&candidate, spaceKey); err != nil {
-					return nil, err
-				}
-				id, valid := candidate.ID.Int()
-				if !valid || cache[id] != nil {
-					return nil, fmt.Errorf("locator: invalid or duplicate pinned page ID %v", candidate.ID)
-				}
-				p := candidate
-				cache[id] = &p
-			}
-			l.pinnedPages = cache
-			l.pinnedSpace = spaceKey
+	if _, ok := l.client.(RootSnapshotClient); ok {
+		if err := l.loadPinnedSnapshot(ctx, spaceKey); err != nil {
+			return nil, err
 		}
 		if page := l.pinnedPages[pageID]; page != nil {
 			return page, nil
@@ -143,6 +128,100 @@ func (l *Locator) FindByID(ctx context.Context, spaceKey string, pageID int) (*m
 	}
 	page.Labels = labels
 	return page, nil
+}
+
+// loadPinnedSnapshot retains all descendants, including unbound pages, and
+// validates the destination before any name-based match is exposed.
+func (l *Locator) loadPinnedSnapshot(ctx context.Context, spaceKey string) error {
+	if l.pinnedPages != nil && l.pinnedSpace == spaceKey {
+		return nil
+	}
+	var pages []models.Page
+	var err error
+	if bulk, ok := l.client.(RootSnapshotClient); ok {
+		pages, err := bulk.GetRootSnapshot(ctx, spaceKey, l.rootID)
+		if err != nil {
+			return fmt.Errorf("locator: pinned root snapshot: %w", err)
+		}
+		return l.cachePinnedPages(pages, spaceKey)
+	} else {
+		pages, err = l.client.GetDescendants(ctx, l.rootID, 0)
+		if err != nil {
+			return fmt.Errorf("locator: existing root descendants: %w", err)
+		}
+		for i := range pages {
+			id, valid := pages[i].ID.Int()
+			if !valid {
+				return fmt.Errorf("locator: invalid descendant ID")
+			}
+			page, err := l.client.GetPageWithExpansions(ctx, id, []string{"space", "ancestors", "version"})
+			if err != nil {
+				return err
+			}
+			if err := l.validateDestination(page, spaceKey); err != nil {
+				return err
+			}
+			labels, err := l.client.GetLabels(ctx, id)
+			if err != nil {
+				return err
+			}
+			pages[i] = *page
+			pages[i].Labels = labels
+		}
+	}
+	return l.cachePinnedPages(pages, spaceKey)
+}
+
+func (l *Locator) cachePinnedPages(pages []models.Page, spaceKey string) error {
+	cache := make(map[int]*models.Page, len(pages))
+	for _, candidate := range pages {
+		if err := l.validateDestination(&candidate, spaceKey); err != nil {
+			return err
+		}
+		id, valid := candidate.ID.Int()
+		if !valid || cache[id] != nil {
+			return fmt.Errorf("locator: invalid or duplicate pinned page ID %v", candidate.ID)
+		}
+		p := candidate
+		cache[id] = &p
+	}
+	l.pinnedPages = cache
+	l.pinnedSpace = spaceKey
+	return nil
+}
+
+// FindExistingChild never searches globally by title: both the export name
+// and immediate parent must match. Managed pages are returned as conflicts,
+// rather than hidden and subsequently duplicated by a create action.
+func (l *Locator) FindExistingChild(ctx context.Context, spaceKey string, parentID int, title string, exact bool) (*models.Page, error) {
+	if l.rootID <= 0 || parentID <= 0 {
+		return nil, fmt.Errorf("locator: existing children require a selected root and parent")
+	}
+	if err := l.loadPinnedSnapshot(ctx, spaceKey); err != nil {
+		return nil, err
+	}
+	var matches []*models.Page
+	for _, page := range l.pinnedPages {
+		if len(page.Ancestors) == 0 {
+			continue
+		}
+		parent, valid := page.Ancestors[len(page.Ancestors)-1].ID.Int()
+		if valid && parent == parentID && existingTitleMatches(page.Title, title, exact) {
+			matches = append(matches, page)
+		}
+	}
+	if len(matches) > 1 {
+		var ids []string
+		for _, page := range matches {
+			ids = append(ids, fmt.Sprint(page.ID))
+		}
+		sort.Strings(ids)
+		return nil, fmt.Errorf("locator: ambiguous exported name %q under parent %d (pages %s); set overrides.page_id and title", title, parentID, strings.Join(ids, ", "))
+	}
+	if len(matches) == 0 {
+		return nil, nil
+	}
+	return matches[0], nil
 }
 
 func (l *Locator) validateDestination(page *models.Page, spaceKey string) error {

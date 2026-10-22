@@ -782,5 +782,8 @@ func escapeMarkdownLabel(s string) string {
 	return r.Replace(s)
 }
 func escapeMarkdownPath(s string) string {
+	// Keep heading punctuation such as '/' and ',' literal. Obsidian's URI
+	// decoding preserves %2F/%2C, so a generic percent encoder breaks these
+	// fragments even when fully decoding them in a link checker would pass.
 	return strings.NewReplacer(" ", "%20", "(", "%28", ")", "%29", "\n", "%0A", "\r", "%0D").Replace(s)
 }

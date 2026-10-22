@@ -409,8 +409,9 @@ func (e *Engine) emitFile(
 		return fmt.Errorf("locate %q: page ID %v is not an integer", relPath, existing.ID)
 	}
 	oldHash := identity.ExtractHashLabel(existing.Labels)
+	bound := identity.ExtractIDLabel(existing.Labels) == idLabel
 
-	if oldHash == newHash && !e.parentChanged(existing, parentRel, plan) {
+	if bound && oldHash == newHash && !e.parentChanged(existing, parentRel, plan) {
 		plan.Actions = append(plan.Actions, Action{
 			Kind: ActionSkip, RelPath: relPath, ParentRelPath: parentRel,
 			Title: existing.Title, PageID: pageID, IDLabel: idLabel,
@@ -423,6 +424,9 @@ func (e *Engine) emitFile(
 	reason := updateReason(oldHash)
 	if oldHash == newHash {
 		reason = "parent differs from source tree"
+	}
+	if !bound {
+		reason = "bind and update existing page (preserve ID and history)"
 	}
 	plan.Actions = append(plan.Actions, Action{
 		Kind: ActionUpdate, RelPath: relPath, ParentRelPath: parentRel,
